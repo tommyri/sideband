@@ -19,10 +19,16 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+socket2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 webpki-roots.workspace = true
+
+# Unify Quinn's UDP dependency with its batched macOS socket implementation.
+# This avoids one syscall per UDP packet; Linux/Windows retain their own paths.
+[target.'cfg(target_os = "macos")'.dependencies]
+quinn-udp = { workspace = true, features = ["fast-apple-datapath"] }
 
 [dev-dependencies]
 proptest.workspace = true

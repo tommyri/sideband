@@ -36,6 +36,15 @@ TLS 1.3, multiplexing, and a single UDP port come with the connection.
 `quinn` is the QUIC implementation. `rustls` stays on 0.23 because 0.24 is
 still a pre-release and `quinn` 0.11 uses 0.23.
 
+Endpoints advertise an 8192-byte UDP receive ceiling and probe the path from
+1200 bytes, growing only after acknowledged probes. Peer limits and QUIC
+black-hole recovery remain active. This lets capable LAN/loopback paths
+coalesce ready frames without an application timer; it does not increase the
+1150-byte audio payload limit. macOS uses Quinn's batched UDP socket path.
+The T-016 CPU measurement uses a loopback path that supports the larger MTU;
+it is not a CPU guarantee for smaller-MTU or differently paced traffic.
+
+
 ## D3 — moq.dev is a library, not the transport
 
 The voice and control transport is written in this repo. The moq.dev crates

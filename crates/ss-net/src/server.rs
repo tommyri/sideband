@@ -39,7 +39,7 @@ impl Endpoint {
     pub fn bind(addr: SocketAddr, tls: TlsConfig) -> Result<Self, Error> {
         let mut config = tls.server_config()?;
         config.transport_config(Arc::new(crate::transport_config(false)));
-        Ok(Self(quinn::Endpoint::server(config, addr)?))
+        Ok(Self(crate::bind_endpoint(addr, Some(config))?))
     }
 
     /// Socket address, including the assigned port when binding port zero.
