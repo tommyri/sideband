@@ -12,5 +12,20 @@ ss-core.workspace = true
 ss-net.workspace = true
 ss-proto.workspace = true
 
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+quinn.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

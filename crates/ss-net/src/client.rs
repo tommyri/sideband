@@ -174,7 +174,7 @@ async fn connect_resolved(
         // Socket-family and synchronous connect errors belong to this address,
         // just like handshake errors. Another DNS answer may still work.
         let result = async {
-            let mut endpoint = quinn::Endpoint::client(SocketAddr::new(unspecified, 0))?;
+            let mut endpoint = crate::bind_endpoint(SocketAddr::new(unspecified, 0), None)?;
             endpoint.set_default_client_config(config.clone());
             let connection = endpoint.connect(address, host)?.await?;
             Ok::<_, Error>((connection, endpoint))

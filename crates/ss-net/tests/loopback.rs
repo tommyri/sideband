@@ -573,3 +573,65 @@ async fn fresh_router_waits_for_hello_before_keepalive() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn mtu_discovery_respects_a_smaller_peers_receive_limit() {
+    let mut server = Server::new().await;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(server.certificate.clone()).unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![ss_net::ALPN.to_vec()];
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    // The stock Quinn endpoint advertises only 1472 bytes, like an older peer.
+    let mut endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+    let client = within(endpoint.connect(server.addr(), "localhost").unwrap())
+        .await
+        .unwrap();
+    let peer = server.next().await;
+    let payload = bytes::Bytes::from_static(&[0x55; 1150]);
+    within(async {
+        for _ in 0..100 {
+            peer.send_datagram(payload.clone()).unwrap();
+            assert_eq!(client.read_datagram().await.unwrap(), payload);
+            client.send_datagram(payload.clone()).unwrap();
+            assert_eq!(peer.read_datagram().await.unwrap(), payload);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    assert!(peer.quic().stats().path.sent_plpmtud_probes > 0);
+    assert!(peer.quic().stats().path.current_mtu <= 1472);
+    assert!(peer.max_datagram_size().unwrap() < 1472);
+    client.close(0_u32.into(), b"done");
+}
+
+#[tokio::test]
+async fn ipv4_mapped_ipv6_client_reaches_an_ipv4_server() {
+    let mut server = Server::new().await;
+    let host = "::ffff:127.0.0.1";
+    let pins = server.pins();
+    pins.set(
+        &ServerId::new(host, server.addr().port()).unwrap(),
+        server.fingerprint,
+    )
+    .unwrap();
+    let client = within(client::connect(host, server.addr().port(), pins))
+        .await
+        .unwrap();
+    let peer = server.next().await;
+    client
+        .send_datagram(bytes::Bytes::from_static(b"dual stack"))
+        .unwrap();
+    assert_eq!(
+        within(peer.read_datagram()).await.unwrap().as_ref(),
+        b"dual stack"
+    );
+    client.close(0, b"done");
+}
