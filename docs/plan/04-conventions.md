@@ -49,6 +49,9 @@ These apply to every task. Sub-agents: read before writing code.
   where possible. Never edit a merged migration.
 - Any change to `02-protocol.md` or `03-data-model.md` is made in the same PR
   as the code and called out in the PR description.
+- A change to encoder behavior, a bitrate, or a numbered decision updates
+  `docs/design/` in that same PR. The wire table in `02-protocol.md` §4 and
+  `VoiceProfile::encoder_params` stay in agreement with `docs/design/voice.md`.
 
 ## Frontend (apps/desktop/src)
 

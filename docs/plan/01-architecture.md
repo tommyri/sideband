@@ -118,6 +118,8 @@ datagram receive
 
 The real-time callbacks never allocate, lock, or log. Communication with the
 rest of the app is through lock-free SPSC ring buffers (`rtrb`) and atomics.
+Profile numbers, the processing chain, and the jitter target are in
+[`docs/design/voice.md`](../design/voice.md).
 
 ## Security model (summary)
 

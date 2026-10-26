@@ -13,10 +13,13 @@ A safe, allocation-free-at-runtime Opus wrapper configured from
 ## Scope
 - Dependency `opusic-c` (bundled libopus 1.6.x). Features: `dred` → enable
   libopus DRED/OSCE build flags.
-- `Encoder::new(profile: VoiceProfile) -> Encoder`: sets application,
-  bitrate, channels, `OPUS_SET_INBAND_FEC(1)`, `OPUS_SET_PACKET_LOSS_PERC(5)`,
-  complexity 10, VBR on, DTX off; `set_bitrate()`, `set_packet_loss()` for
-  adaptation; `encode(&[f32; frame]) -> &[u8]` into a preallocated buffer.
+- `Encoder::new(profile: VoiceProfile) -> Encoder`: applies
+  `VoiceProfile::encoder_params()` as specified in `docs/design/voice.md`
+  (application, bitrate, channels, frame, `OPUS_SET_INBAND_FEC(1)`,
+  `OPUS_SET_PACKET_LOSS_PERC` only when the profile sets a percent — 5 for
+  `voice` — complexity 10, VBR on, DTX off); `set_bitrate()`,
+  `set_packet_loss()` for adaptation; `encode(&[f32; frame]) -> &[u8]` into a
+  preallocated buffer.
   With `dred`: `set_dred_duration_ms(0..=1000)`.
 - `Decoder::new(channels)`: `decode(packet: Option<&[u8]>, fec: bool) ->
   &[f32]`; `None` triggers PLC (Deep PLC when available). With `dred`:
@@ -39,7 +42,8 @@ Jitter buffer, networking.
   default build excludes it.
 
 ## Notes / references
+- Encoder contract and why DRED stays behind a flag: `docs/design/voice.md`.
 - Opus 1.5/1.6 release notes; DRED is experimental (IETF draft, extension id
-  may change) which is why it stays behind a flag.
+  may change).
 
 ## Notes from implementation

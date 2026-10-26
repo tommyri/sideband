@@ -128,6 +128,10 @@ payload  : one Opus packet (may contain DRED extension; ≤ 1150 bytes)
 Decoder: complexity 10, Deep PLC always on; DRED decode on if the build has
 it; BWE off (voice profile is already fullband).
 
+Bitrates are decimal (80 kb/s = 80_000 bit/s). Expected loss is set only
+where the table states a percent. Why these profiles, and what the encoder
+must leave off, is in [`docs/design/voice.md`](../design/voice.md).
+
 ## 5. Media streams (video, phase 5; defined now)
 
 One QUIC unidirectional stream per *group* (keyframe + dependents). Stream

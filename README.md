@@ -4,7 +4,8 @@ Self-hosted voice and text chat. TeamSpeak-class voice, Discord-class
 features, one server binary, native clients for Windows, macOS, and Linux.
 
 The implementation plan is in [`docs/plan`](docs/plan/00-overview.md). Tasks
-live in [`docs/plan/tasks`](docs/plan/tasks/INDEX.md).
+live in [`docs/plan/tasks`](docs/plan/tasks/INDEX.md). Codec settings and the
+decision record are in [`docs/design`](docs/design/README.md).
 
 ## Develop
 
