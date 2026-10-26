@@ -7,7 +7,22 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+# Off by default. Maps `Id` to a 16-byte SQLite BLOB. The workspace `sqlx`
+# dependency also enables its tokio runtime, so this is the only way this
+# crate links sqlx or tokio.
+sqlx = ["dep:sqlx"]
+
 [dependencies]
+bitflags.workspace = true
+serde.workspace = true
+sqlx = { workspace = true, optional = true }
+thiserror.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
