@@ -1,6 +1,6 @@
 # T-047 — `ss-input`: cross-platform PTT core (API, state machine, binding model)
 
-Status: todo
+Status: done
 Phase: 3
 Size: S
 Depends on: T-003
@@ -36,3 +36,35 @@ Actual OS hooks (T-048–T-050).
 - Crate compiles on all OSes with no backend enabled (mock only).
 
 ## Notes from implementation
+
+- `Backend::detect` always returns `MockListener`. There is no backend cargo
+  feature and no OS module. Windows, macOS, and Linux all compile this crate
+  as it stands. Later tasks replace the body of `detect` (Raw Input,
+  listen-only `CGEventTap`, X11 XInput2, the GlobalShortcuts portal, opt-in
+  evdev).
+- `capture_next(timeout)` returns `CapturedBinding`, not a bare `Binding`.
+  `SetBySystem` is the compositor case: the default method returns it
+  immediately and does not observe a key. `cancel_capture` unblocks a waiting
+  capture. `CaptureSession` is the shared gesture recorder (modifiers, then
+  the trigger; a modifier alone completes on release; mouse is ignored when
+  `Caps.mouse_buttons` is false).
+- `Handle` also has `set_release_delay` and `force_release`. The mock has no
+  thread, so `MockListener::inject` and `poll` drive edges and the release
+  timer for tests and the CLI.
+- `Caps` includes `limitations: Vec<String>`, plus `Caps::none()` and
+  `Caps::mock()`. `Error::PermissionRequired` carries the grant and an
+  optional settings URL for the macOS and evdev backends.
+- `Code` is the USB HID keyboard page through F24, not only F13, plus digits,
+  navigation, numpad, and the two ISO keys. Discriminants are HID usage IDs.
+  Usage `0x2A` is `Backspace`; forward delete is `0x4C`. Power (`0x66`) is
+  omitted. Mouse buttons include Left and Right so capture can name them.
+- The release wait is `max(release_delay, DEBOUNCE)` with `DEBOUNCE` at 30 ms,
+  so a zero delay still coalesces chatter. A press at exactly 30 ms stays
+  held. `DEFAULT_RELEASE_DELAY` is 150 ms, matching the voice-session default.
+- `force_release` clears tracked keys and suppresses those that were down
+  until the matching up, so a repeat cannot reopen transmit. A backend that
+  sees the key is already up must inject that up.
+- Mute and deafen shortcut roles are not on `Binding`. This state machine is
+  push-to-talk only; T-050 and T-058 can add those actions.
+- `Cargo.lock` gained serde, thiserror, and tracing because nothing in the
+  workspace depended on them yet.
