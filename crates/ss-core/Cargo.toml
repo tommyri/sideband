@@ -1,0 +1,13 @@
+[package]
+name = "ss-core"
+description = "Shared domain primitives: ids, permissions, and errors."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

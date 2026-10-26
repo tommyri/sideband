@@ -1,0 +1,33 @@
+# T-018 — Spike evaluation: A/B against TeamSpeak 3 and parameter lock
+
+Status: todo
+Phase: 1
+Size: S
+Depends on: T-017
+Paths: `docs/plan/notes/spike-results.md`
+
+## Goal
+Decide, with numbers and ears, that the voice path beats TS3 and lock the
+default parameters before building everything else on top.
+
+## Scope
+- Deploy T-016 on the same VPS as the TS3 server (docker or binary).
+- With ≥ 3 people: blind A/B listening sessions TS3 (Opus Voice q10 / Opus
+  Music q10) vs SocialSpeak `voice` at 64/80/96 kb/s and `music` at 128 kb/s;
+  record both.
+- Latency: `--measure-latency` vs TS3 (measure TS3 with a loopback recording
+  if possible).
+- Impairment: run `--impair loss=2/5/10,jitter=20/50` and note where it
+  degrades; test with DRED build on/off.
+- Decide defaults: bitrate, frame size (20 vs 10 ms), initial jitter target,
+  FEC loss percentage, whether DRED ships as a user-visible option.
+- Update `02-protocol.md` §4 table and `ss_core::VoiceProfile` defaults.
+
+## Out of scope
+Any new features.
+
+## Acceptance criteria
+- `docs/plan/notes/spike-results.md` with method, numbers, group verdict.
+- Go/no-go recorded. If no-go, a list of concrete fixes becomes new tasks.
+
+## Notes from implementation

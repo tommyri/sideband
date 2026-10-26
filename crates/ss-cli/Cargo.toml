@@ -1,0 +1,14 @@
+[package]
+name = "ss-cli"
+description = "Headless client for calls, latency measurement, and load tests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ss-client-core.workspace = true
+
+[lints]
+workspace = true

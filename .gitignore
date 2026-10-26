@@ -1,0 +1,15 @@
+/target
+**/target
+
+**/*.rs.bk
+.DS_Store
+
+# Local server state
+/data
+*.db
+*.db-journal
+
+# Desktop app (scaffolded in T-042)
+apps/desktop/node_modules
+apps/desktop/dist
+apps/desktop/.vite

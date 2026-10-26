@@ -1,0 +1,79 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/ss-audio",
+  "crates/ss-cli",
+  "crates/ss-client-core",
+  "crates/ss-core",
+  "crates/ss-input",
+  "crates/ss-net",
+  "crates/ss-proto",
+  "crates/ss-server",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.99"
+version = "0.1.0"
+
+[workspace.dependencies]
+ss-audio = { path = "crates/ss-audio", version = "0.1.0" }
+ss-client-core = { path = "crates/ss-client-core", version = "0.1.0" }
+ss-core = { path = "crates/ss-core", version = "0.1.0" }
+ss-input = { path = "crates/ss-input", version = "0.1.0" }
+ss-net = { path = "crates/ss-net", version = "0.1.0" }
+ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
+
+anyhow = "1"
+axum = "0.8"
+bitflags = "2"
+bytes = "1"
+parking_lot = "0.12"
+prost = "0.14"
+prost-build = "0.14"
+proptest = "1"
+# quinn 0.11 depends on rustls 0.23. rustls 0.24 is still a pre-release.
+quinn = "0.11"
+rtrb = "0.4"
+rustls = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SQLite only. Networked drivers and the `any` driver stay off.
+sqlx = { version = "0.9", default-features = false, features = [
+  "migrate",
+  "runtime-tokio",
+  "sqlite",
+] }
+thiserror = "2"
+tokio = { version = "1", features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ulid = { version = "3", features = ["serde"] }
+
+# Pedantic lints allowed workspace-wide. Each one is noisy here without
+# catching defects:
+# - module_name_repetitions: `server::ServerState` reads better than renaming
+# - missing_errors_doc / missing_panics_doc: the error type is the contract
+# - must_use_candidate: applied per function when dropping the value is a bug
+# - doc_markdown: proper nouns and protocol names (SocialSpeak, QUIC, Opus)
+#   are not code identifiers
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

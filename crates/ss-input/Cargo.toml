@@ -1,0 +1,14 @@
+[package]
+name = "ss-input"
+description = "Global key and mouse listeners for push-to-talk."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ss-core.workspace = true
+
+[lints]
+workspace = true

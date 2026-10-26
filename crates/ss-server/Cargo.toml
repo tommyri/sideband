@@ -1,0 +1,16 @@
+[package]
+name = "ss-server"
+description = "SocialSpeak server. One process, one SQLite database."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ss-core.workspace = true
+ss-net.workspace = true
+ss-proto.workspace = true
+
+[lints]
+workspace = true
