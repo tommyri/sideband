@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+// Invites, kicks, bans, and other moderator actions.
+// Spec: docs/plan/02-protocol.md section 3.
+
+// An invite. Admins receive create and revoke events.
+message Invite {
+  // 16-byte ULID.
+  bytes id = 1;
+  // Code the client sends in `Register.invite_code`.
+  string code = 2;
+  // User who created the invite.
+  bytes created_by = 3;
+  // Use cap. Absent means unlimited.
+  optional uint32 max_uses = 4;
+  // Uses so far.
+  uint32 uses = 5;
+  // Expiry, Unix milliseconds. Absent means it does not expire.
+  optional int64 expires_at = 6;
+  // Creation time, Unix milliseconds.
+  int64 created_at = 7;
+  // Revocation time. Absent when still active.
+  optional int64 revoked_at = 8;
+}
+
+// Create a server invite.
+message CreateInvite {
+  // Use cap. Absent means unlimited.
+  optional uint32 max_uses = 1;
+  // Expiry, Unix milliseconds. Absent means it does not expire.
+  optional int64 expires_at = 2;
+}
+
+// Revoke an invite.
+message RevokeInvite {
+  // Invite id.
+  bytes invite_id = 1;
+}
+
+// Disconnect a user without a ban.
+message KickUser {
+  // User to kick.
+  bytes user_id = 1;
+  // Reason shown to the user and the audit log. May be empty.
+  string reason = 2;
+}
+
+// Ban a user.
+message BanUser {
+  // User to ban.
+  bytes user_id = 1;
+  // Reason. May be empty.
+  string reason = 2;
+  // Ban expiry, Unix milliseconds. Absent means permanent.
+  optional int64 expires_at = 3;
+}
+
+// Lift a ban.
+message UnbanUser {
+  // User to unban.
+  bytes user_id = 1;
+}
+
+// Move a user into another voice channel.
+message MoveUser {
+  // User to move.
+  bytes user_id = 1;
+  // Destination voice channel.
+  bytes channel_id = 2;
+}
+
+// Server-mute or unmute a user in voice.
+message ServerMuteUser {
+  // User to mute.
+  bytes user_id = 1;
+  // True mutes. False clears the server mute.
+  bool muted = 2;
+}
+
+// An invite was created. Sent to admins.
+message InviteCreated {
+  // The new invite.
+  Invite invite = 1;
+}
+
+// An invite was revoked. Sent to admins.
+message InviteRevoked {
+  // The invite after revocation.
+  Invite invite = 1;
+}
+
+// This connection was kicked. The server then closes the connection.
+message Kicked {
+  // Reason. May be empty.
+  string reason = 1;
+  // Optional expiry hint, Unix milliseconds.
+  optional int64 expires_at = 2;
+}
+
+// This connection was banned. The server then closes the connection.
+message Banned {
+  // Reason. May be empty.
+  string reason = 1;
+  // Ban expiry, Unix milliseconds. Absent means permanent.
+  optional int64 expires_at = 2;
+}
+
+// Operator notice, such as a shutdown warning.
+message ServerNotice {
+  // Notice text.
+  string text = 1;
+}

@@ -9,6 +9,17 @@ publish = false
 
 [dependencies]
 ss-core.workspace = true
+bytes.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

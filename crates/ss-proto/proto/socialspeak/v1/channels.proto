@@ -1,0 +1,135 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+import "socialspeak/v1/common.proto";
+
+// Channel tree and direct messages.
+// Spec: docs/plan/02-protocol.md section 3.
+// Wire enum numbers are not the SQL integers in docs/plan/03-data-model.md.
+
+// How a channel behaves.
+enum ChannelKind {
+  CHANNEL_KIND_UNSPECIFIED = 0;
+  CHANNEL_KIND_CATEGORY = 1;
+  CHANNEL_KIND_TEXT = 2;
+  CHANNEL_KIND_VOICE = 3;
+  CHANNEL_KIND_DM = 4;
+  CHANNEL_KIND_GROUP_DM = 5;
+}
+
+// Encoder profile for a voice channel. See docs/plan/02-protocol.md section 4.
+enum VoiceProfile {
+  VOICE_PROFILE_UNSPECIFIED = 0;
+  VOICE_PROFILE_VOICE = 1;
+  VOICE_PROFILE_MUSIC = 2;
+  VOICE_PROFILE_LOW_LATENCY = 3;
+}
+
+// Voice-channel encoder settings. Ignored for text and categories.
+message VoiceSettings {
+  // Profile. Unspecified means the server default (`voice`).
+  VoiceProfile profile = 1;
+  // Bitrate in bits per second. Absent means the profile default.
+  optional uint32 bitrate = 2;
+  // Maximum members in the voice channel. Absent means no limit.
+  optional uint32 user_limit = 3;
+}
+
+// A channel, category, or DM.
+message Channel {
+  // 16-byte ULID. Empty on `CreateChannel`; the server assigns it.
+  bytes id = 1;
+  // Category, text, voice, DM, or group DM.
+  ChannelKind kind = 2;
+  // Display name. DMs may use an empty name.
+  string name = 3;
+  // Topic text. Absent when the channel has none.
+  optional string topic = 4;
+  // Parent category id. Absent at the root.
+  optional bytes parent_id = 5;
+  // Sort key among siblings.
+  int32 position = 6;
+  // Voice encoder settings. Absent for non-voice channels.
+  VoiceSettings voice = 7;
+  // Creator user id.
+  optional bytes created_by = 8;
+  // Creation time, Unix milliseconds.
+  int64 created_at = 9;
+  // DM participants. Empty for guild channels.
+  repeated bytes member_ids = 10;
+}
+
+// Create a channel. The server assigns the id and emits `ChannelCreated`.
+message CreateChannel {
+  // Category, text, or voice. DM creation is `CreateDm`.
+  ChannelKind kind = 1;
+  // Display name.
+  string name = 2;
+  // Parent category. Absent places the channel at the root.
+  optional bytes parent_id = 3;
+  // Sort key among siblings.
+  int32 position = 4;
+  // Topic. Absent means no topic.
+  optional string topic = 5;
+  // Voice settings. Absent for non-voice channels.
+  VoiceSettings voice = 6;
+}
+
+// Patch a channel. Absent optional fields stay unchanged.
+message UpdateChannel {
+  // Channel to change.
+  bytes channel_id = 1;
+  // New kind. Absent means unchanged.
+  optional ChannelKind kind = 2;
+  // New name. Absent means unchanged.
+  optional string name = 3;
+  // New parent. Absent means unchanged. Moving to root is `MoveChannel`.
+  optional bytes parent_id = 4;
+  // New sort key. Absent means unchanged.
+  optional int32 position = 5;
+  // New topic. Absent means unchanged. Empty string clears the topic.
+  optional string topic = 6;
+  // Replacement voice settings. Absent means unchanged.
+  VoiceSettings voice = 7;
+}
+
+// Delete a channel.
+message DeleteChannel {
+  // Channel to delete.
+  bytes channel_id = 1;
+}
+
+// Reparent or reorder a channel.
+message MoveChannel {
+  // Channel to move.
+  bytes channel_id = 1;
+  // New parent. Absent moves the channel to the root.
+  optional bytes parent_id = 2;
+  // New sort key among the new siblings.
+  int32 position = 3;
+}
+
+// Open a DM. Returns the existing DM when the same set already has one.
+message CreateDm {
+  // Other participant user ids. The sender is included by the server.
+  repeated bytes user_ids = 1;
+}
+
+// A channel was created.
+message ChannelCreated {
+  // The new channel, including its id.
+  Channel channel = 1;
+}
+
+// A channel was updated or moved.
+message ChannelUpdated {
+  // The channel after the change.
+  Channel channel = 1;
+}
+
+// A channel was deleted.
+message ChannelDeleted {
+  // The channel as it was, at least `id` set.
+  Channel channel = 1;
+}

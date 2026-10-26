@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+import "socialspeak/v1/common.proto";
+
+// Text messages, typing, and read cursors.
+// Spec: docs/plan/02-protocol.md section 3.
+
+// A file attached to a message.
+message Attachment {
+  // 16-byte ULID.
+  bytes id = 1;
+  // Original file name.
+  string filename = 2;
+  // Media type, for example `image/png`.
+  string mime = 3;
+  // Size in bytes.
+  uint64 size = 4;
+  // Pixel width. Absent for non-images.
+  optional uint32 width = 5;
+  // Pixel height. Absent for non-images.
+  optional uint32 height = 6;
+}
+
+// Unfurled link. Later previews arrive via `MessageUpdated`.
+message LinkPreview {
+  // Canonical URL.
+  string url = 1;
+  // Page title. Absent when the fetch has no title.
+  optional string title = 2;
+  // Page description.
+  optional string description = 3;
+  // Preview image URL.
+  optional string image_url = 4;
+  // Site name.
+  optional string site_name = 5;
+}
+
+// A text message.
+message Message {
+  // 16-byte ULID. Also the history cursor.
+  bytes id = 1;
+  // Channel the message belongs to.
+  bytes channel_id = 2;
+  // Author profile. Absent for webhook messages.
+  User author = 3;
+  // Message body.
+  string content = 4;
+  // Replied-to message id. Absent when this is not a reply.
+  optional bytes reply_to = 5;
+  // Files on this message.
+  repeated Attachment attachments = 6;
+  // Mentioned user ids.
+  repeated bytes mentions = 7;
+  // Link previews. May be empty until a later `MessageUpdated`.
+  repeated LinkPreview link_previews = 8;
+  // Creation time, Unix milliseconds.
+  int64 created_at = 9;
+  // Last edit time. Absent when never edited.
+  optional int64 edited_at = 10;
+  // Webhook id when a webhook authored the message.
+  optional bytes webhook_id = 11;
+}
+
+// Post a message. `nonce` lets the client match its own echo.
+message SendMessage {
+  // Destination channel.
+  bytes channel_id = 1;
+  // Message body.
+  string content = 2;
+  // Replied-to message id. Absent when not a reply.
+  optional bytes reply_to = 3;
+  // Already-uploaded attachment ids.
+  repeated bytes attachment_ids = 4;
+  // Client dedupe token, echoed on `MessageCreated`.
+  optional string nonce = 5;
+}
+
+// Replace a message body.
+message EditMessage {
+  // Message to edit.
+  bytes message_id = 1;
+  // New body.
+  string content = 2;
+}
+
+// Delete a message.
+message DeleteMessage {
+  // Message to delete.
+  bytes message_id = 1;
+}
+
+// Typing indicator. Clients should send at most one per 5 seconds.
+message Typing {
+  // Channel being typed in.
+  bytes channel_id = 1;
+}
+
+// Advance the read cursor.
+message MarkRead {
+  // Channel being marked.
+  bytes channel_id = 1;
+  // Last message the user has read.
+  bytes message_id = 2;
+}
+
+// A message was created.
+message MessageCreated {
+  // The stored message.
+  Message message = 1;
+  // `SendMessage.nonce` when the author is this client. Otherwise absent.
+  optional string nonce = 2;
+}
+
+// A message was edited or gained link previews.
+message MessageUpdated {
+  // The message after the change.
+  Message message = 1;
+  // Echoed nonce when this update is the author's own echo.
+  optional string nonce = 2;
+}
+
+// A message was deleted.
+message MessageDeleted {
+  // The message as it was, at least `id` and `channel_id` set.
+  Message message = 1;
+  // Echoed nonce when this delete is the author's own echo.
+  optional string nonce = 2;
+}
+
+// Someone started typing.
+message TypingStarted {
+  // Channel.
+  bytes channel_id = 1;
+  // User who is typing.
+  bytes user_id = 2;
+}
+
+// Read cursor for one user in one channel.
+message ReadState {
+  // Channel.
+  bytes channel_id = 1;
+  // Last message the user has read.
+  bytes last_read_message_id = 2;
+  // Unread mentions at this cursor.
+  uint32 mention_count = 3;
+}
+
+// The connecting user's read cursor changed.
+message ReadStateUpdated {
+  // Channel.
+  bytes channel_id = 1;
+  // Last message read.
+  bytes last_read_message_id = 2;
+  // Unread mentions at this cursor.
+  uint32 mention_count = 3;
+}

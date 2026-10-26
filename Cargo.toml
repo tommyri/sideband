@@ -33,6 +33,8 @@ parking_lot = "0.12"
 prost = "0.14"
 prost-build = "0.14"
 proptest = "1"
+# Vendored protoc so ss-proto builds without a system protobuf compiler.
+protoc-bin-vendored = "3"
 # quinn 0.11 depends on rustls 0.23. rustls 0.24 is still a pre-release.
 quinn = "0.11"
 rtrb = "0.4"

@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+import "socialspeak/v1/channels.proto";
+import "socialspeak/v1/common.proto";
+import "socialspeak/v1/messages.proto";
+import "socialspeak/v1/roles.proto";
+import "socialspeak/v1/voice.proto";
+
+// Session open, keepalive, and the full state snapshot.
+// Spec: docs/plan/02-protocol.md sections 1, 3, and 7.
+
+// Username and password login inside `Hello.auth`.
+message Login {
+  // Account username.
+  string username = 1;
+  // Password. The server hashes it; the hash is never sent back.
+  string password = 2;
+}
+
+// New account inside `Hello.auth`.
+message Register {
+  // Invite code, not the invite id.
+  string invite_code = 1;
+  // Desired unique username.
+  string username = 2;
+  // Password. The server hashes it.
+  string password = 3;
+}
+
+// First message on the control stream.
+message Hello {
+  // Must be `PROTOCOL_VERSION` (1) for this schema.
+  uint32 protocol_version = 1;
+  // Short client product name.
+  string client_name = 2;
+  // Client build version.
+  string client_version = 3;
+  // Operating system label.
+  string os = 4;
+  // Exactly one credential. Field names are stable JSON keys.
+  oneof auth {
+    // Existing session token.
+    string session_token = 5;
+    // Token from a previous `Welcome`, used after a dropped connection.
+    string resume_token = 6;
+    // Password login.
+    Login login = 7;
+    // Invite registration.
+    Register register = 8;
+  }
+}
+
+// Client keepalive. Sent about every 15 seconds while idle.
+message Ping {
+  // Client clock, Unix milliseconds, echoed by `Pong`.
+  int64 sent_at = 1;
+}
+
+// Server reply to `Ping`.
+message Pong {
+  // `Ping.sent_at`, unchanged.
+  int64 sent_at = 1;
+  // Server clock, Unix milliseconds.
+  int64 server_time = 2;
+}
+
+// Full state pushed on a successful `Hello`.
+message Snapshot {
+  // Channel tree. `parent_id` links children to categories.
+  repeated Channel channels = 1;
+  // Every role, including @everyone.
+  repeated Role roles = 2;
+  // Members with presence.
+  repeated Member members = 3;
+  // Current voice sessions.
+  repeated VoiceState voice_states = 4;
+  // Audio and video tracks used to demux datagrams.
+  repeated Track tracks = 5;
+  // Read cursors for the connecting user.
+  repeated ReadState read_states = 6;
+  // DM and group-DM channels this user belongs to.
+  repeated Channel direct_messages = 7;
+}
+
+// Successful `Hello` response. Not an `Ack`.
+message Welcome {
+  // The authenticated user.
+  User user = 1;
+  // Server name, version, and features.
+  ServerInfo server_info = 2;
+  // Present this on the next `Hello` after a disconnect.
+  string resume_token = 3;
+  // Full channel tree, roles, members, voice, tracks, reads, and DMs.
+  Snapshot snapshot = 4;
+}
+
+// Change the connecting user's display name or avatar.
+message UpdateProfile {
+  // New display name. Empty leaves the stored name to server policy.
+  string display_name = 1;
+  // 16-byte attachment id. Absent leaves the avatar unchanged.
+  optional bytes avatar_attachment_id = 2;
+}

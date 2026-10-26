@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+import "socialspeak/v1/auth.proto";
+import "socialspeak/v1/channels.proto";
+import "socialspeak/v1/common.proto";
+import "socialspeak/v1/messages.proto";
+import "socialspeak/v1/moderation.proto";
+import "socialspeak/v1/roles.proto";
+import "socialspeak/v1/voice.proto";
+
+// Control-stream envelopes.
+// Spec: docs/plan/02-protocol.md section 3.
+//
+// `oneof` field names are stable: they become JSON keys in the bot API.
+// Field numbers must not be reused. Add new variants at the end.
+//
+// `request_id` on the envelope matches the request. Server events use 0.
+// `Ack` and `Error` repeat that id so the payload lists every field from
+// the spec table. Constructors set both to the same value.
+
+// One client control message.
+message ClientEnvelope {
+  // Client-chosen id. Monotonic per connection. Echoed on Ack and Error.
+  uint32 request_id = 1;
+  // The message. Field names are stable.
+  oneof msg {
+    Hello hello = 2;
+    Ping ping = 3;
+    JoinVoice join_voice = 4;
+    LeaveVoice leave_voice = 5;
+    SetVoiceState set_voice_state = 6;
+    SendMessage send_message = 7;
+    EditMessage edit_message = 8;
+    DeleteMessage delete_message = 9;
+    Typing typing = 10;
+    MarkRead mark_read = 11;
+    CreateDm create_dm = 12;
+    CreateChannel create_channel = 13;
+    UpdateChannel update_channel = 14;
+    DeleteChannel delete_channel = 15;
+    MoveChannel move_channel = 16;
+    CreateInvite create_invite = 17;
+    RevokeInvite revoke_invite = 18;
+    KickUser kick_user = 19;
+    BanUser ban_user = 20;
+    UnbanUser unban_user = 21;
+    MoveUser move_user = 22;
+    ServerMuteUser server_mute_user = 23;
+    CreateRole create_role = 24;
+    UpdateRole update_role = 25;
+    DeleteRole delete_role = 26;
+    SetUserRoles set_user_roles = 27;
+    SetChannelOverride set_channel_override = 28;
+    UpdateProfile update_profile = 29;
+    SubscribeTrack subscribe_track = 30;
+    UnsubscribeTrack unsubscribe_track = 31;
+    RequestKeyframe request_keyframe = 32;
+    SetPreferredQuality set_preferred_quality = 33;
+  }
+}
+
+// One server control message.
+message ServerEnvelope {
+  // Matches the request, or 0 for a server event.
+  uint32 request_id = 1;
+  // The message. Field names are stable.
+  oneof msg {
+    Welcome welcome = 2;
+    Ack ack = 3;
+    Error error = 4;
+    Pong pong = 5;
+    ChannelCreated channel_created = 6;
+    ChannelUpdated channel_updated = 7;
+    ChannelDeleted channel_deleted = 8;
+    MemberJoined member_joined = 9;
+    MemberLeft member_left = 10;
+    MemberUpdated member_updated = 11;
+    PresenceUpdated presence_updated = 12;
+    VoiceStateUpdated voice_state_updated = 13;
+    TrackAdded track_added = 14;
+    TrackRemoved track_removed = 15;
+    MessageCreated message_created = 16;
+    MessageUpdated message_updated = 17;
+    MessageDeleted message_deleted = 18;
+    TypingStarted typing_started = 19;
+    ReadStateUpdated read_state_updated = 20;
+    RoleCreated role_created = 21;
+    RoleUpdated role_updated = 22;
+    RoleDeleted role_deleted = 23;
+    MemberRolesUpdated member_roles_updated = 24;
+    InviteCreated invite_created = 25;
+    InviteRevoked invite_revoked = 26;
+    Kicked kicked = 27;
+    Banned banned = 28;
+    ServerNotice server_notice = 29;
+  }
+}
+
+// Positive response to a client request.
+message Ack {
+  // Same id as the request and the envelope.
+  uint32 request_id = 1;
+  // Command result. Field names are stable.
+  oneof result {
+    // Command succeeded with no resource.
+    Empty empty = 2;
+    // `SendMessage` created this message.
+    bytes message_id = 3;
+    // `CreateChannel` created this channel.
+    bytes channel_id = 4;
+    // `CreateInvite` created this invite.
+    Invite invite = 5;
+    // `CreateDm` returned this DM channel.
+    Channel dm_channel = 6;
+    // `CreateRole` or `UpdateRole` returned this role.
+    Role role = 7;
+    // `UpdateProfile` returned this user.
+    User user = 8;
+  }
+}
+
+// Negative response to a client request, or a rejected `Hello`.
+message Error {
+  // Same id as the request and the envelope. Zero when the `Hello` itself failed before an id was meaningful; still copied from the envelope.
+  uint32 request_id = 1;
+  // Why the command failed.
+  ErrorCode code = 2;
+  // Human-readable detail. Not a stable token.
+  string message = 3;
+  // Lowest protocol version the server accepts. Set for `PROTOCOL_VERSION`.
+  optional uint32 min_version = 4;
+  // Highest protocol version the server accepts. Set for `PROTOCOL_VERSION`.
+  optional uint32 max_version = 5;
+}
+
+// A member joined the server.
+message MemberJoined {
+  // The new member.
+  Member member = 1;
+}
+
+// A member left the server.
+message MemberLeft {
+  // The member who left.
+  Member member = 1;
+}
+
+// A member profile changed.
+message MemberUpdated {
+  // The member after the change.
+  Member member = 1;
+}
+
+// Presence for one user changed.
+message PresenceUpdated {
+  // User whose presence changed.
+  bytes user_id = 1;
+  // New status.
+  PresenceStatus status = 2;
+  // New activity text. Empty clears it.
+  string activity = 3;
+}
