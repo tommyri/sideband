@@ -1,0 +1,24 @@
+[package]
+name = "socialspeak-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep libFuzzer and its nightly/sanitizer build out of normal workspace builds.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ss-net = { path = "../crates/ss-net" }
+bytes = "1"
+
+[[bin]]
+name = "media_headers"
+path = "fuzz_targets/media_headers.rs"
+test = false
+doc = false
+bench = false

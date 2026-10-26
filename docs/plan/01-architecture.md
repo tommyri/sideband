@@ -60,8 +60,10 @@ only on `ss-core`; `ss-server` depends on `ss-core`, `ss-proto`, `ss-net`.
 
 ## Server runtime model
 
-- `tokio` multi-threaded runtime. One task per QUIC connection owning its
-  control stream; a shared `ServerState` behind `Arc`.
+- `tokio` multi-threaded runtime. The endpoint accept loop dispatches pending
+  handshakes into bounded per-peer tasks; it never waits for one peer's
+  handshake before accepting the next. One task per established QUIC
+  connection owns its control stream; a shared `ServerState` is behind `Arc`.
 - **Connection registry**: `user_id → ConnectionHandle` (a `quinn::Connection`
   clone plus an mpsc sender for outbound control messages). A user may have
   several connections (desktop + laptop); voice is per connection.

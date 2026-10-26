@@ -25,8 +25,15 @@ port UDP 443 (configurable). HTTPS on TCP 443 for REST.
 u32 length (big-endian, max 1 MiB) | protobuf-encoded Envelope
 ```
 
-`ss-proto` provides `FramedRead/FramedWrite` codecs over `quinn::RecvStream`
-/ `SendStream`.
+`ss-proto` provides generic `encode`, `decode`, `read_frame`, and
+`write_frame` helpers. `ss-net::control::ControlStream` wraps the QUIC
+streams, retaining partial frames across cancellation. Its client router
+allocates nonzero request ids monotonically, separates events, and sends
+`Ping` after 15 seconds without an outbound control frame, once the application
+has sent its first Hello. A fresh router never sends Ping before Hello. `Hello`/`Welcome`
+and `Ping`/`Pong` use the router's `request` method; commands expecting
+`Ack`/`Error` use `call`. Authentication and server-side responses are owned
+by the application.
 
 ## 3. Message schema (protobuf, `crates/ss-proto/proto/socialspeak/v1/*.proto`)
 
@@ -102,12 +109,16 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 ```
 byte 0   : vv kk ffff   v=version(2 bits, =0) k=kind(2 bits: 0=audio) f=flags
                         flags: bit0 TALK_START, bit1 TALK_END, bit2 reserved, bit3 reserved
-varint   : track_id (server-assigned per (connection, kind); 1–3 bytes)
+varint   : track_id (server-assigned per (connection, kind); canonical unsigned LEB128, 1–3 bytes)
 u16 BE   : seq (wraps)
 u32 BE   : timestamp in 48 kHz samples (wraps)
 payload  : one Opus packet (may contain DRED extension; ≤ 1150 bytes)
 ```
 
+- Track ids use the shortest unsigned LEB128 representation (7 data bits
+  per byte, high bit indicates continuation), range `0..=0x1f_ffff`.
+  This is not QUIC's 1/2/4/8-byte varint. Overlong encodings, a fourth byte,
+  nonzero versions, non-audio datagram kinds, and reserved flags are rejected.
 - Client sends only while gated open (PTT/VAD). `TALK_START` on the first
   packet of a burst, `TALK_END` on the last (encoder flushed). Receivers derive
   speaking indicators from these plus a 200 ms arrival timeout.
@@ -136,7 +147,7 @@ must leave off, is in [`docs/design/voice.md`](../design/voice.md).
 
 One QUIC unidirectional stream per *group* (keyframe + dependents). Stream
 begins with the same header as a datagram with `kind=1 (video)` and an extra
-`u32 group_id`; then a sequence of `u32 len | u32 timestamp | u8 flags | frame`.
+big-endian `u32 group_id`; then a sequence of `u32 len | u32 timestamp | u8 flags | frame`.
 The sender resets the previous group's stream when a new keyframe starts if
 it hasn't finished. The server forwards each stream only to connections that
 sent `SubscribeTrack` for that `track_id` and resets streams to a subscriber
