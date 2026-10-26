@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+// Roles and per-channel permission overrides.
+// Spec: docs/plan/02-protocol.md section 3.
+// Permission bits are uint64. See the bit list in common.proto.
+
+// A role. `permissions` is a uint64 bitset.
+message Role {
+  // 16-byte ULID. Empty on create; the server assigns it.
+  bytes id = 1;
+  // Role name.
+  string name = 2;
+  // RGB color in the low 24 bits (`0xRRGGBB`). Absent when unset.
+  optional uint32 color = 3;
+  // Permission bitset. Unknown bits fail `ss_proto::validate_permissions`.
+  uint64 permissions = 4;
+  // Hierarchy position. Higher outranks lower.
+  int32 position = 5;
+  // True for the @everyone role.
+  bool is_default = 6;
+}
+
+// Create a role. The server assigns the id and emits `RoleCreated`.
+message CreateRole {
+  // Role name.
+  string name = 1;
+  // RGB color. Absent when unset.
+  optional uint32 color = 2;
+  // Permission bitset.
+  uint64 permissions = 3;
+  // Hierarchy position.
+  int32 position = 4;
+}
+
+// Patch a role. Absent optional fields stay unchanged.
+message UpdateRole {
+  // Role to change.
+  bytes role_id = 1;
+  // New name. Absent means unchanged.
+  optional string name = 2;
+  // New color. Absent means unchanged.
+  optional uint32 color = 3;
+  // New permission bitset. Absent means unchanged.
+  optional uint64 permissions = 4;
+  // New hierarchy position. Absent means unchanged.
+  optional int32 position = 5;
+}
+
+// Delete a role.
+message DeleteRole {
+  // Role to delete.
+  bytes role_id = 1;
+}
+
+// Replace the role set of a user.
+message SetUserRoles {
+  // User to change.
+  bytes user_id = 1;
+  // Full set of role ids. Roles omitted here are removed.
+  repeated bytes role_ids = 2;
+}
+
+// Set the allow and deny masks of one role in one channel.
+message SetChannelOverride {
+  // Channel the override applies to.
+  bytes channel_id = 1;
+  // Role the override applies to.
+  bytes role_id = 2;
+  // Bits granted in this channel.
+  uint64 allow = 3;
+  // Bits revoked in this channel.
+  uint64 deny = 4;
+}
+
+// A role was created.
+message RoleCreated {
+  // The new role, including its id.
+  Role role = 1;
+}
+
+// A role was updated.
+message RoleUpdated {
+  // The role after the change.
+  Role role = 1;
+}
+
+// A role was deleted.
+message RoleDeleted {
+  // The role as it was, at least `id` set.
+  Role role = 1;
+}
+
+// A user's roles changed.
+message MemberRolesUpdated {
+  // User whose roles changed.
+  bytes user_id = 1;
+  // Full role id set after the change.
+  repeated bytes role_ids = 2;
+}

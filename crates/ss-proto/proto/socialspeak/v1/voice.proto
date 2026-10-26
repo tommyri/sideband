@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+// Voice membership and media tracks.
+// Spec: docs/plan/02-protocol.md sections 3, 4, and 5.
+//
+// `track_id` is a server-assigned integer for one (connection, kind), not a
+// ULID. The datagram header carries it as a 1 to 3 byte varint.
+
+// What a track carries.
+enum TrackKind {
+  TRACK_KIND_UNSPECIFIED = 0;
+  TRACK_KIND_AUDIO = 1;
+  TRACK_KIND_VIDEO = 2;
+  TRACK_KIND_SCREEN = 3;
+}
+
+// Codec parameters announced with a track.
+message Codec {
+  // Codec name, for example `opus` or `avc1.64001f`.
+  string name = 1;
+  // Sample rate in hertz. Zero for video.
+  uint32 sample_rate = 2;
+  // Channel count. Zero for video.
+  uint32 channels = 3;
+  // Codec-private data such as an AVC decoder configuration. Empty for Opus.
+  bytes description = 4;
+}
+
+// One member's voice session.
+message VoiceState {
+  // User in voice.
+  bytes user_id = 1;
+  // Server-assigned connection id (16-byte ULID), not the QUIC connection id.
+  bytes conn_id = 2;
+  // Voice channel. Absent after the user leaves voice.
+  optional bytes channel_id = 3;
+  // Microphone muted locally.
+  bool self_mute = 4;
+  // Playback muted locally.
+  bool self_deaf = 5;
+  // Muted by a moderator.
+  bool server_mute = 6;
+}
+
+// Join a voice channel, or switch to another one.
+message JoinVoice {
+  // Voice channel to join.
+  bytes channel_id = 1;
+  // Start self-muted.
+  bool self_mute = 2;
+  // Start self-deafened.
+  bool self_deaf = 3;
+}
+
+// Leave the current voice channel.
+message LeaveVoice {}
+
+// Update mute and deaf without changing channel.
+message SetVoiceState {
+  // Microphone muted locally.
+  bool self_mute = 1;
+  // Playback muted locally.
+  bool self_deaf = 2;
+}
+
+// A voice session changed.
+message VoiceStateUpdated {
+  // User in voice.
+  bytes user_id = 1;
+  // Server-assigned connection id (16-byte ULID).
+  bytes conn_id = 2;
+  // Voice channel. Absent when the user left voice.
+  optional bytes channel_id = 3;
+  // Microphone muted locally.
+  bool self_mute = 4;
+  // Playback muted locally.
+  bool self_deaf = 5;
+  // Muted by a moderator.
+  bool server_mute = 6;
+}
+
+// A track the client can demux.
+message Track {
+  // Server-assigned track id. Not a ULID.
+  uint32 track_id = 1;
+  // Publishing user.
+  bytes user_id = 2;
+  // Publishing connection id (16-byte ULID).
+  bytes conn_id = 3;
+  // Audio, video, or screen.
+  TrackKind kind = 4;
+  // Codec parameters.
+  Codec codec = 5;
+  // Voice channel the track belongs to.
+  bytes channel_id = 6;
+}
+
+// A track started. Map `track_id` before decoding datagrams.
+message TrackAdded {
+  // Server-assigned track id. Not a ULID.
+  uint32 track_id = 1;
+  // Publishing user.
+  bytes user_id = 2;
+  // Publishing connection id (16-byte ULID).
+  bytes conn_id = 3;
+  // Audio, video, or screen.
+  TrackKind kind = 4;
+  // Codec parameters.
+  Codec codec = 5;
+  // Voice channel.
+  bytes channel_id = 6;
+}
+
+// A track ended.
+message TrackRemoved {
+  // Track id from `TrackAdded`.
+  uint32 track_id = 1;
+}
+
+// Subscribe to a video or screen track. Audio is auto-subscribed.
+message SubscribeTrack {
+  // Track id from `TrackAdded`.
+  uint32 track_id = 1;
+}
+
+// Stop receiving a video or screen track.
+message UnsubscribeTrack {
+  // Track id from `TrackAdded`.
+  uint32 track_id = 1;
+}
+
+// Ask the publisher for a video keyframe.
+message RequestKeyframe {
+  // Video or screen track id.
+  uint32 track_id = 1;
+}
+
+// Cap the quality the server forwards for a video track.
+message SetPreferredQuality {
+  // Video or screen track id.
+  uint32 track_id = 1;
+  // Maximum frame height in pixels.
+  uint32 max_height = 2;
+  // Maximum frames per second.
+  uint32 max_fps = 3;
+}
