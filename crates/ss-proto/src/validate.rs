@@ -1,8 +1,10 @@
-//! Checks on wire ids and permission bitsets.
+//! Conversions and checks on wire ids and permission bitsets.
 //!
-//! `ss_core::Id` and `ss_core::Permissions` do not exist yet (T-003). These
-//! helpers validate the protobuf forms those types will convert to: 16-byte
-//! ids and a `u64` of known permission bits.
+//! `ss-core` owns the domain types and known permission bits. These helpers
+//! convert their protobuf forms without changing the wire representation.
+
+use bytes::Bytes;
+use ss_core::{Id as CoreId, Permissions};
 
 use crate::v1::{Id, Role, SetChannelOverride};
 
@@ -10,59 +12,52 @@ use crate::v1::{Id, Role, SetChannelOverride};
 pub const ID_LEN: usize = 16;
 
 /// `ADMINISTRATOR`. Bypasses channel overrides.
-pub const PERMISSION_ADMINISTRATOR: u64 = 1 << 0;
+pub const PERMISSION_ADMINISTRATOR: u64 = Permissions::ADMINISTRATOR.bits();
 /// `MANAGE_SERVER`. Server settings, invites, and webhooks.
-pub const PERMISSION_MANAGE_SERVER: u64 = 1 << 1;
+pub const PERMISSION_MANAGE_SERVER: u64 = Permissions::MANAGE_SERVER.bits();
 /// `MANAGE_CHANNELS`. Create, update, delete, and move channels.
-pub const PERMISSION_MANAGE_CHANNELS: u64 = 1 << 2;
+pub const PERMISSION_MANAGE_CHANNELS: u64 = Permissions::MANAGE_CHANNELS.bits();
 /// `MANAGE_ROLES`. Edit roles below the actor's highest role.
-pub const PERMISSION_MANAGE_ROLES: u64 = 1 << 3;
+pub const PERMISSION_MANAGE_ROLES: u64 = Permissions::MANAGE_ROLES.bits();
 /// `MANAGE_MESSAGES`. Delete others' messages.
-pub const PERMISSION_MANAGE_MESSAGES: u64 = 1 << 4;
+pub const PERMISSION_MANAGE_MESSAGES: u64 = Permissions::MANAGE_MESSAGES.bits();
 /// `KICK_MEMBERS`.
-pub const PERMISSION_KICK_MEMBERS: u64 = 1 << 5;
+pub const PERMISSION_KICK_MEMBERS: u64 = Permissions::KICK_MEMBERS.bits();
 /// `BAN_MEMBERS`.
-pub const PERMISSION_BAN_MEMBERS: u64 = 1 << 6;
+pub const PERMISSION_BAN_MEMBERS: u64 = Permissions::BAN_MEMBERS.bits();
 /// `MUTE_MEMBERS`. Server mute and unmute.
-pub const PERMISSION_MUTE_MEMBERS: u64 = 1 << 7;
+pub const PERMISSION_MUTE_MEMBERS: u64 = Permissions::MUTE_MEMBERS.bits();
 /// `MOVE_MEMBERS`. Move users between voice channels.
-pub const PERMISSION_MOVE_MEMBERS: u64 = 1 << 8;
+pub const PERMISSION_MOVE_MEMBERS: u64 = Permissions::MOVE_MEMBERS.bits();
 /// `VIEW_CHANNEL`. See a channel and its history.
-pub const PERMISSION_VIEW_CHANNEL: u64 = 1 << 9;
+pub const PERMISSION_VIEW_CHANNEL: u64 = Permissions::VIEW_CHANNEL.bits();
 /// `SEND_MESSAGES`.
-pub const PERMISSION_SEND_MESSAGES: u64 = 1 << 10;
+pub const PERMISSION_SEND_MESSAGES: u64 = Permissions::SEND_MESSAGES.bits();
 /// `ATTACH_FILES`.
-pub const PERMISSION_ATTACH_FILES: u64 = 1 << 11;
+pub const PERMISSION_ATTACH_FILES: u64 = Permissions::ATTACH_FILES.bits();
 /// `MENTION_EVERYONE`.
-pub const PERMISSION_MENTION_EVERYONE: u64 = 1 << 12;
+pub const PERMISSION_MENTION_EVERYONE: u64 = Permissions::MENTION_EVERYONE.bits();
 /// `CONNECT`. Join a voice channel.
-pub const PERMISSION_CONNECT: u64 = 1 << 13;
+pub const PERMISSION_CONNECT: u64 = Permissions::CONNECT.bits();
 /// `SPEAK`. Send audio.
-pub const PERMISSION_SPEAK: u64 = 1 << 14;
+pub const PERMISSION_SPEAK: u64 = Permissions::SPEAK.bits();
 /// `STREAM`. Share a screen.
-pub const PERMISSION_STREAM: u64 = 1 << 15;
+pub const PERMISSION_STREAM: u64 = Permissions::STREAM.bits();
 /// `CREATE_INVITES`.
-pub const PERMISSION_CREATE_INVITES: u64 = 1 << 16;
+pub const PERMISSION_CREATE_INVITES: u64 = Permissions::CREATE_INVITES.bits();
 /// `VIEW_AUDIT_LOG`.
-pub const PERMISSION_VIEW_AUDIT_LOG: u64 = 1 << 17;
+pub const PERMISSION_VIEW_AUDIT_LOG: u64 = Permissions::VIEW_AUDIT_LOG.bits();
 /// `CHANGE_NICKNAME`.
-pub const PERMISSION_CHANGE_NICKNAME: u64 = 1 << 18;
+pub const PERMISSION_CHANGE_NICKNAME: u64 = Permissions::CHANGE_NICKNAME.bits();
 
 /// Every permission bit defined in `docs/plan/03-data-model.md`.
-pub const KNOWN_PERMISSION_BITS: u64 = (1 << 19) - 1;
+pub const KNOWN_PERMISSION_BITS: u64 = Permissions::all().bits();
 
 /// Default `@everyone` mask from `docs/plan/03-data-model.md`.
-pub const EVERYONE_PERMISSIONS: u64 = PERMISSION_VIEW_CHANNEL
-    | PERMISSION_SEND_MESSAGES
-    | PERMISSION_ATTACH_FILES
-    | PERMISSION_CONNECT
-    | PERMISSION_SPEAK
-    | PERMISSION_STREAM
-    | PERMISSION_CREATE_INVITES
-    | PERMISSION_CHANGE_NICKNAME;
+pub const EVERYONE_PERMISSIONS: u64 = Permissions::EVERYONE.bits();
 
 /// Default `Admin` mask from `docs/plan/03-data-model.md`.
-pub const ADMIN_PERMISSIONS: u64 = PERMISSION_ADMINISTRATOR;
+pub const ADMIN_PERMISSIONS: u64 = Permissions::ADMIN.bits();
 
 /// An id byte string was not a 16-byte ULID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -88,17 +83,34 @@ pub enum PermissionError {
     },
 }
 
+/// Converts a required wire id to the domain type, rejecting invalid lengths.
+pub fn id_from_bytes(id: &[u8]) -> Result<CoreId, IdError> {
+    CoreId::try_from(id).map_err(|_| IdError::InvalidLength { len: id.len() })
+}
+
+/// Converts a domain id to the 16-byte protobuf representation.
+pub fn id_to_bytes(id: CoreId) -> Bytes {
+    Bytes::copy_from_slice(&id.as_bytes())
+}
+
+/// Converts wire permission bits without truncating unknown flags.
+///
+/// Use [`Permissions::bits`] for the reverse conversion. This checks the mask;
+/// it does not resolve roles or expand `ADMINISTRATOR` to other permissions.
+pub const fn permissions_from_bits(bits: u64) -> Result<Permissions, PermissionError> {
+    match Permissions::from_bits(bits) {
+        Some(permissions) => Ok(permissions),
+        None => Err(PermissionError::UnknownBits { bits }),
+    }
+}
+
 /// Returns `Ok` when `id` is exactly [`ID_LEN`] bytes.
 ///
 /// # Errors
 ///
 /// Returns [`IdError::InvalidLength`] for any other length, including empty.
-pub const fn validate_id(id: &[u8]) -> Result<(), IdError> {
-    if id.len() == ID_LEN {
-        Ok(())
-    } else {
-        Err(IdError::InvalidLength { len: id.len() })
-    }
+pub fn validate_id(id: &[u8]) -> Result<(), IdError> {
+    id_from_bytes(id).map(|_| ())
 }
 
 /// Returns `Ok` when `id` is empty or exactly [`ID_LEN`] bytes.
@@ -109,7 +121,7 @@ pub const fn validate_id(id: &[u8]) -> Result<(), IdError> {
 /// # Errors
 ///
 /// Returns [`IdError::InvalidLength`] when the length is neither 0 nor 16.
-pub const fn validate_optional_id(id: &[u8]) -> Result<(), IdError> {
+pub fn validate_optional_id(id: &[u8]) -> Result<(), IdError> {
     if id.is_empty() {
         Ok(())
     } else {
@@ -135,10 +147,9 @@ where
 ///
 /// Returns [`PermissionError::UnknownBits`] when any bit above bit 18 is set.
 pub const fn validate_permissions(bits: u64) -> Result<(), PermissionError> {
-    if bits & !KNOWN_PERMISSION_BITS == 0 {
-        Ok(())
-    } else {
-        Err(PermissionError::UnknownBits { bits })
+    match permissions_from_bits(bits) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -150,6 +161,30 @@ impl Id {
     /// Returns [`IdError::InvalidLength`] when `value` is not 16 bytes.
     pub fn validate(&self) -> Result<(), IdError> {
         validate_id(&self.value)
+    }
+}
+
+impl From<CoreId> for Id {
+    fn from(id: CoreId) -> Self {
+        Self {
+            value: id_to_bytes(id),
+        }
+    }
+}
+
+impl TryFrom<&Id> for CoreId {
+    type Error = IdError;
+
+    fn try_from(id: &Id) -> Result<Self, Self::Error> {
+        id_from_bytes(&id.value)
+    }
+}
+
+impl TryFrom<Id> for CoreId {
+    type Error = IdError;
+
+    fn try_from(id: Id) -> Result<Self, Self::Error> {
+        Self::try_from(&id)
     }
 }
 

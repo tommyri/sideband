@@ -9,8 +9,8 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
 | [T-001](T-001-workspace-scaffolding.md) | Workspace scaffolding and CI | S | — | done |
-| [T-002](T-002-protocol-schema.md) | Protocol schema v1 and `ss-proto` | M | T-001 | todo |
-| [T-003](T-003-core-types.md) | `ss-core`: ids, permissions, config, errors | S | T-001 | todo |
+| [T-002](T-002-protocol-schema.md) | Protocol schema v1 and `ss-proto` | M | T-001 | done |
+| [T-003](T-003-core-types.md) | `ss-core`: ids, permissions, config, errors | S | T-001 | done |
 | [T-004](T-004-quic-transport.md) | `ss-net`: QUIC, TLS/TOFU, control stream, datagram header | M | T-002, T-003 | todo |
 
 ## Phase 1 — Voice spike
@@ -58,7 +58,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-044](T-044-channel-voice-ui.md) | Channel sidebar and voice UI | M | T-042, T-041 | todo |
 | [T-045](T-045-text-chat-ui.md) | Text chat UI | L | T-042, T-027, T-029 | todo |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045, T-028 | todo |
-| [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | todo |
+| [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | todo |
 | [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | todo |
 | [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | todo |

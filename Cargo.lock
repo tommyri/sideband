@@ -1467,7 +1467,11 @@ dependencies = [
 name = "ss-input"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "ss-core",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

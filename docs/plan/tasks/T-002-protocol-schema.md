@@ -43,12 +43,16 @@ Datagram header (T-004), any business logic.
 
 - `Id` and `Timestamp` exist in `common.proto`, but entity fields use raw
   `bytes` and `int64` as `02-protocol.md` requires. `validate_id` /
-  `validate_optional_id` check the 16-byte ULID length. There is no
-  conversion to `ss_core::Id`; that type does not exist yet.
+  `validate_optional_id` check the 16-byte ULID length through `ss_core::Id`.
+  Integration with T-003 added `id_from_bytes` / `id_to_bytes` and checked
+  conversions between `v1::Id` and `ss_core::Id`. Empty plain optional ids
+  still mean absent; empty required ids are rejected.
 - Permissions stay a `uint64` on the wire (`Role.permissions`, override
   `allow` / `deny`), with bit constants and `validate_permissions` in
-  `ss_proto::validate`. Unknown bits above bit 18 are rejected. Wiring to
-  `ss_core::Permissions` waits for T-003. A nested `Permissions` message
+  `ss_proto::validate`. Constants now derive from `ss_core::Permissions`;
+  `permissions_from_bits` and `validate_permissions` reject unknown bits
+  through `Permissions::from_bits`. The reverse conversion is `bits()`.
+  Validation does not expand `ADMINISTRATOR`. A nested `Permissions` message
   would have made the field length-delimited instead of a u64 scalar.
 - Proto3 enums reserve 0 as unspecified. Those numbers are not the SQL
   integer codes in `03-data-model.md`.

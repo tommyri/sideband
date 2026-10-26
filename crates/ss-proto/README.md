@@ -17,6 +17,8 @@ does not need a system `protoc`. Generated Rust is not committed.
 `ss-net`, `ss-audio`, `ss-input`, `ss-client-core`, `ss-server`, `ss-cli`.
 No sockets and no business logic.
 
-`ss_core::Id` and `ss_core::Permissions` are not wired here. Those types land
-in T-003. Until then, validate 16-byte ids and permission bitsets with
-`validate_id` and `validate_permissions`.
+`validate` converts raw wire ids with `id_from_bytes` / `id_to_bytes` and
+permission masks with `permissions_from_bits` / `Permissions::bits`.
+`v1::Id` also supports `From<ss_core::Id>` and checked conversion back.
+`validate_id` and `validate_permissions` use these core-backed conversions;
+unknown bits are rejected, and permission validation never expands roles.
