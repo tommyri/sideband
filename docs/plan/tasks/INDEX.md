@@ -11,7 +11,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-001](T-001-workspace-scaffolding.md) | Workspace scaffolding and CI | S | — | done |
 | [T-002](T-002-protocol-schema.md) | Protocol schema v1 and `ss-proto` | M | T-001 | done |
 | [T-003](T-003-core-types.md) | `ss-core`: ids, permissions, config, errors | S | T-001 | done |
-| [T-004](T-004-quic-transport.md) | `ss-net`: QUIC, TLS/TOFU, control stream, datagram header | M | T-002, T-003 | todo |
+| [T-004](T-004-quic-transport.md) | `ss-net`: QUIC, TLS/TOFU, control stream, datagram header | M | T-002, T-003 | done |
 
 ## Phase 1 — Voice spike
 

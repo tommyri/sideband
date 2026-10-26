@@ -36,11 +36,15 @@ proptest = "1"
 # Vendored protoc so ss-proto builds without a system protobuf compiler.
 protoc-bin-vendored = "3"
 # quinn 0.11 depends on rustls 0.23. rustls 0.24 is still a pre-release.
-quinn = "0.11"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = "0.14"
 rtrb = "0.4"
-rustls = "0.23"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+webpki-roots = "1"
 # SQLite only. Networked drivers and the `any` driver stay off.
 sqlx = { version = "0.9", default-features = false, features = [
   "migrate",

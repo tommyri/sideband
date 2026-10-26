@@ -23,7 +23,9 @@ One QUIC connection per client, ALPN `socialspeak/1`, default port UDP 443.
   connection. Framing is a big-endian `u32` length plus a protobuf envelope,
   capped at 1 MiB. See `docs/plan/02-protocol.md` §2–§3.
 - Audio rides QUIC datagrams. The server forwards the datagram bytes. It
-  does not decode them.
+  does not decode them. The 1–3 byte track id is canonical unsigned LEB128,
+  not a QUIC varint; see the exact encoding in protocol §4. Datagrams are
+  unreliable and unordered; sequence numbers let the client reorder them.
 - Screen video, when it exists, rides one unidirectional QUIC stream per
   group of pictures. See §5 of the protocol and the screen-share rules below.
 
@@ -181,6 +183,15 @@ and still recorded, so a surprise replacement is visible.
 
 ACME is an option in the server config for a host that has a domain name.
 The same certificate serves QUIC and HTTPS.
+
+T-004 stores the generated DER certificate and PKCS#8 private key together
+in `tls/identity.json`, installed atomically with owner-only permissions on
+Unix. A corrupt identity fails startup rather than silently changing the pin.
+Pins identify the exact leaf certificate DER by SHA-256 and are scoped to
+the original host and port. A matching explicit pin overrides CA/name checks,
+but TLS handshake signatures are always verified. Unpinned certificates use
+WebPKI with Mozilla roots; an accepted public certificate is recorded before
+returning the connection. Any later pin change needs explicit approval.
 
 ## D11 — Protobuf is the control API
 
