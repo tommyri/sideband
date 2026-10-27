@@ -61,6 +61,8 @@ message ClientEnvelope {
     SetPresence set_presence = 34;
     LeaveDm leave_dm = 35;
     AddDmMembers add_dm_members = 36;
+    CreateWebhook create_webhook = 37;
+    DeleteWebhook delete_webhook = 38;
   }
 }
 
@@ -121,6 +123,8 @@ message Ack {
     Role role = 7;
     // `UpdateProfile` returned this user.
     User user = 8;
+    // `CreateWebhook` created this webhook. The token is only here.
+    Webhook webhook = 9;
   }
 }
 

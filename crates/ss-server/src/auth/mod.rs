@@ -334,9 +334,14 @@ pub async fn create_owner_invite(pool: &db::Pool) -> Result<String, Error> {
     Ok(code)
 }
 
-/// A new unguessable invite code.
+/// A new unguessable invite or webhook token.
 pub(crate) fn invite_code() -> Result<String, Error> {
     token::owner_code()
+}
+
+/// Hex SHA-256 of a webhook token. The plaintext is not stored.
+pub(crate) fn hash_token(token: &str) -> String {
+    token::hash(token)
 }
 
 /// Replaces `username`'s password hash. The username match is case-insensitive.

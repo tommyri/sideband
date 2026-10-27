@@ -166,6 +166,7 @@ impl World {
                 channel_id: self.channel,
                 author_id: Some(self.author),
                 webhook_id: None,
+                webhook_name: None,
                 content: content.into(),
                 reply_to: None,
                 mentions: Vec::new(),

@@ -469,6 +469,7 @@ async fn keep_avatar_and_message(rig: &Rig, avatar: Id, linked: Id) {
             channel_id: rig.channel,
             author_id: Some(rig.owner),
             webhook_id: None,
+            webhook_name: None,
             content: "kept".into(),
             reply_to: None,
             mentions: Vec::new(),

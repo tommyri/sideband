@@ -139,6 +139,8 @@ pub struct Message {
     pub author_id: Option<Id>,
     /// Webhook that posted the message, when it was not a user.
     pub webhook_id: Option<Id>,
+    /// Name shown for a webhook post. Empty for a user message.
+    pub webhook_name: Option<String>,
     /// Message body.
     pub content: String,
     /// Message this one replies to.

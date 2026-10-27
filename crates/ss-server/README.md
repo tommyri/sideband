@@ -2,7 +2,7 @@
 
 The server owns control dispatch, voice membership (`voice::Registry`),
 opaque audio fan-out (`media::Router`), accounts (`auth`, `connection`),
-permissions (`perms`), channels, presence, voice, text, direct messages, link previews, attachments, moderation, and SQLite (`db`). Media is never decoded.
+permissions (`perms`), channels, presence, voice, text, direct messages, link previews, attachments, moderation, webhooks, and SQLite (`db`). Media is never decoded.
 
 `cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433` runs
 the T-016 voice spike. It accepts any Login/Register username and does not

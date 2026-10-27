@@ -182,6 +182,7 @@ fn message(sample: &Sample) -> Message {
         created_at: sample.time,
         edited_at: sample.flag.then_some(sample.time),
         webhook_id: sample.flag.then(|| sample.blob2.clone()),
+        webhook_name: sample.flag.then(|| sample.text.clone()),
     }
 }
 
@@ -236,7 +237,7 @@ fn read_state(sample: &Sample) -> ReadState {
 }
 
 fn ack_result(sample: &Sample) -> Option<ack::Result> {
-    match sample.pick % 8 {
+    match sample.pick % 9 {
         0 => None,
         1 => Some(ack::Result::Empty(ss_proto::v1::Empty {})),
         2 => Some(ack::Result::MessageId(sample.blob.clone())),
@@ -244,7 +245,15 @@ fn ack_result(sample: &Sample) -> Option<ack::Result> {
         4 => Some(ack::Result::Invite(invite(sample))),
         5 => Some(ack::Result::DmChannel(channel(sample))),
         6 => Some(ack::Result::Role(role(sample))),
-        _ => Some(ack::Result::User(user(sample))),
+        7 => Some(ack::Result::User(user(sample))),
+        _ => Some(ack::Result::Webhook(ss_proto::v1::Webhook {
+            id: sample.blob.clone(),
+            channel_id: sample.blob2.clone(),
+            name: sample.text.clone(),
+            token: sample.flag.then(|| sample.text2.clone()),
+            created_by: sample.blob.clone(),
+            created_at: sample.time,
+        })),
     }
 }
 
@@ -256,7 +265,7 @@ fn client_envelope(selector: u32, sample: &Sample) -> ClientEnvelope {
 }
 
 fn client_msg(selector: u32, sample: &Sample) -> Option<client_envelope::Msg> {
-    let which = selector % 36;
+    let which = selector % 38;
     if which == 0 {
         return None;
     }
@@ -420,6 +429,13 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
         35 => client_envelope::Msg::AddDmMembers(AddDmMembers {
             channel_id: sample.blob.clone(),
             user_ids: sample.blobs.clone(),
+        }),
+        36 => client_envelope::Msg::CreateWebhook(ss_proto::v1::CreateWebhook {
+            channel_id: sample.blob.clone(),
+            name: sample.text.clone(),
+        }),
+        37 => client_envelope::Msg::DeleteWebhook(ss_proto::v1::DeleteWebhook {
+            webhook_id: sample.blob.clone(),
         }),
         _ => client_envelope::Msg::SetPreferredQuality(SetPreferredQuality {
             track_id: sample.pick,

@@ -213,6 +213,9 @@ fn message_json(message: &v1::Message) -> Value {
     if let Some(webhook) = &message.webhook_id {
         value.insert("webhookId".into(), json!(b64(webhook)));
     }
+    if let Some(name) = &message.webhook_name {
+        value.insert("webhookName".into(), json!(name));
+    }
     Value::Object(value)
 }
 
