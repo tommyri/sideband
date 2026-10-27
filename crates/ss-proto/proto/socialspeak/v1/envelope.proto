@@ -59,6 +59,8 @@ message ClientEnvelope {
     RequestKeyframe request_keyframe = 32;
     SetPreferredQuality set_preferred_quality = 33;
     SetPresence set_presence = 34;
+    LeaveDm leave_dm = 35;
+    AddDmMembers add_dm_members = 36;
   }
 }
 

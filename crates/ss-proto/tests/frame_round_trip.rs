@@ -7,19 +7,19 @@ use proptest::prelude::*;
 use ss_proto::{
     decode, encode, read_frame,
     v1::{
-        Ack, Attachment, BanUser, Banned, Channel, ChannelCreated, ChannelDeleted, ChannelUpdated,
-        ClientEnvelope, Codec, CreateChannel, CreateDm, CreateInvite, CreateRole, DeleteChannel,
-        DeleteMessage, DeleteRole, EditMessage, Error, Hello, Invite, InviteCreated, InviteRevoked,
-        JoinVoice, KickUser, Kicked, LeaveVoice, LinkPreview, Login, MarkRead, Member,
-        MemberJoined, MemberLeft, MemberRolesUpdated, MemberUpdated, Message, MessageCreated,
-        MessageDeleted, MessageUpdated, MoveChannel, MoveUser, Ping, Pong, Presence,
-        PresenceUpdated, ReadState, ReadStateUpdated, Register, RevokeInvite, Role, RoleCreated,
-        RoleDeleted, RoleUpdated, SendMessage, ServerEnvelope, ServerInfo, ServerMuteUser,
-        ServerNotice, SetChannelOverride, SetPreferredQuality, SetPresence, SetUserRoles,
-        SetVoiceState, Snapshot, SubscribeTrack, Track, TrackAdded, TrackRemoved, Typing,
-        TypingStarted, UnbanUser, UnsubscribeTrack, UpdateChannel, UpdateProfile, UpdateRole, User,
-        VoiceSettings, VoiceState, VoiceStateUpdated, Welcome, ack, client_envelope, hello,
-        server_envelope,
+        Ack, AddDmMembers, Attachment, BanUser, Banned, Channel, ChannelCreated, ChannelDeleted,
+        ChannelUpdated, ClientEnvelope, Codec, CreateChannel, CreateDm, CreateInvite, CreateRole,
+        DeleteChannel, DeleteMessage, DeleteRole, EditMessage, Error, Hello, Invite, InviteCreated,
+        InviteRevoked, JoinVoice, KickUser, Kicked, LeaveDm, LeaveVoice, LinkPreview, Login,
+        MarkRead, Member, MemberJoined, MemberLeft, MemberRolesUpdated, MemberUpdated, Message,
+        MessageCreated, MessageDeleted, MessageUpdated, MoveChannel, MoveUser, Ping, Pong,
+        Presence, PresenceUpdated, ReadState, ReadStateUpdated, Register, RevokeInvite, Role,
+        RoleCreated, RoleDeleted, RoleUpdated, SendMessage, ServerEnvelope, ServerInfo,
+        ServerMuteUser, ServerNotice, SetChannelOverride, SetPreferredQuality, SetPresence,
+        SetUserRoles, SetVoiceState, Snapshot, SubscribeTrack, Track, TrackAdded, TrackRemoved,
+        Typing, TypingStarted, UnbanUser, UnsubscribeTrack, UpdateChannel, UpdateProfile,
+        UpdateRole, User, VoiceSettings, VoiceState, VoiceStateUpdated, Welcome, ack,
+        client_envelope, hello, server_envelope,
     },
 };
 
@@ -112,6 +112,7 @@ fn channel(sample: &Sample) -> Channel {
         created_by: sample.flag.then(|| sample.blob2.clone()),
         created_at: sample.time,
         member_ids: sample.blobs.clone(),
+        last_message_id: sample.flag.then(|| sample.blob.clone()),
     }
 }
 
@@ -255,7 +256,7 @@ fn client_envelope(selector: u32, sample: &Sample) -> ClientEnvelope {
 }
 
 fn client_msg(selector: u32, sample: &Sample) -> Option<client_envelope::Msg> {
-    let which = selector % 34;
+    let which = selector % 36;
     if which == 0 {
         return None;
     }
@@ -412,6 +413,13 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
         33 => client_envelope::Msg::SetPresence(SetPresence {
             status: code(sample.pick, 5),
             activity: sample.text.clone(),
+        }),
+        34 => client_envelope::Msg::LeaveDm(LeaveDm {
+            channel_id: sample.blob.clone(),
+        }),
+        35 => client_envelope::Msg::AddDmMembers(AddDmMembers {
+            channel_id: sample.blob.clone(),
+            user_ids: sample.blobs.clone(),
         }),
         _ => client_envelope::Msg::SetPreferredQuality(SetPreferredQuality {
             track_id: sample.pick,

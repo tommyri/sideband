@@ -210,7 +210,7 @@ impl Channels {
                     .iter()
                     .find(|channel| channel.id == *doomed_id)
                     .ok_or(Error::NotFound("channel not found"))?;
-                wires.push(snapshot::wire_channel(channel, &[])?);
+                wires.push(snapshot::wire_channel(channel, &[], None)?);
             }
             let now = Timestamp::now();
             for doomed_id in &doomed {
@@ -303,7 +303,7 @@ fn reply_channel(
     channel: &db::Channel,
     created: bool,
 ) -> Result<CommandReply, Error> {
-    let wire = snapshot::wire_channel(channel, &[])?;
+    let wire = snapshot::wire_channel(channel, &[], None)?;
     let event = if created {
         server_envelope::Msg::ChannelCreated(v1::ChannelCreated {
             channel: Some(wire),

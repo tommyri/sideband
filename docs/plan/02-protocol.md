@@ -61,9 +61,11 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `DeleteMessage` | `message_id` | |
 | `Typing` | `channel_id` | Rate-limited client side (1 per 5 s) |
 | `MarkRead` | `channel_id`, `message_id` | |
-| `CreateDm` | `user_ids[]` | Returns existing DM if one exists for the same set |
+| `CreateDm` | `user_ids[]` | One other user reuses that pair's DM. Two to nine others open a new group DM |
+| `LeaveDm` | `channel_id` | Leave a group DM |
+| `AddDmMembers` | `channel_id`, `user_ids[]` | Group-DM creator adds members, up to nine others in total |
 | `CreateChannel` | `kind`, `name`, `parent_id`, `position`, `topic`, `VoiceSettings` | |
-| `UpdateChannel` | `channel_id`, optional fields | |
+| `UpdateChannel` | `channel_id`, optional fields | Any group-DM member may change the name |
 | `DeleteChannel` | `channel_id` | |
 | `MoveChannel` | `channel_id`, `parent_id`, `position` | |
 | `CreateInvite` | `max_uses`, `expires_at` | |
@@ -86,7 +88,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list |
+| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id |
 | `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, … }` | |
 | `Error` | `request_id`, `code` (enum), `message` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION` |
 | `Pong` | `sent_at`, `server_time` | |
