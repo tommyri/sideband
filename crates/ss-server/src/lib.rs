@@ -3,7 +3,7 @@
 //! [`Server`] is the T-016 spike: it accepts any Login/Register username and
 //! does not read [`db`]. [`connection::Server`] is the authenticated accept
 //! loop. Accounts, invites, and sessions live in [`auth`]. Role checks and
-//! role commands live in [`perms`] and [`handlers`].
+//! role commands live in [`perms`] and [`handlers`]. [`snapshot`] fills `Welcome`.
 
 pub mod auth;
 pub mod connection;
@@ -11,6 +11,7 @@ pub mod db;
 pub mod handlers;
 pub mod media;
 pub mod perms;
+pub mod snapshot;
 pub mod voice;
 
 use prost::Message;

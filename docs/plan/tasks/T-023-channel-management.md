@@ -1,6 +1,6 @@
 # T-023 — Channel tree management
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-021, T-022
@@ -36,3 +36,9 @@ DMs (T-028), messages.
   `general` text, `General` voice created by migration or first start).
 
 ## Notes from implementation
+
+- The migration does not seed channels (`0001_init.sql` stays as shipped). The first `Welcome` creates one `General` category, a `general` text channel, and a `General` voice channel when the guild has never had a channel. Later deletes do not bring them back.
+- Sibling positions are rewritten to `0..n-1` per parent. `UpdateChannel` leaves the parent unchanged when it is absent. `MoveChannel` with no parent moves the channel to the root. Categories cannot be nested, and only a category can be a parent.
+- Delete soft-deletes the channel and its descendants. Messages stay in the table. There is no voice-session store until T-025, so delete does not emit `VoiceStateUpdated`.
+- The snapshot lists visible guild channels, roles, members, the user's read cursors, and that user's direct messages. Presence is offline until T-024. Voice states and tracks are empty until T-025. Mention counts are 0.
+- `snapshot::delivers` is the filter other sessions must use. The actor still receives the events for their own command, including a delete of a channel that is no longer visible. A member without `VIEW_CHANNEL` is omitted from the snapshot and from `delivers`.

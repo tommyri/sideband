@@ -367,7 +367,8 @@ async fn authenticated_hello_answers_ping_and_rejects_other_commands() {
     assert_eq!(user.username, "ada");
     assert_eq!(user.id.len(), 16);
     assert_eq!(welcome.resume_token.len(), 43);
-    assert_eq!(welcome.snapshot, Some(v1::Snapshot::default()));
+    let snapshot = welcome.snapshot.expect("snapshot");
+    assert_eq!(snapshot.channels.len(), 3);
     assert_eq!(welcome.server_info.unwrap().name, "SocialSpeak");
 
     let pong = command(&mut stream, 2, Msg::Ping(v1::Ping { sent_at: 42 })).await;

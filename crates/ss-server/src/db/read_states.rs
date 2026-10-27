@@ -61,6 +61,20 @@ impl ReadStateRow {
     }
 }
 
+/// Read cursors for one user.
+pub async fn list_for_user(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+) -> Result<Vec<ReadState>, Error> {
+    let rows = db(sqlx::query_as::<_, ReadStateRow>(
+        "SELECT user_id, channel_id, last_read_message_id FROM read_states WHERE user_id = ? ORDER BY channel_id",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *conn)
+    .await)?;
+    Ok(rows.into_iter().map(ReadStateRow::into_state).collect())
+}
+
 /// Deletes a read cursor.
 pub async fn delete(conn: &mut SqliteConnection, user_id: Id, channel_id: Id) -> Result<(), Error> {
     changed(db(sqlx::query(
