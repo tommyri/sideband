@@ -46,6 +46,11 @@ enum Command {
         #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
+    /// Certificate maintenance.
+    Tls {
+        #[command(subcommand)]
+        action: TlsAction,
+    },
     /// Print the certificate fingerprint.
     Fingerprint {
         /// Directory containing the TLS identity.
@@ -74,6 +79,16 @@ enum Command {
     Role {
         #[command(subcommand)]
         action: RoleAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TlsAction {
+    /// Replace the self-signed identity. Connected clients re-prompt.
+    Rotate {
+        /// Directory containing `config.toml` and `tls/identity.json`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
     },
 }
 
@@ -163,6 +178,9 @@ async fn main() -> anyhow::Result<()> {
             println!("config ok");
         }
         Some(Command::Fingerprint { data_dir }) => ss_server::serve::fingerprint(data_dir).await?,
+        Some(Command::Tls {
+            action: TlsAction::Rotate { data_dir },
+        }) => ss_server::serve::rotate(data_dir).await?,
         Some(Command::Backup { path, data_dir }) => {
             ss_server::serve::backup(data_dir, path).await?;
         }
@@ -208,7 +226,8 @@ async fn main() -> anyhow::Result<()> {
                     | Command::Run { .. }
                     | Command::CheckConfig { .. }
                     | Command::Fingerprint { .. }
-                    | Command::Backup { .. },
+                    | Command::Backup { .. }
+                    | Command::Tls { .. },
                 )
                 | None => serve(args.data_dir, args.bind, args.check_migrations).await?,
             }

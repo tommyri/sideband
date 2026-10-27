@@ -2,7 +2,12 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use arc_swap::ArcSwap;
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -58,17 +63,93 @@ pub struct TlsConfig {
 
 impl TlsConfig {
     pub(crate) fn server_config(self) -> Result<quinn::ServerConfig, Error> {
-        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])?
-        .with_no_client_auth()
-        .with_single_cert(self.certificates, self.private_key)?;
-        tls.alpn_protocols = vec![ALPN.to_vec()];
-        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
-            .map_err(|_| Error::Config("TLS provider lacks QUIC cipher"))?;
-        Ok(quinn::ServerConfig::with_crypto(Arc::new(crypto)))
+        let resolver = Arc::new(CertResolver::new(self)?);
+        server_config(resolver)
     }
+}
+
+/// Leaf certificate swapped in place. The QUIC socket keeps this resolver.
+#[derive(Debug)]
+pub struct CertResolver {
+    current: ArcSwap<CertifiedKey>,
+}
+
+impl CertResolver {
+    /// Installs the leaf. An empty chain is rejected.
+    pub fn new(tls: TlsConfig) -> Result<Self, Error> {
+        Ok(Self {
+            current: ArcSwap::new(Arc::new(certified(tls)?)),
+        })
+    }
+
+    /// Replaces the certificate future handshakes present. Open connections stay up.
+    pub fn replace(&self, tls: TlsConfig) -> Result<Fingerprint, Error> {
+        let fingerprint = leaf_fingerprint(&tls)?;
+        self.current.store(Arc::new(certified(tls)?));
+        Ok(fingerprint)
+    }
+
+    /// SHA-256 of the leaf currently offered to new handshakes.
+    #[must_use]
+    pub fn fingerprint(&self) -> Fingerprint {
+        let current = self.current.load();
+        let der = current
+            .cert
+            .first()
+            .map(std::convert::AsRef::as_ref)
+            .unwrap_or_default();
+        fingerprint(der)
+    }
+}
+
+impl ResolvesServerCert for CertResolver {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.current.load_full())
+    }
+}
+
+fn certified(tls: TlsConfig) -> Result<CertifiedKey, Error> {
+    if tls.certificates.is_empty() {
+        return Err(Error::Config("certificate chain is empty"));
+    }
+    let provider = rustls::crypto::ring::default_provider();
+    CertifiedKey::from_der(tls.certificates, tls.private_key, &provider).map_err(Error::from)
+}
+
+fn leaf_fingerprint(tls: &TlsConfig) -> Result<Fingerprint, Error> {
+    let leaf = tls
+        .certificates
+        .first()
+        .ok_or(Error::Config("certificate chain is empty"))?;
+    Ok(fingerprint(leaf.as_ref()))
+}
+
+pub(crate) fn server_config(
+    resolver: Arc<dyn ResolvesServerCert>,
+) -> Result<quinn::ServerConfig, Error> {
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_no_client_auth()
+    .with_cert_resolver(resolver);
+    tls.alpn_protocols = vec![ALPN.to_vec()];
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
+        .map_err(|_| Error::Config("TLS provider lacks QUIC cipher"))?;
+    Ok(quinn::ServerConfig::with_crypto(Arc::new(crypto)))
+}
+
+/// Reads `tls/identity.json` without generating a replacement.
+pub fn read_identity(path: &Path) -> Result<TlsConfig, Error> {
+    identity_from_bytes(&std::fs::read(path)?)
+}
+
+fn identity_from_bytes(bytes: &[u8]) -> Result<TlsConfig, Error> {
+    let identity: Identity = serde_json::from_slice(bytes)?;
+    Ok(TlsConfig {
+        certificates: vec![CertificateDer::from(identity.certificate)],
+        private_key: PrivatePkcs8KeyDer::from(identity.key_pkcs8).into(),
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,11 +186,7 @@ pub async fn generate_self_signed(data_dir: impl AsRef<Path>) -> Result<TlsConfi
             }
             Err(error) => return Err(error.into()),
         };
-        let identity: Identity = serde_json::from_slice(&bytes)?;
-        let config = TlsConfig {
-            certificates: vec![CertificateDer::from(identity.certificate)],
-            private_key: PrivatePkcs8KeyDer::from(identity.key_pkcs8).into(),
-        };
+        let config = identity_from_bytes(&bytes)?;
         // Validate persisted pairs before returning them, without changing the file.
         let _ = TlsConfig {
             certificates: config.certificates.clone(),

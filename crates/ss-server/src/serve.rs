@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use metrics_exporter_prometheus::PrometheusBuilder;
-use ss_net::{server::Endpoint, tls};
+use ss_net::server::Endpoint;
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tracing_subscriber::{EnvFilter, fmt::writer::MakeWriterExt};
 
@@ -25,7 +25,7 @@ pub async fn init(data_dir: PathBuf) -> Result<(), Error> {
     let pool = Pool::open(data_dir.join("socialspeak.db")).await?;
     apply_settings(&pool, &config).await?;
     print_invite(&pool).await?;
-    let fingerprint = install_identity(&data_dir).await?;
+    let fingerprint = crate::tls::self_signed_fingerprint(&data_dir).await?;
     println!("fingerprint: {fingerprint}");
     println!("config: {}", path.display());
     Ok(())
@@ -39,7 +39,25 @@ pub fn check(data_dir: &std::path::Path) -> Result<Config, Error> {
 /// Prints the certificate fingerprint, creating a self-signed identity when
 /// the data directory does not have one yet.
 pub async fn fingerprint(data_dir: PathBuf) -> Result<(), Error> {
-    let fingerprint = install_identity(&data_dir).await?;
+    let text = if config::path_in(&data_dir).is_file() {
+        let config = config::load(&data_dir)?;
+        crate::tls::current_fingerprint(&config, &data_dir).await?
+    } else {
+        crate::tls::self_signed_fingerprint(&data_dir).await?
+    };
+    println!("fingerprint: {text}");
+    Ok(())
+}
+
+/// Replaces the self-signed identity. Clients with the old pin re-prompt.
+pub async fn rotate(data_dir: PathBuf) -> Result<(), Error> {
+    if config::path_in(&data_dir).is_file() {
+        let config = config::load(&data_dir)?;
+        if config.tls.mode != TlsMode::SelfSigned {
+            return Err(Error::Rotate);
+        }
+    }
+    let fingerprint = crate::tls::rotate_self_signed(&data_dir).await?;
     println!("fingerprint: {fingerprint}");
     Ok(())
 }
@@ -60,9 +78,6 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     config::ensure_file(&data_dir)?;
     let config = config::load(&data_dir)?;
     let _logs = init_logging(&data_dir, config.logging.json);
-    if config.tls.mode != TlsMode::SelfSigned {
-        return Err(Error::TlsMode);
-    }
     let metrics = PrometheusBuilder::new()
         .install_recorder()
         .map_err(|_| Error::Metrics)?;
@@ -70,11 +85,10 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     apply_settings(&pool, &config).await?;
     print_invite(&pool).await?;
     let server = open_server(&pool, &config).await?;
-    let identity = tls::generate_self_signed(&data_dir).await?;
-    let leaf = identity.certificates.first().ok_or(Error::Identity)?;
-    let fingerprint = tls::fingerprint(leaf.as_ref());
+    let identity = crate::tls::prepare(&config, &data_dir).await?;
+    let fingerprint = identity.fingerprint_text();
     println!("fingerprint: {fingerprint}");
-    let endpoint = Endpoint::bind(config.server.bind_quic, identity)?;
+    let endpoint = Endpoint::bind_resolver(config.server.bind_quic, identity.resolver())?;
     let public = TcpListener::bind(config.server.bind_http).await?;
     let internal = TcpListener::bind(config.internal.bind).await?;
     println!(
@@ -90,7 +104,24 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     );
     let (stop_tx, stop_rx) = watch::channel(false);
     let quic = tokio::spawn(Arc::clone(&server).run(endpoint.clone()));
-    let site = tokio::spawn(listen(public, server.public_routes(), stop_rx.clone()));
+    let site = tokio::spawn(listen(
+        public,
+        server
+            .public_routes()
+            .merge(http::info::router(
+                Arc::clone(&pool),
+                identity.fingerprint_slot(),
+            ))
+            .merge(identity.challenge_routes()),
+        stop_rx.clone(),
+    ));
+    let redirect = match identity.redirect() {
+        Some((addr, app)) => {
+            let listener = TcpListener::bind(addr).await?;
+            Some(tokio::spawn(listen(listener, app, stop_rx.clone())))
+        }
+        None => None,
+    };
     let probe = tokio::spawn(listen(
         internal,
         http::internal::router(Arc::clone(&server), metrics),
@@ -103,7 +134,11 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     let _ = timeout(Duration::from_millis(1500), quic).await;
     let _ = timeout(Duration::from_millis(200), site).await;
     let _ = timeout(Duration::from_millis(200), probe).await;
+    if let Some(task) = redirect {
+        let _ = timeout(Duration::from_millis(200), task).await;
+    }
     pool.checkpoint().await?;
+    drop(identity);
     tracing::info!("server stopped");
     Ok(())
 }
@@ -142,12 +177,6 @@ async fn apply_settings(pool: &Pool, config: &Config) -> Result<(), Error> {
     settings::set(&mut conn, "link_preview_allow", &config.previews.allow).await?;
     settings::set(&mut conn, "link_preview_deny", &config.previews.deny).await?;
     Ok(())
-}
-
-async fn install_identity(data_dir: &std::path::Path) -> Result<String, Error> {
-    let identity = tls::generate_self_signed(data_dir).await?;
-    let leaf = identity.certificates.first().ok_or(Error::Identity)?;
-    Ok(tls::fingerprint(leaf.as_ref()).to_string())
 }
 
 /// File rotation under `logs/` plus stderr. The guard flushes on drop.
@@ -226,12 +255,12 @@ pub enum Error {
     /// The tar could not be written.
     #[error(transparent)]
     Backup(#[from] backup::Error),
-    /// The identity had no leaf certificate.
-    #[error("tls identity has no certificate")]
-    Identity,
-    /// `acme` and `files` wait for the TLS task.
-    #[error("only tls mode self-signed can listen")]
-    TlsMode,
+    /// The certificate could not be loaded.
+    #[error(transparent)]
+    Tls(#[from] crate::tls::Error),
+    /// `tls rotate` only regenerates a self-signed identity.
+    #[error("replace the certificate files; tls rotate only regenerates a self-signed identity")]
+    Rotate,
     /// A recorder was already installed in this process.
     #[error("metrics recorder is already installed")]
     Metrics,

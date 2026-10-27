@@ -20,6 +20,7 @@ base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
 figment.workspace = true
+futures.workspace = true
 getrandom.workspace = true
 governor.workspace = true
 hmac.workspace = true
@@ -27,10 +28,14 @@ image.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 infer.workspace = true
+notify.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true
 reqwest.workspace = true
+rustls.workspace = true
+rustls-acme.workspace = true
+rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -45,6 +50,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
+rcgen.workspace = true
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }
 

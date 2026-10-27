@@ -24,6 +24,7 @@ pub mod registry;
 pub mod serve;
 pub mod snapshot;
 pub mod storage;
+pub mod tls;
 pub mod voice;
 
 use prost::Message;

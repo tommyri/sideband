@@ -1,6 +1,11 @@
 //! Server endpoint configuration; authentication belongs to `ss-server`.
 
-use crate::{Connection, Error, tls::TlsConfig};
+use rustls::server::ResolvesServerCert;
+
+use crate::{
+    Connection, Error,
+    tls::{CertResolver, TlsConfig},
+};
 use std::{net::SocketAddr, sync::Arc};
 
 /// Bound UDP endpoint, normally on port 443.
@@ -37,7 +42,16 @@ impl Incoming {
 impl Endpoint {
     /// Binds with SocialSpeak ALPN, datagrams, and future video stream capacity.
     pub fn bind(addr: SocketAddr, tls: TlsConfig) -> Result<Self, Error> {
-        let mut config = tls.server_config()?;
+        Self::bind_resolver(addr, Arc::new(CertResolver::new(tls)?))
+    }
+
+    /// Binds with a resolver shared with later certificate reloads.
+    /// [`CertResolver::replace`] updates future handshakes on this socket.
+    pub fn bind_resolver(
+        addr: SocketAddr,
+        resolver: Arc<dyn ResolvesServerCert>,
+    ) -> Result<Self, Error> {
+        let mut config = crate::tls::server_config(resolver)?;
         config.transport_config(Arc::new(crate::transport_config(false)));
         Ok(Self(crate::bind_endpoint(addr, Some(config))?))
     }
