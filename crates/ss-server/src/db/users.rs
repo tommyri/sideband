@@ -124,6 +124,13 @@ pub async fn set_disabled(
     .await)?)
 }
 
+/// Number of accounts, including disabled ones.
+pub async fn count(conn: &mut SqliteConnection) -> Result<i64, Error> {
+    db(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut *conn)
+        .await)
+}
+
 /// Deletes a user who has no dependent rows.
 pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
     changed(db(sqlx::query("DELETE FROM users WHERE id = ?")
@@ -162,8 +169,8 @@ impl UserRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        NewUser, UserProfile, delete, get, get_by_username, insert, set_disabled, set_password,
-        set_profile,
+        NewUser, UserProfile, count, delete, get, get_by_username, insert, set_disabled,
+        set_password, set_profile,
     };
     use crate::db::{Error, testing};
 
@@ -232,7 +239,9 @@ mod tests {
         )
         .await;
         assert!(matches!(duplicate, Err(Error::Conflict)));
+        assert_eq!(count(&mut conn).await.unwrap(), 1);
         delete(&mut conn, created.id).await.unwrap();
+        assert_eq!(count(&mut conn).await.unwrap(), 0);
         assert!(get(&mut conn, created.id).await.unwrap().is_none());
         assert!(matches!(
             delete(&mut conn, created.id).await,

@@ -64,6 +64,24 @@ pub async fn get_by_code(conn: &mut SqliteConnection, code: &str) -> Result<Opti
     Ok(row.map(InviteRow::into_invite))
 }
 
+/// Adds one to `uses` when the invite is still open.
+///
+/// A revoked, expired, or exhausted invite is left unchanged and yields `false`.
+pub async fn consume(conn: &mut SqliteConnection, id: Id, now: Timestamp) -> Result<bool, Error> {
+    let result = db(sqlx::query(
+        "UPDATE invites SET uses = uses + 1
+         WHERE id = ?
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+           AND (max_uses IS NULL OR uses < max_uses)",
+    )
+    .bind(id)
+    .bind(now.as_millis())
+    .execute(&mut *conn)
+    .await)?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Adds one to `uses`.
 pub async fn increment_uses(conn: &mut SqliteConnection, id: Id) -> Result<Invite, Error> {
     changed(db(sqlx::query(
@@ -127,7 +145,7 @@ impl InviteRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{NewInvite, delete, get_by_code, increment_uses, insert, revoke};
+    use super::{NewInvite, consume, delete, get_by_code, increment_uses, insert, revoke};
     use crate::db::testing;
 
     #[tokio::test]
@@ -165,5 +183,54 @@ mod tests {
         );
         delete(&mut conn, created.id).await.unwrap();
         assert!(get_by_code(&mut conn, "welcome").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn consume_stops_at_the_cap_and_after_revocation_or_expiry() {
+        let db = testing::pool().await;
+        let mut conn = db.write().await;
+        let user = testing::user(&mut conn, 1).await;
+        let now = ss_core::Timestamp::from_millis(1_000);
+        let open = insert(
+            &mut conn,
+            NewInvite {
+                id: testing::id(2),
+                code: "once".into(),
+                created_by: user.id,
+                max_uses: Some(1),
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(consume(&mut conn, open.id, now).await.unwrap());
+        assert!(!consume(&mut conn, open.id, now).await.unwrap());
+        let expired = insert(
+            &mut conn,
+            NewInvite {
+                id: testing::id(3),
+                code: "old".into(),
+                created_by: user.id,
+                max_uses: None,
+                expires_at: Some(ss_core::Timestamp::from_millis(10)),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!consume(&mut conn, expired.id, now).await.unwrap());
+        let revoked = insert(
+            &mut conn,
+            NewInvite {
+                id: testing::id(4),
+                code: "gone".into(),
+                created_by: user.id,
+                max_uses: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        revoke(&mut conn, revoked.id, now).await.unwrap();
+        assert!(!consume(&mut conn, revoked.id, now).await.unwrap());
     }
 }

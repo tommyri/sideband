@@ -1,8 +1,11 @@
-//! Voice spike plus the phase-2 SQLite schema.
+//! Voice spike, SQLite schema, and authenticated sessions.
 //!
-//! QUIC control, connection membership, and opaque Opus forwarding still do
-//! not read the database. Accounts and permissions use [`db`] from here on.
+//! [`Server`] is the T-016 spike: it accepts any Login/Register username and
+//! does not read [`db`]. [`connection::Server`] is the authenticated accept
+//! loop. Accounts, invites, and sessions live in [`auth`].
 
+pub mod auth;
+pub mod connection;
 pub mod db;
 pub mod media;
 pub mod voice;

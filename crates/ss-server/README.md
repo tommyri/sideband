@@ -1,19 +1,21 @@
 # ss-server
 
 The server owns control dispatch, voice membership (`voice::Registry`),
-opaque audio fan-out (`media::Router`), and the SQLite schema in `db`.
-Media payloads are never decoded. The voice spike does not read accounts.
-T-016 is an unauthenticated spike: any Login/Register username gets a fresh
-user and an empty snapshot. Channel ids are arbitrary 16-byte ids; accounts,
-persistence, permissions, and session resumption arrive in phase 2.
+opaque audio fan-out (`media::Router`), accounts (`auth`, `connection`),
+and the SQLite schema in `db`. Media payloads are never decoded.
 
-Run `cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433`.
-The first run creates `./data/socialspeak.db` and applies the embedded
-migrations. `--check-migrations` exits without listening when that file
-already matches the binary.
-The first run creates a persistent TLS identity and prints its fingerprint.
-Ctrl-C closes connections and reports media counters. The spike uses one
-Tokio runtime thread; blocking identity-file work is offloaded by ss-net.
+`cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433` runs
+the T-016 voice spike. It accepts any Login/Register username and does not
+read accounts. A first start with zero users prints a one-time owner invite.
+`ss-server invite create --owner --data-dir ./data` rotates that code until
+someone registers. `ss-server user set-password` replaces a password hash.
+`--check-migrations` exits without listening. Authenticated Hello is
+`connection::Server`.
+
+The first run creates `./data/socialspeak.db` and a persistent TLS identity,
+and prints its fingerprint. Ctrl-C closes connections and reports media
+counters. The spike uses one Tokio runtime thread. Password hashing and
+identity-file work are offloaded.
 
 One audio track is assigned per joined connection. Joins announce existing
 tracks to the newcomer and its track to all channel members. Leave, switch,
@@ -29,8 +31,6 @@ drops. It drops new packets when Quinn's bounded send queue is full.
 `cargo test -p ss-server` covers real loopback QUIC clients and zero steady
 forwarding allocations. Run the ignored `sustained_twenty_clients` test with
 `--release -- --ignored --nocapture` for a 30-second, 20-client load check.
-Release builds use thin LTO and one codegen unit. The measured server CPU was
-5.08% of one core on an M4 Pro with an 8192-byte loopback PMTU.
 To target a separate loopback server for CPU measurement, set `SS_LOAD_PORT`
 and `SS_LOAD_FINGERPRINT` to its printed port and SHA-256 certificate pin.
 
