@@ -7,8 +7,10 @@ These apply to every task. Sub-agents: read before writing code.
 - Edition 2024, stable toolchain pinned in `rust-toolchain.toml`. MSRV = pinned.
 - Workspace-level lints in root `Cargo.toml`: `clippy::all`, `clippy::pedantic`
   (allow a documented short list), `unsafe_code = "deny"` everywhere except
-  `ss-input` and the platform modules of `ss-audio`, which `#![allow]` it with
-  a `// SAFETY:` comment on every block.
+  `ss-input`, the platform modules of `ss-audio`, and its private
+  `codec::native` Opus bridge, which locally allow it with a `// SAFETY:`
+  comment on every block. The codec exception covers missing decoder CTLs,
+  packet framing validation, and DRED offsets; native state never escapes.
 - Errors: `thiserror` enums per crate boundary; `anyhow` only in binaries
   (`ss-server`, `ss-cli`, `src-tauri`). Never `unwrap()`/`expect()` outside
   tests except for invariants with a comment explaining why they hold.

@@ -27,10 +27,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
       - uses: taiki-e/install-action@just
       - name: just check
         run: just check
+      - name: Optional Opus DRED
+        run: cargo test -p ss-audio --features dred
+      - name: Optional Opus DRED lints
+        run: cargo clippy -p ss-audio --all-targets --features dred -- -D warnings
+      - name: Opus frame budget
+        run: cargo bench -p ss-audio --bench codec
       - name: Dependency graph
         if: runner.os == 'Linux'
         run: just check-deps

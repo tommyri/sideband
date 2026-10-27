@@ -5,8 +5,18 @@ encode and decode, the jitter buffer, the mixer, and the optional
 processing chain (echo cancellation, noise suppression, gain control).
 
 Callbacks that run on the audio thread do not allocate, lock, log, or
-await. `unsafe` is allowed only in `platform`, and every block needs a
-`// SAFETY:` comment.
+await. `unsafe` is confined to `platform` and the private `codec::native` bridge;
+every block needs a `// SAFETY:` comment. The latter owns native decoder/DRED
+state and supplies controls missing from the safe binding.
+
+`codec` provides profile-configured 48 kHz encoders, stream decoders, and
+packet framing metadata. Setup allocates; encode/decode reuse buffers.
+Deep PLC is compiled through `opusic-c/osce` and decoder complexity 10;
+bandwidth extension is explicitly off. Optional `dred` compiles redundancy
+support, disabled at runtime until configured on the encoder.
+
+Run `cargo test -p ss-audio --features dred` for optional recovery coverage;
+`cargo bench -p ss-audio --bench codec` checks the 1 ms frame processing budget.
 
 ## May depend on
 

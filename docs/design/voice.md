@@ -56,9 +56,15 @@ rate stays inside the profile range.
 | Bandwidth extension (BWE) | Off | The 1.6 neural bandwidth extender rebuilds 8–20 kHz from wideband speech. The `voice` profile is already fullband, so BWE would not add content. |
 | Opus HD (96 kHz, up to 2 Mb/s) | Not a voice profile | Experimental extension for rates past 20 kHz. Irrelevant for speech. A future music experiment can use it without a protocol change, because the server does not parse the payload. |
 
-`opusic-sys` 0.7.3 targets libopus 1.6.1. The high-level crate `opusic-c`
-exposes `dred` and `osce` features. The default build enables Deep PLC. The
-`dred` feature is what a user-facing "bad connection" switch compiles in.
+T-014 pins `opusic-c` 1.6.1, resolved through `opusic-sys` 0.7.6 to bundled
+libopus 1.6.1. Upstream defaults do **not** compile Deep PLC. We enable
+`opusic-c/osce`, which includes Deep PLC and the low-rate LACE/NoLACE
+enhancers, and explicitly set decoder complexity 10. BWE stays disabled by
+CTL even though OSCE compiles it. A private native bridge supplies the
+decoder complexity control missing from the binding without DRED, plus
+packet framing validation and DRED offsets. The `ss-audio/dred` feature
+additionally compiles DRED; the encoder still starts with redundancy off.
+Its duration control enables 0–1000 ms in 10 ms steps.
 
 ## What we are not using
 
@@ -211,7 +217,7 @@ and that stays on the clients.
 - Lyra V2: 3.2 / 6 / 9.2 kb/s, 20 ms frames. A low-rate speech codec.
 - ZipCodec (2026): 0.80 kb/s at 6.25 Hz, 160 ms theoretical latency, 842M
   parameters. A speech-model token codec.
-- Rust bindings: `opusic-sys` 0.7.3 (libopus 1.6.1), `opusic-c` with `dred`
+- Rust bindings: `opusic-sys` 0.7.6 (libopus 1.6.1), `opusic-c` with `dred`
   and `osce` features.
 - Jitter buffer shape: WebRTC NetEQ. Receiver-side release scheduling (Luby,
   ARC, 2025) is a backlog idea, not the v1 algorithm.
