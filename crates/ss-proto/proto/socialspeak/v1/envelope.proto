@@ -58,6 +58,7 @@ message ClientEnvelope {
     UnsubscribeTrack unsubscribe_track = 31;
     RequestKeyframe request_keyframe = 32;
     SetPreferredQuality set_preferred_quality = 33;
+    SetPresence set_presence = 34;
   }
 }
 

@@ -15,10 +15,11 @@ use ss_proto::{
         MessageDeleted, MessageUpdated, MoveChannel, MoveUser, Ping, Pong, Presence,
         PresenceUpdated, ReadState, ReadStateUpdated, Register, RevokeInvite, Role, RoleCreated,
         RoleDeleted, RoleUpdated, SendMessage, ServerEnvelope, ServerInfo, ServerMuteUser,
-        ServerNotice, SetChannelOverride, SetPreferredQuality, SetUserRoles, SetVoiceState,
-        Snapshot, SubscribeTrack, Track, TrackAdded, TrackRemoved, Typing, TypingStarted,
-        UnbanUser, UnsubscribeTrack, UpdateChannel, UpdateProfile, UpdateRole, User, VoiceSettings,
-        VoiceState, VoiceStateUpdated, Welcome, ack, client_envelope, hello, server_envelope,
+        ServerNotice, SetChannelOverride, SetPreferredQuality, SetPresence, SetUserRoles,
+        SetVoiceState, Snapshot, SubscribeTrack, Track, TrackAdded, TrackRemoved, Typing,
+        TypingStarted, UnbanUser, UnsubscribeTrack, UpdateChannel, UpdateProfile, UpdateRole, User,
+        VoiceSettings, VoiceState, VoiceStateUpdated, Welcome, ack, client_envelope, hello,
+        server_envelope,
     },
 };
 
@@ -254,7 +255,7 @@ fn client_envelope(selector: u32, sample: &Sample) -> ClientEnvelope {
 }
 
 fn client_msg(selector: u32, sample: &Sample) -> Option<client_envelope::Msg> {
-    let which = selector % 33;
+    let which = selector % 34;
     if which == 0 {
         return None;
     }
@@ -407,6 +408,10 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
         }),
         31 => client_envelope::Msg::RequestKeyframe(ss_proto::v1::RequestKeyframe {
             track_id: sample.pick,
+        }),
+        33 => client_envelope::Msg::SetPresence(SetPresence {
+            status: code(sample.pick, 5),
+            activity: sample.text.clone(),
         }),
         _ => client_envelope::Msg::SetPreferredQuality(SetPreferredQuality {
             track_id: sample.pick,
@@ -667,7 +672,7 @@ fn every_variant_round_trips() {
         .expect("runtime");
     for flag in [false, true] {
         let sample = fixed_sample(flag);
-        for selector in 0..33 {
+        for selector in 0..34 {
             let message = client_envelope(selector, &sample);
             assert_sync_round_trip(&message);
             runtime.block_on(assert_async_round_trip(&message));

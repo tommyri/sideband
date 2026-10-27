@@ -1,6 +1,6 @@
 # T-024 — Connection registry, presence, event fan-out
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-021
@@ -39,3 +39,26 @@ Voice (T-025), text (T-026).
   unaffected.
 
 ## Notes from implementation
+
+- `ConnectionRegistry` maps `conn_id` to the QUIC connection, client info from
+  `Hello`, a bounded outbound queue, and the latest QUIC RTT sampled on
+  `Ping`. `user_id` maps to the live connection ids. The voice-spike accept
+  loop is unchanged.
+- The first connection emits one `PresenceUpdated`. Another connection for
+  the same user emits nothing. The last disconnect emits offline with an
+  empty activity. `SetPresence` (client field 34) accepts online, idle, or
+  do-not-disturb and rejects offline. The chosen status is remembered until
+  the process restarts and comes back on the next connect. `Welcome`
+  features include `presence`. Handler tests still call `snapshot::build`,
+  which reports everyone offline; the accept loop uses `build_with`.
+- Domain events go on an `EventBus`. The actor still receives them on the
+  command reply. Every other session skips that copy and applies
+  `snapshot::delivers`, so a channel event is not sent to someone who cannot
+  view the channel. A delete is still not fanned out: the channel is already
+  gone, which is the T-023 rule.
+- The outbound queue holds 32 frames. Fan-out uses `try_send`. A queue that
+  stays full for 10 seconds, or a control write that stalls that long, sends
+  `ServerNotice` and closes that connection with QUIC code 2. Other
+  connections are left up. Tests shorten the grace. Shutdown sends
+  `ServerNotice` ("server shutting down") and, after a short grace so the
+  frame can leave the socket, closes with QUIC code 1.
