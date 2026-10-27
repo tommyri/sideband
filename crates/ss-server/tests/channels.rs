@@ -97,6 +97,7 @@ async fn commands_validate_order_and_keep_messages() {
             channel_id: text,
             author_id: Some(world.admin),
             webhook_id: None,
+            webhook_name: None,
             content: "stay".into(),
             reply_to: None,
             mentions: Vec::new(),

@@ -1,6 +1,6 @@
 # T-031 — Incoming webhooks
 
-Status: todo
+Status: done
 Phase: 2
 Size: S
 Depends on: T-026
@@ -30,3 +30,16 @@ Outgoing webhooks, full bot API (T-080).
   readable message.
 
 ## Notes from implementation
+
+- `CreateWebhook` returns the plaintext token only on the ack. The row stores
+  the SHA-256 hex. `DeleteWebhook` sets `revoked_at`; a hard delete would
+  fail once messages point at the webhook. A wrong, unknown, or revoked
+  token is the same 404.
+- Posts are `POST /api/v1/webhooks/{id}/{token}` with no bearer. The listener
+  is still not bound. Content is the payload `content`, else up to three
+  embed titles and descriptions, else a GitHub push line, else a Grafana
+  title. `avatar_url` is accepted and ignored. Empty or over 2000 characters
+  is 400. The 31st valid post in a minute is 429. Mentions are not parsed.
+- The stored message has no author. `webhook_name` is the payload username,
+  or the webhook name. `MessageCreated` is published with no origin, and the
+  same preview queue unfurls links in the body.

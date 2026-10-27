@@ -64,6 +64,8 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `CreateDm` | `user_ids[]` | One other user reuses that pair's DM. Two to nine others open a new group DM |
 | `LeaveDm` | `channel_id` | Leave a group DM |
 | `AddDmMembers` | `channel_id`, `user_ids[]` | Group-DM creator adds members, up to nine others in total |
+| `CreateWebhook` | `channel_id`, `name` | Token is returned once on the ack |
+| `DeleteWebhook` | `webhook_id` | Later posts with that token are rejected |
 | `CreateChannel` | `kind`, `name`, `parent_id`, `position`, `topic`, `VoiceSettings` | |
 | `UpdateChannel` | `channel_id`, optional fields | Any group-DM member may change the name |
 | `DeleteChannel` | `channel_id` | |
@@ -89,7 +91,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | Message | Fields | Purpose |
 |---|---|---|
 | `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id |
-| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, … }` | |
+| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook }` | `Webhook.token` is only on `CreateWebhook` |
 | `Error` | `request_id`, `code` (enum), `message` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION` |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |

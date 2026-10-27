@@ -61,6 +61,38 @@ message Message {
   optional int64 edited_at = 10;
   // Webhook id when a webhook authored the message.
   optional bytes webhook_id = 11;
+  // Name shown for a webhook message. Absent when a user wrote it.
+  optional string webhook_name = 12;
+}
+
+// Create an incoming webhook. The token is returned once, on the ack.
+message CreateWebhook {
+  // Text channel the webhook posts into.
+  bytes channel_id = 1;
+  // Default display name.
+  string name = 2;
+}
+
+// Revoke an incoming webhook. Later posts with its token are rejected.
+message DeleteWebhook {
+  // Webhook id.
+  bytes webhook_id = 1;
+}
+
+// An incoming webhook. `token` is set only on the create acknowledgement.
+message Webhook {
+  // 16-byte ULID.
+  bytes id = 1;
+  // Channel the webhook posts into.
+  bytes channel_id = 2;
+  // Default display name.
+  string name = 3;
+  // Plaintext token. Present only in the create acknowledgement.
+  optional string token = 4;
+  // User who created the webhook.
+  bytes created_by = 5;
+  // Creation time, Unix milliseconds.
+  int64 created_at = 6;
 }
 
 // Post a message. `nonce` lets the client match its own echo.

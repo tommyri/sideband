@@ -71,6 +71,7 @@ pub(crate) async fn message(
             channel_id,
             author_id: Some(author_id),
             webhook_id: None,
+            webhook_name: None,
             content: format!("message{n}"),
             reply_to: None,
             mentions: Vec::new(),

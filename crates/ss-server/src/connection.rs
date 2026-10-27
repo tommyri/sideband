@@ -10,7 +10,9 @@ use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
-    handlers::{Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles},
+    handlers::{
+        Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles, Webhooks,
+    },
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
@@ -59,6 +61,7 @@ pub struct Server {
     dms: DirectMessages,
     channels: Channels,
     messages: Messages,
+    webhooks: Arc<Webhooks>,
     profiles: Profiles,
     presence: Presence,
     moderation: Moderation,
@@ -84,12 +87,19 @@ impl Server {
         let (stop, _) = watch::channel(false);
         let files = storage::Store::open(Arc::clone(&pool)).await?;
         let bus = EventBus::new();
+        let messages = Messages::new(Arc::clone(&perms), Arc::clone(&pool), bus.clone());
+        let webhooks = Arc::new(Webhooks::new(
+            Arc::clone(&perms),
+            messages.previews(),
+            bus.clone(),
+        ));
         Ok(Self {
             auth: Auth::new(Arc::clone(&pool)),
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
-            messages: Messages::new(Arc::clone(&perms), pool, bus.clone()),
+            messages,
+            webhooks,
             profiles: Profiles::new(Arc::clone(&perms), Arc::clone(&registry)),
             presence: Presence::new(Arc::clone(&registry)),
             moderation: Moderation::new(
@@ -110,6 +120,11 @@ impl Server {
     /// Opaque-media counters for the authenticated router.
     pub fn media_stats(&self) -> media::Stats {
         self.media.stats()
+    }
+
+    /// Incoming-webhook routes. The process does not bind HTTP yet.
+    pub fn webhook_routes(&self) -> axum::Router {
+        crate::http::webhooks::router(Arc::clone(&self.webhooks))
     }
 
     /// File store used by upload routes. The process does not bind HTTP yet.
@@ -384,6 +399,7 @@ fn welcome_envelope(
                     "presence".into(),
                     "voice".into(),
                     "messages".into(),
+                    "webhooks".into(),
                     "dms".into(),
                     "previews".into(),
                     "attachments".into(),
@@ -588,6 +604,8 @@ async fn replies(
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.messages.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.webhooks.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.profiles.dispatch(context.user_id, msg).await {
         result

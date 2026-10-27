@@ -55,6 +55,11 @@ impl Messages {
         }
     }
 
+    /// Preview workers shared with webhook posts.
+    pub(crate) fn previews(&self) -> PreviewQueue {
+        self.previews.clone()
+    }
+
     /// Dispatches a text command. Other messages return `None`.
     pub async fn dispatch(
         &self,
@@ -124,6 +129,7 @@ impl Messages {
                 channel_id,
                 author_id: Some(actor),
                 webhook_id: None,
+                webhook_name: None,
                 content: content.clone(),
                 reply_to,
                 mentions,
@@ -337,6 +343,7 @@ pub(crate) async fn to_proto(
         created_at: message.created_at.as_millis(),
         edited_at: message.edited_at.map(Timestamp::as_millis),
         webhook_id: message.webhook_id.map(id_to_bytes),
+        webhook_name: message.webhook_name.clone(),
     })
 }
 

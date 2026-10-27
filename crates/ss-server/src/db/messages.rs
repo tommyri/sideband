@@ -29,6 +29,8 @@ pub struct NewMessage {
     pub author_id: Option<Id>,
     /// Webhook, when one posted the message.
     pub webhook_id: Option<Id>,
+    /// Name shown for a webhook post.
+    pub webhook_name: Option<String>,
     /// Body.
     pub content: String,
     /// Replied-to message.
@@ -39,10 +41,10 @@ pub struct NewMessage {
     pub mentions_everyone: bool,
 }
 
-const BY_ID: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE id = ?";
-const NEWEST: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
-const OLDER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
-const NEWER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id > ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?";
+const BY_ID: &str = "SELECT id, channel_id, author_id, webhook_id, webhook_name, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE id = ?";
+const NEWEST: &str = "SELECT id, channel_id, author_id, webhook_id, webhook_name, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
+const OLDER: &str = "SELECT id, channel_id, author_id, webhook_id, webhook_name, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
+const NEWER: &str = "SELECT id, channel_id, author_id, webhook_id, webhook_name, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id > ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?";
 
 /// Inserts a message and its mentions.
 pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<Message, Error> {
@@ -50,13 +52,14 @@ pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<
     let mut tx = db(conn.begin().await)?;
     db(sqlx::query(
         "INSERT INTO messages
-         (id, channel_id, author_id, webhook_id, content, reply_to, created_at, mentions_everyone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, channel_id, author_id, webhook_id, webhook_name, content, reply_to, created_at, mentions_everyone)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(message.id)
     .bind(message.channel_id)
     .bind(message.author_id)
     .bind(message.webhook_id)
+    .bind(&message.webhook_name)
     .bind(&message.content)
     .bind(message.reply_to)
     .bind(created_at)
@@ -365,6 +368,7 @@ struct MessageRow {
     channel_id: Id,
     author_id: Option<Id>,
     webhook_id: Option<Id>,
+    webhook_name: Option<String>,
     content: String,
     reply_to: Option<Id>,
     mentions_everyone: i64,
@@ -380,6 +384,7 @@ impl MessageRow {
             channel_id: self.channel_id,
             author_id: self.author_id,
             webhook_id: self.webhook_id,
+            webhook_name: self.webhook_name,
             content: self.content,
             reply_to: self.reply_to,
             mentions_everyone: self.mentions_everyone != 0,
@@ -403,6 +408,7 @@ mod tests {
             channel_id: channel,
             author_id: Some(author),
             webhook_id: None,
+            webhook_name: None,
             content: content.into(),
             reply_to: None,
             mentions: Vec::new(),
