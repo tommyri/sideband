@@ -105,7 +105,10 @@ pub struct Authenticated {
     pub user: db::User,
     /// Plaintext session token. Login and register mint a new one. Token reuse echoes it.
     pub resume_token: String,
-    /// OR of the user's roles and `@everyone`. Channel overrides are T-022.
+    /// OR of the user's roles and `@everyone` at Hello.
+    ///
+    /// Channel checks use [`crate::perms`]. This value is not refreshed when
+    /// a role changes.
     pub permissions: Permissions,
 }
 

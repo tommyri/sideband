@@ -57,6 +57,7 @@ pub struct ChannelUpdate {
 }
 
 const BY_ID: &str = "SELECT id, kind, name, topic, parent_id, position, voice_profile, voice_bitrate, user_limit, created_by, created_at, deleted_at FROM channels WHERE id = ?";
+const LIVE: &str = "SELECT id, kind, name, topic, parent_id, position, voice_profile, voice_bitrate, user_limit, created_by, created_at, deleted_at FROM channels WHERE deleted_at IS NULL ORDER BY position, id";
 
 /// Inserts a channel.
 pub async fn insert(conn: &mut SqliteConnection, channel: NewChannel) -> Result<Channel, Error> {
@@ -221,6 +222,56 @@ pub async fn overrides(
     .fetch_all(&mut *conn)
     .await)?;
     rows.into_iter().map(OverrideRow::into_override).collect()
+}
+
+/// Channels that have not been soft-deleted, in sibling order.
+pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Channel>, Error> {
+    let rows = db(sqlx::query_as::<_, ChannelRow>(LIVE)
+        .fetch_all(&mut *conn)
+        .await)?;
+    rows.into_iter().map(ChannelRow::into_channel).collect()
+}
+
+/// Every channel membership.
+pub async fn memberships(conn: &mut SqliteConnection) -> Result<Vec<(Id, Id)>, Error> {
+    let rows = db(sqlx::query_as::<_, MemberRow>(
+        "SELECT channel_id, user_id FROM channel_members",
+    )
+    .fetch_all(&mut *conn)
+    .await)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.channel_id, row.user_id))
+        .collect())
+}
+
+/// Every channel overwrite.
+pub async fn list_overrides(conn: &mut SqliteConnection) -> Result<Vec<ChannelOverride>, Error> {
+    let rows = db(sqlx::query_as::<_, OverrideRow>(
+        "SELECT channel_id, role_id, allow, deny FROM channel_overrides",
+    )
+    .fetch_all(&mut *conn)
+    .await)?;
+    rows.into_iter().map(OverrideRow::into_override).collect()
+}
+
+/// Removes every overwrite for `role_id`. Zero rows is success.
+///
+/// Role deletion fails the foreign key while an overwrite remains.
+pub async fn clear_role_overrides(conn: &mut SqliteConnection, role_id: Id) -> Result<(), Error> {
+    db(
+        sqlx::query("DELETE FROM channel_overrides WHERE role_id = ?")
+            .bind(role_id)
+            .execute(&mut *conn)
+            .await,
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MemberRow {
+    channel_id: Id,
+    user_id: Id,
 }
 
 #[derive(Debug, sqlx::FromRow)]

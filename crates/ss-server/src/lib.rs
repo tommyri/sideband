@@ -1,13 +1,16 @@
-//! Voice spike, SQLite schema, and authenticated sessions.
+//! Voice spike, SQLite schema, authenticated sessions, and role permissions.
 //!
 //! [`Server`] is the T-016 spike: it accepts any Login/Register username and
 //! does not read [`db`]. [`connection::Server`] is the authenticated accept
-//! loop. Accounts, invites, and sessions live in [`auth`].
+//! loop. Accounts, invites, and sessions live in [`auth`]. Role checks and
+//! role commands live in [`perms`] and [`handlers`].
 
 pub mod auth;
 pub mod connection;
 pub mod db;
+pub mod handlers;
 pub mod media;
+pub mod perms;
 pub mod voice;
 
 use prost::Message;

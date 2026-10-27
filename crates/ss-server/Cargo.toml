@@ -13,6 +13,7 @@ ss-net.workspace = true
 ss-proto.workspace = true
 
 anyhow.workspace = true
+arc-swap.workspace = true
 argon2.workspace = true
 base64.workspace = true
 bytes.workspace = true
