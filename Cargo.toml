@@ -27,6 +27,8 @@ ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
 
 allocation-counter = "0.8"
 anyhow = "1"
+# In-memory permission snapshot. Handlers swap it after a role mutation.
+arc-swap = "1"
 # Argon2id password hashing. The server calls it on a blocking thread.
 argon2 = "0.5"
 axum = "0.8"

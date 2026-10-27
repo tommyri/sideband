@@ -572,7 +572,7 @@ impl Quic {
             fingerprint,
         )
         .unwrap();
-        let server = Arc::new(connection::Server::new(Arc::clone(&pool)));
+        let server = Arc::new(connection::Server::open(Arc::clone(&pool)).await.unwrap());
         let task = tokio::spawn(Arc::clone(&server).run(endpoint.clone()));
         Self {
             port: endpoint.local_addr().unwrap().port(),

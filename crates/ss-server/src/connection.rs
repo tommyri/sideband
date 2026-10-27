@@ -1,13 +1,13 @@
 //! Authenticated control-stream owner.
 //!
 //! The voice spike in the crate root still accepts any username. This server
-//! requires [`auth`] and then answers `Ping`. Every other command is rejected
-//! until later tasks register handlers. `AuthedContext` is what those handlers
-//! will receive.
+//! requires [`auth`] and then answers `Ping` and the role commands. Other
+//! commands are rejected until later tasks register handlers.
 
 use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
+    handlers::Roles,
 };
 use prost::Message;
 use ss_core::{Id, Permissions, Timestamp};
@@ -27,21 +27,24 @@ pub struct AuthedContext {
     pub user_id: Id,
     /// This QUIC connection, distinct from the account.
     pub conn_id: Id,
-    /// OR of the user's roles and `@everyone`. Channel resolution is T-022.
+    /// OR of the user's roles at Hello. Command checks use [`crate::perms`],
+    /// so a role change applies on the next command without reconnecting.
     pub perms_cache: Permissions,
 }
 
 /// Accept loop that authenticates `Hello` before dispatching.
 pub struct Server {
     auth: Auth,
+    roles: Roles,
 }
 
 impl Server {
-    /// Shares `pool` with CLI helpers and repository calls.
-    pub fn new(pool: Arc<crate::db::Pool>) -> Self {
-        Self {
-            auth: Auth::new(pool),
-        }
+    /// Loads roles, then shares `pool` with CLI helpers and repository calls.
+    pub async fn open(pool: Arc<crate::db::Pool>) -> Result<Self, crate::db::Error> {
+        Ok(Self {
+            auth: Auth::new(Arc::clone(&pool)),
+            roles: Roles::open(pool).await?,
+        })
     }
 
     /// Accepts up to [`MAX_CONNECTIONS`] peers. Dropping this future closes them.
@@ -124,7 +127,7 @@ impl Server {
             return reject(&connection, &mut stream, &error).await;
         }
         stream.send(&welcome).await?;
-        dispatch_loop(context, stream, request_id).await
+        dispatch_loop(self, context, stream, request_id).await
     }
 }
 
@@ -140,7 +143,7 @@ fn welcome_envelope(
             server_info: Some(v1::ServerInfo {
                 name: server_name.to_owned(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                features: vec!["auth".into()],
+                features: vec!["auth".into(), "roles".into()],
             }),
             resume_token: authed.resume_token.clone(),
             snapshot: Some(v1::Snapshot::default()),
@@ -163,6 +166,7 @@ fn wire_user(user: &crate::db::User) -> v1::User {
 }
 
 async fn dispatch_loop(
+    server: &Server,
     context: AuthedContext,
     stream: ServerStream,
     mut last_request: u32,
@@ -174,11 +178,17 @@ async fn dispatch_loop(
             return Err(Error::Protocol);
         }
         last_request = envelope.request_id;
-        sender.send(&dispatch(&context, &envelope)).await?;
+        for frame in replies(server, &context, &envelope).await {
+            sender.send(&frame).await?;
+        }
     }
 }
 
-fn dispatch(context: &AuthedContext, envelope: &v1::ClientEnvelope) -> v1::ServerEnvelope {
+async fn replies(
+    server: &Server,
+    context: &AuthedContext,
+    envelope: &v1::ClientEnvelope,
+) -> Vec<v1::ServerEnvelope> {
     let request_id = envelope.request_id;
     tracing::trace!(
         user_id = %context.user_id,
@@ -186,16 +196,45 @@ fn dispatch(context: &AuthedContext, envelope: &v1::ClientEnvelope) -> v1::Serve
         permissions = context.perms_cache.bits(),
         "dispatch"
     );
-    match &envelope.msg {
-        Some(Msg::Ping(ping)) => v1::ServerEnvelope {
+    if let Some(Msg::Ping(ping)) = &envelope.msg {
+        return vec![v1::ServerEnvelope {
             request_id,
             msg: Some(server_envelope::Msg::Pong(v1::Pong {
                 sent_at: ping.sent_at,
                 server_time: Timestamp::now().as_millis(),
             })),
-        },
-        _ => v1::ServerEnvelope::error(request_id, v1::ErrorCode::Invalid, "unsupported command"),
+        }];
     }
+    let Some(msg) = &envelope.msg else {
+        return vec![unsupported(request_id)];
+    };
+    let Some(result) = server.roles.dispatch(context.user_id, msg).await else {
+        return vec![unsupported(request_id)];
+    };
+    match result {
+        Ok(reply) => {
+            let mut frames = vec![v1::ServerEnvelope::ack(request_id, reply.ack)];
+            if let Some(event) = reply.event {
+                frames.push(v1::ServerEnvelope {
+                    request_id: 0,
+                    msg: Some(event),
+                });
+            }
+            frames
+        }
+        Err(error) => {
+            tracing::debug!(%error, "command rejected");
+            vec![v1::ServerEnvelope::error(
+                request_id,
+                error.code(),
+                error.wire_message(),
+            )]
+        }
+    }
+}
+
+fn unsupported(request_id: u32) -> v1::ServerEnvelope {
+    v1::ServerEnvelope::error(request_id, v1::ErrorCode::Invalid, "unsupported command")
 }
 
 fn hello_failure(request_id: u32) -> v1::ServerEnvelope {

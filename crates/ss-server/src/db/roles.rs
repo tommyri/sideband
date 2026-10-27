@@ -51,6 +51,7 @@ pub struct RoleUpdate {
 const BY_ID: &str =
     "SELECT id, name, color, permissions, position, is_default, created_at FROM roles WHERE id = ?";
 const FOR_USER: &str = "SELECT id, name, color, permissions, position, is_default, created_at FROM roles WHERE id IN (SELECT role_id FROM user_roles WHERE user_id = ?) ORDER BY position, id";
+const ALL: &str = "SELECT id, name, color, permissions, position, is_default, created_at FROM roles ORDER BY position, id";
 
 /// Inserts a non-default role.
 pub async fn insert(conn: &mut SqliteConnection, role: NewRole) -> Result<Role, Error> {
@@ -134,6 +135,45 @@ pub async fn roles_for_user(conn: &mut SqliteConnection, user_id: Id) -> Result<
         .fetch_all(&mut *conn)
         .await)?;
     rows.into_iter().map(RoleRow::into_role).collect()
+}
+
+/// Every role, lowest position first. Equal positions break ties by id.
+pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Role>, Error> {
+    let rows = db(sqlx::query_as::<_, RoleRow>(ALL)
+        .fetch_all(&mut *conn)
+        .await)?;
+    rows.into_iter().map(RoleRow::into_role).collect()
+}
+
+/// Every `(user_id, role_id)` grant.
+pub async fn grants(conn: &mut SqliteConnection) -> Result<Vec<(Id, Id)>, Error> {
+    let rows = db(
+        sqlx::query_as::<_, GrantRow>("SELECT user_id, role_id FROM user_roles")
+            .fetch_all(&mut *conn)
+            .await,
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.user_id, row.role_id))
+        .collect())
+}
+
+/// Removes every grant of `role_id`. Zero rows is success.
+///
+/// [`delete`] fails the foreign key while any grant remains. Callers that
+/// delete a role clear the grants first.
+pub async fn clear_assignments(conn: &mut SqliteConnection, role_id: Id) -> Result<(), Error> {
+    db(sqlx::query("DELETE FROM user_roles WHERE role_id = ?")
+        .bind(role_id)
+        .execute(&mut *conn)
+        .await)?;
+    Ok(())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GrantRow {
+    user_id: Id,
+    role_id: Id,
 }
 
 #[derive(Debug, sqlx::FromRow)]

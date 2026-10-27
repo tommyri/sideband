@@ -1,6 +1,6 @@
 # T-022 — Permissions engine and role management
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-020
@@ -35,3 +35,10 @@ UI, channel CRUD (T-023).
   without restart.
 
 ## Notes from implementation
+
+- `PermissionService` holds an `ArcSwap` snapshot of roles, grants, channels, members, and overrides. Handlers reload it after the write commits and before they release the write lock, so the next check in this process sees the change. `check` itself is synchronous.
+- Hello still stores the OR of the user's roles on the connection. Command checks do not read that copy. There is no owner column: the owner holds the seeded Admin role, and `ADMINISTRATOR` is the hierarchy short-circuit (`can_act_on` is always true, and only an administrator may grant that bit).
+- `CreateRole`, `UpdateRole`, `DeleteRole`, and `SetUserRoles` require `MANAGE_ROLES`. `SetChannelOverride` requires `MANAGE_CHANNELS` (bit 2), which is the bit the data model assigns to overrides.
+- A non-admin can only create, edit, grant, or override a role whose position is strictly below their highest role. Seeded Admin is position 1, so a role placed above it outranks the admin user unless the actor holds `ADMINISTRATOR`. `@everyone` cannot be deleted. Delete clears grants and overrides, then rewrites the remaining positions to `0..n-1` in `(position, id)` order. Create stores the requested position and does not compact.
+- Direct channels ignore roles, overrides, and `ADMINISTRATOR`. Visibility is membership only, which is `Permissions::resolve`.
+- Each mutation writes one `audit_log` row. The connection sends the Ack for the request id, then `RoleCreated`, `RoleUpdated`, `RoleDeleted`, or `MemberRolesUpdated` with request id 0. There is no fan-out yet and no override event. The voice-spike accept loop is unchanged.
