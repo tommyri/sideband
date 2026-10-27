@@ -7,7 +7,8 @@
 use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
-    handlers::Roles,
+    handlers::{Channels, Roles},
+    perms::PermissionService,
 };
 use prost::Message;
 use ss_core::{Id, Permissions, Timestamp};
@@ -35,15 +36,20 @@ pub struct AuthedContext {
 /// Accept loop that authenticates `Hello` before dispatching.
 pub struct Server {
     auth: Auth,
+    perms: Arc<PermissionService>,
     roles: Roles,
+    channels: Channels,
 }
 
 impl Server {
-    /// Loads roles, then shares `pool` with CLI helpers and repository calls.
+    /// Loads permissions, then shares `pool` with CLI helpers and repository calls.
     pub async fn open(pool: Arc<crate::db::Pool>) -> Result<Self, crate::db::Error> {
+        let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await?);
         Ok(Self {
-            auth: Auth::new(Arc::clone(&pool)),
-            roles: Roles::open(pool).await?,
+            auth: Auth::new(pool),
+            roles: Roles::new(Arc::clone(&perms)),
+            channels: Channels::new(Arc::clone(&perms)),
+            perms,
         })
     }
 
@@ -117,7 +123,24 @@ impl Server {
             conn_id,
             perms_cache: authed.permissions,
         };
-        let welcome = welcome_envelope(request_id, &authed, &self.auth.server_name().await);
+        let snapshot = match crate::snapshot::build(&self.perms, authed.user.id).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::debug!(%error, "snapshot failed");
+                let envelope = v1::ServerEnvelope::error(
+                    request_id,
+                    v1::ErrorCode::Internal,
+                    "internal error",
+                );
+                return reject(&connection, &mut stream, &envelope).await;
+            }
+        };
+        let welcome = welcome_envelope(
+            request_id,
+            &authed,
+            &self.auth.server_name().await,
+            snapshot,
+        );
         if welcome.encoded_len() > ss_proto::MAX_FRAME_LEN {
             let error = v1::ServerEnvelope::error(
                 request_id,
@@ -135,6 +158,7 @@ fn welcome_envelope(
     request_id: u32,
     authed: &auth::Authenticated,
     server_name: &str,
+    snapshot: v1::Snapshot,
 ) -> v1::ServerEnvelope {
     v1::ServerEnvelope {
         request_id,
@@ -143,10 +167,10 @@ fn welcome_envelope(
             server_info: Some(v1::ServerInfo {
                 name: server_name.to_owned(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                features: vec!["auth".into(), "roles".into()],
+                features: vec!["auth".into(), "roles".into(), "channels".into()],
             }),
             resume_token: authed.resume_token.clone(),
-            snapshot: Some(v1::Snapshot::default()),
+            snapshot: Some(snapshot),
         })),
     }
 }
@@ -208,13 +232,17 @@ async fn replies(
     let Some(msg) = &envelope.msg else {
         return vec![unsupported(request_id)];
     };
-    let Some(result) = server.roles.dispatch(context.user_id, msg).await else {
+    let result = if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
+        result
+    } else {
         return vec![unsupported(request_id)];
     };
     match result {
         Ok(reply) => {
             let mut frames = vec![v1::ServerEnvelope::ack(request_id, reply.ack)];
-            if let Some(event) = reply.event {
+            for event in reply.events {
                 frames.push(v1::ServerEnvelope {
                     request_id: 0,
                     msg: Some(event),

@@ -34,7 +34,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-020](T-020-database-schema.md) | SQLite schema, migrations, repositories | M | T-003 | done |
 | [T-021](T-021-auth-sessions-invites.md) | Auth, sessions, invites, owner bootstrap | M | T-020, T-004 | done |
 | [T-022](T-022-permissions-engine.md) | Permissions engine and roles | M | T-020 | done |
-| [T-023](T-023-channel-management.md) | Channel tree management + snapshot | M | T-021, T-022 | todo |
+| [T-023](T-023-channel-management.md) | Channel tree management + snapshot | M | T-021, T-022 | done |
 | [T-024](T-024-presence-registry-fanout.md) | Connection registry, presence, event fan-out | M | T-021 | todo |
 | [T-025](T-025-voice-membership-media-router.md) | Voice membership and media router | M | T-016, T-022, T-024 | todo |
 | [T-026](T-026-text-messaging.md) | Text messaging | M | T-023, T-024 | todo |

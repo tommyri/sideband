@@ -40,6 +40,8 @@ pub struct NewChannel {
 /// Mutable channel fields. Kind and creator stay as inserted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelUpdate {
+    /// Channel kind. Kind changes are the caller's responsibility.
+    pub kind: ChannelKind,
     /// Display name.
     pub name: String,
     /// Optional topic.
@@ -100,9 +102,10 @@ pub async fn update(
 ) -> Result<Channel, Error> {
     changed(db(sqlx::query(
         "UPDATE channels
-         SET name = ?, topic = ?, parent_id = ?, position = ?, voice_profile = ?, voice_bitrate = ?, user_limit = ?
+         SET kind = ?, name = ?, topic = ?, parent_id = ?, position = ?, voice_profile = ?, voice_bitrate = ?, user_limit = ?
          WHERE id = ?",
     )
+    .bind(channel.kind.as_i64())
     .bind(&channel.name)
     .bind(&channel.topic)
     .bind(channel.parent_id)
@@ -255,6 +258,32 @@ pub async fn list_overrides(conn: &mut SqliteConnection) -> Result<Vec<ChannelOv
     rows.into_iter().map(OverrideRow::into_override).collect()
 }
 
+/// Sets the parent and sibling position. Zero rows is not found.
+pub async fn place(
+    conn: &mut SqliteConnection,
+    id: Id,
+    parent_id: Option<Id>,
+    position: i64,
+) -> Result<(), Error> {
+    changed(db(sqlx::query(
+        "UPDATE channels SET parent_id = ?, position = ? WHERE id = ?",
+    )
+    .bind(parent_id)
+    .bind(position)
+    .bind(id)
+    .execute(&mut *conn)
+    .await)?)
+}
+
+/// Guild channels ever created, including soft-deleted rows. DMs are excluded.
+pub async fn guild_count(conn: &mut SqliteConnection) -> Result<i64, Error> {
+    db(
+        sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE kind NOT IN (3, 4)")
+            .fetch_one(&mut *conn)
+            .await,
+    )
+}
+
 /// Removes every overwrite for `role_id`. Zero rows is success.
 ///
 /// Role deletion fails the foreign key while an overwrite remains.
@@ -365,6 +394,7 @@ mod tests {
             &mut conn,
             created.id,
             ChannelUpdate {
+                kind: ChannelKind::Voice,
                 name: "Music".into(),
                 topic: Some("listening".into()),
                 parent_id: None,

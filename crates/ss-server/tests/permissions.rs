@@ -707,8 +707,8 @@ async fn role_edits_show_up_on_the_next_check() {
         .await
         .unwrap();
     assert!(matches!(
-        reply.event,
-        Some(server_envelope::Msg::RoleUpdated(_))
+        reply.events.first(),
+        Some(&server_envelope::Msg::RoleUpdated(_))
     ));
     assert!(
         world
@@ -740,7 +740,7 @@ async fn override_edits_show_up_on_the_next_check() {
         )
         .await
         .unwrap();
-    assert!(reply.event.is_none());
+    assert_eq!(reply.events, Vec::new());
     assert!(matches!(reply.ack, ack::Result::Empty(_)));
     assert!(
         world
@@ -787,8 +787,8 @@ async fn deleting_a_role_compacts_positions_and_clears_grants() {
         .await
         .unwrap();
     assert!(matches!(
-        reply.event,
-        Some(server_envelope::Msg::RoleDeleted(_))
+        reply.events.first(),
+        Some(&server_envelope::Msg::RoleDeleted(_))
     ));
     assert!(matches!(reply.ack, ack::Result::Empty(_)));
     let mut conn = world.pool.write().await;
@@ -824,10 +824,10 @@ async fn create_role_keeps_the_requested_position_and_color() {
         )
         .await
         .unwrap();
-    let Some(server_envelope::Msg::RoleCreated(created)) = reply.event else {
+    let Some(server_envelope::Msg::RoleCreated(created)) = reply.events.first() else {
         panic!("expected RoleCreated");
     };
-    let role = created.role.expect("role");
+    let role = created.role.clone().expect("role");
     assert_eq!(role.name, "mods");
     assert_eq!(role.position, 2);
     assert_eq!(role.color, Some(0x0011_2233));

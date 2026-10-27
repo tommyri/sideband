@@ -36,6 +36,7 @@ pub struct UserProfile {
 
 const BY_ID: &str = "SELECT id, username, display_name, password_hash, avatar_attachment_id, kind, created_at, disabled_at FROM users WHERE id = ?";
 const BY_USERNAME: &str = "SELECT id, username, display_name, password_hash, avatar_attachment_id, kind, created_at, disabled_at FROM users WHERE username = ?";
+const ALL_USERS: &str = "SELECT id, username, display_name, password_hash, avatar_attachment_id, kind, created_at, disabled_at FROM users ORDER BY username, id";
 
 /// Inserts a user.
 pub async fn insert(conn: &mut SqliteConnection, user: NewUser) -> Result<User, Error> {
@@ -63,6 +64,14 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<User>, Er
         .fetch_optional(&mut *conn)
         .await)?;
     row.map(UserRow::into_user).transpose()
+}
+
+/// Every user, including disabled accounts, ordered by username.
+pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<User>, Error> {
+    let rows = db(sqlx::query_as::<_, UserRow>(ALL_USERS)
+        .fetch_all(&mut *conn)
+        .await)?;
+    rows.into_iter().map(UserRow::into_user).collect()
 }
 
 /// Loads a user by username. The comparison is case-insensitive.

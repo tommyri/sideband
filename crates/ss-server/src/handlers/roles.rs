@@ -21,13 +21,13 @@ use crate::{
     perms::PermissionService,
 };
 
-/// Ack body plus the event to send after it. Override changes have no event.
+/// Ack body plus the events to send after it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandReply {
     /// Payload for [`ss_proto::v1::ServerEnvelope::ack`].
     pub ack: ack::Result,
-    /// Event frame. The connection sends it with request id 0.
-    pub event: Option<server_envelope::Msg>,
+    /// Event frames. The connection sends each with request id 0.
+    pub events: Vec<server_envelope::Msg>,
 }
 
 /// A role command the client can be told about.
@@ -149,9 +149,9 @@ impl Roles {
         let wire = wire_role(&role)?;
         Ok(CommandReply {
             ack: ack::Result::Role(wire.clone()),
-            event: Some(server_envelope::Msg::RoleCreated(v1::RoleCreated {
+            events: vec![server_envelope::Msg::RoleCreated(v1::RoleCreated {
                 role: Some(wire),
-            })),
+            })],
         })
     }
 
@@ -213,9 +213,9 @@ impl Roles {
         let wire = wire_role(&role)?;
         Ok(CommandReply {
             ack: ack::Result::Role(wire.clone()),
-            event: Some(server_envelope::Msg::RoleUpdated(v1::RoleUpdated {
+            events: vec![server_envelope::Msg::RoleUpdated(v1::RoleUpdated {
                 role: Some(wire),
-            })),
+            })],
         })
     }
 
@@ -245,9 +245,9 @@ impl Roles {
         tracing::info!(%actor, role_id = %role.id, "role deleted");
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
-            event: Some(server_envelope::Msg::RoleDeleted(v1::RoleDeleted {
+            events: vec![server_envelope::Msg::RoleDeleted(v1::RoleDeleted {
                 role: Some(wire_role(&role)?),
-            })),
+            })],
         })
     }
 
@@ -309,12 +309,12 @@ impl Roles {
         tracing::info!(%actor, %target, "member roles updated");
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
-            event: Some(server_envelope::Msg::MemberRolesUpdated(
+            events: vec![server_envelope::Msg::MemberRolesUpdated(
                 v1::MemberRolesUpdated {
                     user_id: id_to_bytes(target),
                     role_ids: stored.iter().copied().map(id_to_bytes).collect(),
                 },
-            )),
+            )],
         })
     }
 
@@ -362,7 +362,7 @@ impl Roles {
         tracing::info!(%actor, %channel_id, %role_id, "channel override set");
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
-            event: None,
+            events: Vec::new(),
         })
     }
 
