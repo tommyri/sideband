@@ -10,7 +10,7 @@ use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
-    handlers::{Channels, Presence, Roles},
+    handlers::{Channels, Messages, Presence, Roles},
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
@@ -57,6 +57,7 @@ pub struct Server {
     perms: Arc<PermissionService>,
     roles: Roles,
     channels: Channels,
+    messages: Messages,
     presence: Presence,
     voice: Arc<Voice>,
     media: Arc<Forwarder>,
@@ -81,6 +82,7 @@ impl Server {
             auth: Auth::new(pool),
             roles: Roles::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
+            messages: Messages::new(Arc::clone(&perms)),
             presence: Presence::new(Arc::clone(&registry)),
             perms,
             voice,
@@ -360,6 +362,7 @@ fn welcome_envelope(
                     "channels".into(),
                     "presence".into(),
                     "voice".into(),
+                    "messages".into(),
                 ],
             }),
             resume_token: authed.resume_token.clone(),
@@ -414,7 +417,22 @@ async fn read_inbound(
                         .map_err(|_| Error::Control(ControlError::Closed))?;
                 }
                 for event in answer.events {
-                    server.bus.publish(Some(context.conn_id), event);
+                    if let server_envelope::Msg::ReadStateUpdated(_) = &event {
+                        for conn in server.registry.connection_ids(context.user_id) {
+                            if conn == context.conn_id {
+                                continue;
+                            }
+                            server.registry.enqueue(
+                                conn,
+                                v1::ServerEnvelope {
+                                    request_id: 0,
+                                    msg: Some(event.clone()),
+                                },
+                            );
+                        }
+                    } else {
+                        server.bus.publish(Some(context.conn_id), event);
+                    }
                 }
             }
             event = subscription.recv() => {
@@ -540,6 +558,8 @@ async fn replies(
     } else if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.messages.dispatch(context.user_id, msg).await {
         result
     } else {
         return Answer {

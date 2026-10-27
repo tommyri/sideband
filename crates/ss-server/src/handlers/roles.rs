@@ -42,6 +42,9 @@ pub enum Error {
     /// The name, id, or permission bits are not valid.
     #[error("{0}")]
     Invalid(&'static str),
+    /// The command arrived faster than its quota.
+    #[error("{0}")]
+    RateLimited(&'static str),
     /// SQLite failed. The wire message stays generic.
     #[error(transparent)]
     Database(#[from] db::Error),
@@ -54,6 +57,7 @@ impl Error {
             Self::Forbidden(_) => ErrorCode::Forbidden,
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Invalid(_) => ErrorCode::Invalid,
+            Self::RateLimited(_) => ErrorCode::RateLimited,
             Self::Database(_) => ErrorCode::Internal,
         }
     }

@@ -15,6 +15,7 @@ ss-proto.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
 argon2.workspace = true
+axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
@@ -23,6 +24,8 @@ governor.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 sqlx = { workspace = true, features = ["macros"] }
 thiserror.workspace = true
@@ -33,6 +36,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

@@ -35,12 +35,14 @@ pub struct NewMessage {
     pub reply_to: Option<Id>,
     /// Mentioned users. Duplicates are ignored.
     pub mentions: Vec<Id>,
+    /// Authorized `@everyone` ping.
+    pub mentions_everyone: bool,
 }
 
-const BY_ID: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, created_at, edited_at, deleted_at FROM messages WHERE id = ?";
-const NEWEST: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
-const OLDER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
-const NEWER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id > ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?";
+const BY_ID: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE id = ?";
+const NEWEST: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
+const OLDER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?";
+const NEWER: &str = "SELECT id, channel_id, author_id, webhook_id, content, reply_to, mentions_everyone, created_at, edited_at, deleted_at FROM messages WHERE channel_id = ? AND id > ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?";
 
 /// Inserts a message and its mentions.
 pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<Message, Error> {
@@ -48,8 +50,8 @@ pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<
     let mut tx = db(conn.begin().await)?;
     db(sqlx::query(
         "INSERT INTO messages
-         (id, channel_id, author_id, webhook_id, content, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (id, channel_id, author_id, webhook_id, content, reply_to, created_at, mentions_everyone)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(message.id)
     .bind(message.channel_id)
@@ -58,6 +60,7 @@ pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<
     .bind(&message.content)
     .bind(message.reply_to)
     .bind(created_at)
+    .bind(i64::from(message.mentions_everyone))
     .execute(&mut *tx)
     .await)?;
     replace_mentions(&mut tx, message.id, &message.mentions).await?;
@@ -80,14 +83,16 @@ pub async fn edit(
     id: Id,
     content: &str,
     mentions: &[Id],
+    mentions_everyone: bool,
     edited_at: Timestamp,
 ) -> Result<Message, Error> {
     let mut tx = db(conn.begin().await)?;
     changed(db(sqlx::query(
-        "UPDATE messages SET content = ?, edited_at = ? WHERE id = ?",
+        "UPDATE messages SET content = ?, edited_at = ?, mentions_everyone = ? WHERE id = ?",
     )
     .bind(content)
     .bind(edited_at.as_millis())
+    .bind(i64::from(mentions_everyone))
     .bind(id)
     .execute(&mut *tx)
     .await)?)?;
@@ -109,6 +114,29 @@ pub async fn soft_delete(
     .bind(id)
     .execute(&mut *conn)
     .await)?)
+}
+
+/// Visible messages after `after` that ping `user`, excluding ones `user` wrote.
+pub async fn unread_mentions(
+    conn: &mut SqliteConnection,
+    channel_id: Id,
+    user_id: Id,
+    after: Id,
+) -> Result<u32, Error> {
+    let count: i64 = db(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages
+         WHERE channel_id = ? AND deleted_at IS NULL AND id > ?
+           AND (author_id IS NULL OR author_id != ?)
+           AND (mentions_everyone != 0 OR id IN (
+                SELECT message_id FROM message_mentions WHERE user_id = ?))",
+    )
+    .bind(channel_id)
+    .bind(after)
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_one(&mut *conn)
+    .await)?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// Mentioned users, ordered by id.
@@ -326,6 +354,7 @@ struct MessageRow {
     webhook_id: Option<Id>,
     content: String,
     reply_to: Option<Id>,
+    mentions_everyone: i64,
     created_at: i64,
     edited_at: Option<i64>,
     deleted_at: Option<i64>,
@@ -340,6 +369,7 @@ impl MessageRow {
             webhook_id: self.webhook_id,
             content: self.content,
             reply_to: self.reply_to,
+            mentions_everyone: self.mentions_everyone != 0,
             created_at: stamp(self.created_at),
             edited_at: stamp_opt(self.edited_at),
             deleted_at: stamp_opt(self.deleted_at),
@@ -363,6 +393,7 @@ mod tests {
             content: content.into(),
             reply_to: None,
             mentions: Vec::new(),
+            mentions_everyone: false,
         }
     }
 
@@ -385,7 +416,7 @@ mod tests {
         }
         assert_eq!(mentions(&mut conn, ids[4]).await.unwrap(), vec![other.id]);
         let edited_at = ss_core::Timestamp::from_millis(8);
-        edit(&mut conn, ids[4], "changed", &[], edited_at)
+        edit(&mut conn, ids[4], "changed", &[], false, edited_at)
             .await
             .unwrap();
         assert_eq!(mentions(&mut conn, ids[4]).await.unwrap().len(), 0);

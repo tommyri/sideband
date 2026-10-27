@@ -143,6 +143,8 @@ pub struct Message {
     pub content: String,
     /// Message this one replies to.
     pub reply_to: Option<Id>,
+    /// The author was allowed to ping `@everyone`.
+    pub mentions_everyone: bool,
     /// When the message was created.
     pub created_at: Timestamp,
     /// Last edit time.

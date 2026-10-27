@@ -74,6 +74,7 @@ pub(crate) async fn message(
             content: format!("message{n}"),
             reply_to: None,
             mentions: Vec::new(),
+            mentions_everyone: false,
         },
     )
     .await

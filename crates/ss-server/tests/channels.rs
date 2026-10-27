@@ -100,6 +100,7 @@ async fn commands_validate_order_and_keep_messages() {
             content: "stay".into(),
             reply_to: None,
             mentions: Vec::new(),
+            mentions_everyone: false,
         },
     )
     .await
