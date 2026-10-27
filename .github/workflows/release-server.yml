@@ -1,0 +1,79 @@
+name: Release server
+
+on:
+  push:
+    tags: ["server-v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cc: musl-gcc
+            strip: strip
+          - target: aarch64-unknown-linux-musl
+            cc: aarch64-linux-musl-gcc
+            strip: aarch64-linux-musl-strip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/aarch64-musl.tgz
+            sudo tar -xzf /tmp/aarch64-musl.tgz -C /opt
+            echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          fi
+      - uses: Swatinem/rust-cache@v2
+      - name: Static binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: ${{ matrix.cc }}
+        run: |
+          cargo build -p ss-server --locked --release --target "${{ matrix.target }}"
+          ${{ matrix.strip }} --strip-unneeded "target/${{ matrix.target }}/release/ss-server"
+          if readelf -l "target/${{ matrix.target }}/release/ss-server" | grep -q 'INTERP'; then
+            echo "ss-server is dynamically linked" >&2
+            exit 1
+          fi
+          install -m 0755 "target/${{ matrix.target }}/release/ss-server" \
+            "$RUNNER_TEMP/ss-server-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ss-server-${{ matrix.target }}
+          path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/server-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          find dist -type f -exec cp {} "$RUNNER_TEMP/release/" \;
+          cp deploy/socialspeak.service "$RUNNER_TEMP/release/socialspeak.service"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/release/"* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Static ss-server binaries and the systemd unit. See deploy/README.md."

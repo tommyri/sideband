@@ -45,3 +45,17 @@ jobs:
       - name: cargo deny
         if: runner.os == 'Linux'
         run: cargo deny check
+
+  smoke:
+    name: container smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux audio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
+      - name: Image, healthz, and two bots
+        run: bash deploy/smoke.sh

@@ -53,7 +53,9 @@ hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 # Process counters. The internal listener renders them as Prometheus text.
 metrics = "0.24"
-metrics-exporter-prometheus = "0.17"
+# The crate's HTTP listener and push gateway pull aws-lc. We render the
+# text ourselves, so those features stay off and the static build stays on ring.
+metrics-exporter-prometheus = { version = "0.17", default-features = false }
 # Content sniffing for uploads. The client-supplied type is ignored.
 infer = "0.19"
 # Certificate file changes. The QUIC socket stays open across a reload.
