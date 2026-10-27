@@ -1,6 +1,6 @@
 # T-010 — `ss-audio`: device layer (capture/playback, resampling, hot-plug)
 
-Status: todo
+Status: done
 Phase: 1
 Size: M
 Depends on: T-003
@@ -48,3 +48,24 @@ Opus, jitter buffer, processing, OS-specific tuning (T-011/012/013).
   `DeviceEvent::LowQualityInput` for the UI.
 
 ## Notes from implementation
+
+- `cpal` 0.18's realtime and PipeWire features are enabled only on Linux.
+  They pull ALSA and PipeWire headers, which macOS and Windows CI do not have.
+  `default_host` then prefers PipeWire and falls back to ALSA. The PulseAudio
+  feature stays off; CI does not install `libpulse`.
+- Rubato 5 replaced `SincFixedIn` with `Async::new_sinc(..., FixedAsync::Input)`.
+  That is the fixed-input asynchronous sinc the task asked for. It runs on the
+  worker thread. The device callback only converts sample format and channel
+  count into an `rtrb` ring.
+- A removed active device emits `DeviceEvent::Lost` and `Removed`. The next
+  snapshot can emit `Added` again. `CaptureStream` / `PlaybackStream` are
+  owned values, so `DeviceManager::open_capture` / `open_playback` can run
+  again in the same process. `is_lost` is also set from the host error callback
+  (`DeviceNotAvailable`, `StreamInvalidated`) without waiting for the poll.
+- `examples/loopback.rs` prints capture and playback buffer delays from
+  `Stream::now()`. A two-second run on macOS built-in input and output opened
+  at 48 kHz with no underruns or overruns (capture delay about 13 ms, playback
+  delay about 11 ms). The five-minute listening check is still manual:
+  `cargo run -p ss-audio --example loopback -- 300`.
+- Opening at 8 or 16 kHz emits `DeviceEvent::LowQualityInput`. A hands-free
+  name at 48 kHz does not.

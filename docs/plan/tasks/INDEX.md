@@ -17,7 +17,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-010](T-010-audio-device-layer.md) | `ss-audio` device layer | M | T-003 | todo |
+| [T-010](T-010-audio-device-layer.md) | `ss-audio` device layer | M | T-003 | done |
 | [T-011](T-011-audio-windows-verification.md) | Windows audio verification | S | T-010 | todo |
 | [T-012](T-012-audio-linux-verification.md) | Linux audio verification | S | T-010 | todo |
 | [T-013](T-013-audio-macos-verification.md) | macOS audio verification | S | T-010 | todo |
