@@ -4,6 +4,9 @@
 //! mixer live here. Nothing in this crate opens a socket.
 
 pub mod codec;
+pub mod jitter;
+pub mod mixer;
+pub mod receive;
 
 /// Package name. Dependents reference this so the crate graph stays linked.
 pub const NAME: &str = "ss-audio";

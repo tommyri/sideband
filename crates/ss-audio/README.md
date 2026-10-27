@@ -18,6 +18,13 @@ support, disabled at runtime until configured on the encoder.
 Run `cargo test -p ss-audio --features dred` for optional recovery coverage;
 `cargo bench -p ss-audio --bench codec` checks the 1 ms frame processing budget.
 
+`jitter` admits bounded audio timing metadata, estimates delay, and releases
+ordered packet/recovery decisions. `receive::TrackReceiver` emits stereo 10 ms
+quanta with FEC/optional DRED/PLC and speaking state. `mixer` sums track gains
+and UI sounds through a linked soft-knee limiter. These run on the playback
+worker; T-010/T-041 will connect their output to the device ring.
+`cargo test -p ss-audio --test sim -- --nocapture` reports network simulations.
+
 ## May depend on
 
 `ss-core`, plus `cpal`, `rubato`, Opus bindings, and `rtrb`.

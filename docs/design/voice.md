@@ -162,9 +162,26 @@ buffer grows or shrinks at a talk-burst boundary or in decoded silence, by
 inserting a concealment frame or dropping a frame. Time-stretching inside a
 word is deferred; it is in the backlog.
 
-A packet that arrives after its slot was concealed is discarded unless the
-following packet's in-band FEC can still rebuild it. A burst that DRED can
-rebuild uses that path when the `dred` feature is on.
+Recovery decisions happen before audio is released to the playback ring. A
+missing slot uses the following packet's in-band FEC when that packet is
+already buffered; otherwise it uses PLC. Already-committed slots cannot be
+replaced or replayed when originals arrive late. Late forward observations
+still inform the jitter estimate. With `dred`, buffered redundancy can recover
+several missing slots before release; those slots are then committed together.
+
+T-015 bounds each track to 64 queued packets and estimates the 95th percentile
+from up to 200 forward inter-arrival deviations in a rolling two-second window.
+The estimate adds a 20 ms margin and rounds up to the profile frame duration.
+A new burst reanchors playout; a whole-frame capture-clock gap can identify a
+boundary when flags are lost. After a long pause with no recent observations,
+the estimate restarts at 40 ms. Inside a burst, only decoded PCM below
+−60 dBFS permits delay expansion/contraction. Contraction decodes the discarded
+packet to preserve codec prediction state. Sequence and sample timestamps wrap.
+
+The playback worker emits 10 ms stereo quanta. Per-track and per-user linear
+gains range from 0 to 4; master gain includes UI sounds. A linked stereo limiter
+starts its soft knee at amplitude 0.8 and approaches 1.0 without changing the
+left/right balance. Device callbacks only consume the resulting ring buffer.
 
 This is the same shape as WebRTC's NetEQ: adaptive target, concealment,
 expand and accelerate at the edges. T-015 tests it with a simulated network
