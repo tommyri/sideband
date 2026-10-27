@@ -19,6 +19,7 @@ pub mod perms;
 pub mod previews;
 pub mod registry;
 pub mod snapshot;
+pub mod storage;
 pub mod voice;
 
 use prost::Message;

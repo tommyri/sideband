@@ -15,12 +15,15 @@ ss-proto.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
 argon2.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
 getrandom.workspace = true
 governor.workspace = true
+hmac.workspace = true
+image.workspace = true
+infer.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true

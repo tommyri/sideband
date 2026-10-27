@@ -43,6 +43,12 @@ crossterm = "0.28"
 getrandom = "0.2"
 # Per-IP login limits. Keyed quotas live in memory for the process lifetime.
 governor = "0.10"
+# Signed download tokens. HMAC-SHA256 over the attachment id and expiry.
+hmac = "0.12"
+# Image width and height, including EXIF orientation. No re-encode in v1.
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Content sniffing for uploads. The client-supplied type is ignored.
+infer = "0.19"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.

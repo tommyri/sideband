@@ -133,6 +133,17 @@ pub async fn set_disabled(
     .await)?)
 }
 
+/// Whether any account uses this file as its avatar.
+pub async fn uses_avatar(conn: &mut SqliteConnection, attachment: Id) -> Result<bool, Error> {
+    let count = db(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM users WHERE avatar_attachment_id = ?",
+    )
+    .bind(attachment)
+    .fetch_one(&mut *conn)
+    .await)?;
+    Ok(count > 0)
+}
+
 /// Number of accounts, including disabled ones.
 pub async fn count(conn: &mut SqliteConnection) -> Result<i64, Error> {
     db(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
