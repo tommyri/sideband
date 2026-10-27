@@ -21,7 +21,7 @@ pub mod users;
 pub mod webhooks;
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 
 use std::{
     path::{Path, PathBuf},
