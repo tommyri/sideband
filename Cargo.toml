@@ -27,7 +27,10 @@ ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
 
 allocation-counter = "0.8"
 anyhow = "1"
+# Argon2id password hashing. The server calls it on a blocking thread.
+argon2 = "0.5"
 axum = "0.8"
+base64 = "0.22"
 bitflags = "2"
 bytes = "1"
 criterion = "0.7"
@@ -35,6 +38,9 @@ criterion = "0.7"
 opusic-c = { version = "=1.6.1", features = ["osce"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
+getrandom = "0.2"
+# Per-IP login limits. Keyed quotas live in memory for the process lifetime.
+governor = "0.10"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.

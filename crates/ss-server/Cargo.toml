@@ -13,8 +13,12 @@ ss-net.workspace = true
 ss-proto.workspace = true
 
 anyhow.workspace = true
+argon2.workspace = true
+base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
+getrandom.workspace = true
+governor.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true

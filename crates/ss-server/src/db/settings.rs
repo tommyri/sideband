@@ -42,6 +42,18 @@ pub async fn set(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<
     get(conn, key).await?.ok_or(Error::NotFound)
 }
 
+/// Deletes a setting only when it still holds `value`.
+pub async fn take(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<bool, Error> {
+    let result = db(
+        sqlx::query("DELETE FROM server_settings WHERE key = ? AND value = ?")
+            .bind(key)
+            .bind(value)
+            .execute(&mut *conn)
+            .await,
+    )?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Deletes a setting.
 pub async fn delete(conn: &mut SqliteConnection, key: &str) -> Result<(), Error> {
     changed(db(sqlx::query(
@@ -81,6 +93,7 @@ impl SettingRow {
 mod tests {
     use super::{
         DESCRIPTION, ICON, NAME, REGISTRATION_INVITE, REGISTRATION_MODE, delete, get, list, set,
+        take,
     };
     use crate::db::testing;
 
@@ -112,7 +125,9 @@ mod tests {
         );
         set(&mut conn, "motd", "hello").await.unwrap();
         assert_eq!(list(&mut conn).await.unwrap().len(), 5);
-        delete(&mut conn, "motd").await.unwrap();
+        assert!(!take(&mut conn, "motd", "other").await.unwrap());
+        assert!(take(&mut conn, "motd", "hello").await.unwrap());
         assert!(get(&mut conn, "motd").await.unwrap().is_none());
+        delete(&mut conn, "motd").await.unwrap_err();
     }
 }

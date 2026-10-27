@@ -1,6 +1,6 @@
 # T-021 — Auth: registration via invite, login, sessions, owner bootstrap
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-020, T-004
@@ -41,3 +41,29 @@ Roles UI, password reset (owner can reset via CLI: `ss-server user set-password`
   runtime that has 1 worker and a concurrent ping).
 
 ## Notes from implementation
+
+- Argon2id uses 19 MiB, t=2, p=1, always via `spawn_blocking`. The test runs
+  on a current-thread runtime, records the blocking thread id, and completes
+  a ping on the worker before the hash is released. Passwords must be 8–128
+  bytes. Uppercase usernames are rejected rather than folded; login still
+  matches the `NOCASE` column.
+- The owner code is the `server_settings` key `owner_invite`, not an
+  `invites` row. `created_by` is `NOT NULL`, so an invite cannot exist before
+  the first user, and `0001_init.sql` was left unchanged. The code is 16
+  random bytes, base64url. `ss-server invite create --owner` rotates it until
+  someone registers, then fails. Consuming it grants the seeded `Admin` role.
+- Session tokens are 32 random bytes, base64url without padding, stored as
+  hex SHA-256. Expiry is 90 days and slides when the token is presented.
+  Login and register mint a new session. `resume_token` is accepted as a
+  session token (T-060). Welcome echoes the token to present next and carries
+  an empty snapshot. `perms_cache` is the OR of the user's roles and
+  `@everyone`; channel overrides are T-022.
+- Login and register are limited to 5/minute per peer IP. Session tokens are
+  not. An active ban returns `BANNED` with the expiry millis in the message
+  (the Error proto has no expiry field) and the connection is closed after
+  the frame is given time to arrive.
+- The process default listener is still the T-016 spike, so existing voice
+  clients keep working. Authenticated Hello is `connection::Server`. A spike
+  start with zero users still prints the owner invite. Logs go to stderr so
+  that line is the command's stdout. `ss-client-core` cannot drive Hello yet;
+  the integration tests use `ss-net`.

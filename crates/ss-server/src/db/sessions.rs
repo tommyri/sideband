@@ -92,6 +92,23 @@ pub async fn touch(
     .await)?)
 }
 
+/// Sets `last_seen_at` and `expires_at` together.
+pub async fn slide(
+    conn: &mut SqliteConnection,
+    id: Id,
+    last_seen_at: Timestamp,
+    expires_at: Timestamp,
+) -> Result<(), Error> {
+    changed(db(sqlx::query(
+        "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+    )
+    .bind(last_seen_at.as_millis())
+    .bind(expires_at.as_millis())
+    .bind(id)
+    .execute(&mut *conn)
+    .await)?)
+}
+
 /// Deletes a session.
 pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
     changed(db(sqlx::query("DELETE FROM sessions WHERE id = ?")
@@ -139,7 +156,7 @@ impl SessionRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{NewSession, delete, get_by_token_hash, insert, list_for_user, touch};
+    use super::{NewSession, delete, get_by_token_hash, insert, list_for_user, slide, touch};
     use crate::db::{Error, testing};
 
     #[tokio::test]
@@ -169,10 +186,11 @@ mod tests {
         );
         let seen = ss_core::Timestamp::from_millis(50);
         touch(&mut conn, created.id, seen).await.unwrap();
-        assert_eq!(
-            list_for_user(&mut conn, user.id).await.unwrap()[0].last_seen_at,
-            seen
-        );
+        let expires = ss_core::Timestamp::from_millis(90);
+        slide(&mut conn, created.id, seen, expires).await.unwrap();
+        let stored = &list_for_user(&mut conn, user.id).await.unwrap()[0];
+        assert_eq!(stored.last_seen_at, seen);
+        assert_eq!(stored.expires_at, Some(expires));
         let duplicate = insert(
             &mut conn,
             NewSession {
