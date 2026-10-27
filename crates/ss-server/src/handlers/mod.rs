@@ -8,6 +8,7 @@
 mod channels;
 mod dm;
 pub(crate) mod messages;
+mod moderation;
 mod presence;
 mod profile;
 mod roles;
@@ -15,6 +16,8 @@ mod roles;
 pub use channels::Channels;
 pub(crate) use dm::DirectMessages;
 pub use messages::Messages;
+pub(crate) use moderation::Moderation;
+pub use moderation::{ban_account, grant_admin, unban_account};
 pub use presence::Presence;
 pub(crate) use profile::Profiles;
 pub use roles::{CommandReply, Error, Roles};

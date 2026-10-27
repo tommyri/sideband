@@ -38,6 +38,11 @@ enum Command {
         #[command(subcommand)]
         action: UserAction,
     },
+    /// Manage roles.
+    Role {
+        #[command(subcommand)]
+        action: RoleAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -67,6 +72,40 @@ enum UserAction {
         #[arg(long, default_value = "./data")]
         data_dir: PathBuf,
     },
+    /// Record a permanent ban. A live session stays connected until restart.
+    Ban {
+        /// Login name. Matching is case-insensitive.
+        #[arg(long)]
+        username: String,
+        /// Reason stored on the ban and the audit row.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+    },
+    /// Lift every open ban for an account.
+    Unban {
+        /// Login name. Matching is case-insensitive.
+        #[arg(long)]
+        username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoleAction {
+    /// Grant the seeded Admin role. A running server sees it after restart.
+    GrantAdmin {
+        /// Login name. Matching is case-insensitive.
+        #[arg(long)]
+        username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+    },
 }
 
 // The spike is I/O-bound. Keep packet handling on one executor thread; TLS
@@ -92,6 +131,20 @@ async fn main() -> anyhow::Result<()> {
                     data_dir,
                 },
         }) => reset_password(data_dir, &username, &password).await,
+        Some(Command::User {
+            action:
+                UserAction::Ban {
+                    username,
+                    reason,
+                    data_dir,
+                },
+        }) => ban_user(data_dir, &username, reason).await,
+        Some(Command::User {
+            action: UserAction::Unban { username, data_dir },
+        }) => unban_user(data_dir, &username).await,
+        Some(Command::Role {
+            action: RoleAction::GrantAdmin { username, data_dir },
+        }) => grant_admin(data_dir, &username).await,
         None => serve(args.data_dir, args.bind, args.check_migrations).await,
     }
 }
@@ -112,6 +165,30 @@ async fn create_owner_invite(owner: bool, data_dir: PathBuf) -> anyhow::Result<(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+async fn ban_user(data_dir: PathBuf, username: &str, reason: Option<String>) -> anyhow::Result<()> {
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    ss_server::handlers::ban_account(&pool, username, reason.as_deref()).await?;
+    println!("banned {username}");
+    Ok(())
+}
+
+async fn unban_user(data_dir: PathBuf, username: &str) -> anyhow::Result<()> {
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    ss_server::handlers::unban_account(&pool, username).await?;
+    println!("unbanned {username}");
+    Ok(())
+}
+
+async fn grant_admin(data_dir: PathBuf, username: &str) -> anyhow::Result<()> {
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    if ss_server::handlers::grant_admin(&pool, username).await? {
+        println!("admin granted");
+    } else {
+        println!("already an admin");
+    }
+    Ok(())
 }
 
 async fn reset_password(data_dir: PathBuf, username: &str, password: &str) -> anyhow::Result<()> {

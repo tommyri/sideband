@@ -108,6 +108,13 @@ impl Rooms {
         events
     }
 
+    /// Connection and local mute flags for a user who is in voice.
+    pub(crate) fn placed(&self, user: Id) -> Option<(Id, bool, bool)> {
+        let conn = *self.by_user.get(&user)?;
+        let seat = self.seat(conn)?;
+        Some((conn, seat.flags.self_mute(), seat.flags.self_deaf()))
+    }
+
     /// Hot-path lookup. Copies the seat so the caller can borrow the channel set.
     pub(crate) fn seat(&self, conn: Id) -> Option<Seat> {
         self.peers.get(&conn).and_then(|peer| peer.seat)

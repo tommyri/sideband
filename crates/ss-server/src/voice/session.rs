@@ -7,7 +7,7 @@ use ss_core::{ChannelKind, Id, Permissions, VoiceProfile};
 use ss_proto::{v1, validate::id_from_bytes};
 
 use crate::{
-    db::{self, channels, users},
+    db::{self, NewAuditEntry, audit_log, channels, users},
     handlers::Error,
     media::Forwarder,
     perms::{AccessError, PermissionService},
@@ -179,11 +179,75 @@ impl Voice {
             .server_mute(user, command.muted)
             .into_iter()
             .collect();
+        let mut conn = self.perms.pool().write().await;
+        audit_log::insert(
+            &mut conn,
+            NewAuditEntry {
+                id: Id::generate(),
+                actor_id: Some(actor),
+                action: "user.mute".to_owned(),
+                target_kind: "user".to_owned(),
+                target_id: Some(user),
+                details: serde_json::json!({ "muted": command.muted }).to_string(),
+            },
+        )
+        .await?;
         Ok(Outcome {
             ack: empty_ack(),
             broadcast,
             direct: Vec::new(),
         })
+    }
+
+    /// Moves `target`, who is already in voice, into `channel_id`.
+    ///
+    /// The caller has already required `MOVE_MEMBERS`. View is still required.
+    /// Connect and the user limit are bypassed.
+    pub(crate) async fn move_member(
+        &self,
+        target: Id,
+        channel_id: Id,
+    ) -> Result<(Outcome, Id), Error> {
+        let channel = self.channel(channel_id).await?;
+        if channel.kind != ChannelKind::Voice {
+            return Err(Error::Invalid("not a voice channel"));
+        }
+        self.allow(
+            target,
+            channel_id,
+            Permissions::VIEW_CHANNEL,
+            "missing view channel",
+        )?;
+        let (conn, self_mute, self_deaf) = self
+            .rooms
+            .lock()
+            .placed(target)
+            .ok_or(Error::Invalid("not in a voice channel"))?;
+        let profile = channel.voice_profile.unwrap_or(VoiceProfile::Voice);
+        let events = self
+            .rooms
+            .lock()
+            .join(JoinPlan {
+                conn,
+                channel: channel_id,
+                self_mute,
+                self_deaf,
+                codec_channels: rooms::codec_channels(profile),
+                can_speak: self
+                    .perms
+                    .check(target, Some(channel_id), Permissions::SPEAK)
+                    .is_ok(),
+                limit: None,
+            })
+            .map_err(join_error)?;
+        Ok((
+            Outcome {
+                ack: empty_ack(),
+                broadcast: events.broadcast,
+                direct: events.direct,
+            },
+            conn,
+        ))
     }
 
     async fn channel(&self, id: Id) -> Result<db::Channel, Error> {

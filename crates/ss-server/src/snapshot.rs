@@ -129,6 +129,12 @@ pub fn offline_presence(_user: Id) -> v1::Presence {
 /// fanned out from here.
 #[must_use]
 pub fn delivers(perms: &PermissionService, user: Id, event: &server_envelope::Msg) -> bool {
+    if matches!(
+        event,
+        server_envelope::Msg::InviteCreated(_) | server_envelope::Msg::InviteRevoked(_)
+    ) {
+        return perms.check(user, None, Permissions::MANAGE_SERVER).is_ok();
+    }
     let Some(channel_id) = event_channel(event) else {
         return true;
     };

@@ -64,6 +64,22 @@ pub async fn list_for_user(conn: &mut SqliteConnection, user_id: Id) -> Result<V
     Ok(rows.into_iter().map(BanRow::into_ban).collect())
 }
 
+/// Sets `lifted_at` on every open ban for `user_id`. Returns how many changed.
+pub async fn lift_user(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    lifted_at: Timestamp,
+) -> Result<u64, Error> {
+    let result = db(sqlx::query(
+        "UPDATE bans SET lifted_at = ? WHERE user_id = ? AND lifted_at IS NULL",
+    )
+    .bind(lifted_at.as_millis())
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await)?;
+    Ok(result.rows_affected())
+}
+
 /// Sets `lifted_at`.
 pub async fn lift(conn: &mut SqliteConnection, id: Id, lifted_at: Timestamp) -> Result<(), Error> {
     changed(db(sqlx::query(

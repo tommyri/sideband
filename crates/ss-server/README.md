@@ -2,13 +2,13 @@
 
 The server owns control dispatch, voice membership (`voice::Registry`),
 opaque audio fan-out (`media::Router`), accounts (`auth`, `connection`),
-permissions (`perms`), channels, presence, voice, text, direct messages, link previews, attachments, and SQLite (`db`). Media is never decoded.
+permissions (`perms`), channels, presence, voice, text, direct messages, link previews, attachments, moderation, and SQLite (`db`). Media is never decoded.
 
 `cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433` runs
 the T-016 voice spike. It accepts any Login/Register username and does not
 read accounts. A first start with zero users prints a one-time owner invite.
 `ss-server invite create --owner --data-dir ./data` rotates that code until
-someone registers. `ss-server user set-password` replaces a password hash.
+someone registers. `user set-password`, `user ban`, `user unban`, and `role grant-admin` recover an account.
 `--check-migrations` exits without listening. Authenticated Hello is
 `connection::Server`.
 

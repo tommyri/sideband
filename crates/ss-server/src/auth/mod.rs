@@ -334,6 +334,11 @@ pub async fn create_owner_invite(pool: &db::Pool) -> Result<String, Error> {
     Ok(code)
 }
 
+/// A new unguessable invite code.
+pub(crate) fn invite_code() -> Result<String, Error> {
+    token::owner_code()
+}
+
 /// Replaces `username`'s password hash. The username match is case-insensitive.
 pub async fn set_password(pool: &db::Pool, username: &str, password: &str) -> Result<(), Error> {
     validate_password(password)?;
