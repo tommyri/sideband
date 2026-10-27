@@ -13,7 +13,8 @@ use ss_proto::{
 };
 
 use crate::{
-    db::{self, NewMessage, attachments, channels, messages, read_states, users},
+    db::{self, NewMessage, attachments, channels, link_previews, messages, read_states, users},
+    events::EventBus,
     perms::{AccessError, PermissionService},
     previews::{PreviewJob, PreviewQueue},
 };
@@ -41,7 +42,7 @@ pub struct Messages {
 impl Messages {
     /// Five sends per five seconds, and one typing event per five seconds.
     #[must_use]
-    pub fn new(perms: Arc<PermissionService>) -> Self {
+    pub fn new(perms: Arc<PermissionService>, pool: Arc<db::Pool>, bus: EventBus) -> Self {
         let send_quota = Quota::with_period(Duration::from_secs(5))
             .expect("five seconds")
             .allow_burst(NonZeroU32::new(SEND_BURST).expect("burst"));
@@ -50,7 +51,7 @@ impl Messages {
             perms,
             sends: RateLimiter::keyed(send_quota),
             typing: RateLimiter::keyed(typing_quota),
-            previews: PreviewQueue::new(),
+            previews: PreviewQueue::new(pool, bus),
         }
     }
 
@@ -323,6 +324,7 @@ pub(crate) async fn to_proto(
     };
     let mentions = messages::mentions(conn, message.id).await?;
     let files = attachments::list_for_message(conn, message.id).await?;
+    let previews = link_previews::ready_for_message(conn, message.id).await?;
     Ok(v1::Message {
         id: id_to_bytes(message.id),
         channel_id: id_to_bytes(message.channel_id),
@@ -331,11 +333,21 @@ pub(crate) async fn to_proto(
         reply_to: message.reply_to.map(id_to_bytes),
         attachments: files.into_iter().map(wire_attachment).collect(),
         mentions: mentions.into_iter().map(id_to_bytes).collect(),
-        link_previews: Vec::new(),
+        link_previews: previews.into_iter().map(wire_preview).collect(),
         created_at: message.created_at.as_millis(),
         edited_at: message.edited_at.map(Timestamp::as_millis),
         webhook_id: message.webhook_id.map(id_to_bytes),
     })
+}
+
+fn wire_preview(preview: db::LinkPreview) -> v1::LinkPreview {
+    v1::LinkPreview {
+        url: preview.url,
+        title: preview.title,
+        description: preview.description,
+        image_url: preview.image_url,
+        site_name: preview.site_name,
+    }
 }
 
 fn wire_attachment(file: db::Attachment) -> v1::Attachment {

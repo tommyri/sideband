@@ -1,6 +1,6 @@
 # T-029 — Server-side link previews with SSRF protection
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-026
@@ -38,3 +38,17 @@ Image proxying, embeds for arbitrary sites beyond OG/oEmbed.
   avoids refetch, `<url>` suppression.
 
 ## Notes from implementation
+
+- The first three distinct http(s) URLs are fetched. `<url>` is skipped.
+  Fragments and userinfo are dropped. The cache key is the normalized URL.
+- Each hop is pinned to one resolved address. Loopback, private, link-local,
+  multicast, CGNAT, and IPv4-mapped copies of those are refused before the
+  socket opens. Redirects are followed by hand, at most three, and checked
+  again. The body stops at 1 MiB. The image URL is stored and not proxied.
+- Success is cached for 24 hours and failure for 1 hour. A later message with
+  the same URL does not fetch again. `MessageUpdated` carries the ready cards.
+  `MessageCreated` is still empty because the fetch happens after the ack.
+- Settings are read once when the workers start. `link_previews=off` disables
+  them. `link_preview_allow` and `link_preview_deny` are comma-separated hosts.
+  `*.example.com` matches a suffix. Tests may allow loopback; that switch is
+  not read from settings.

@@ -125,6 +125,24 @@ pub async fn unlink(conn: &mut SqliteConnection, message_id: Id, url: &str) -> R
     .await)?)
 }
 
+/// Ready previews attached to a message, in position order.
+pub async fn ready_for_message(
+    conn: &mut SqliteConnection,
+    message_id: Id,
+) -> Result<Vec<LinkPreview>, Error> {
+    let rows = db(sqlx::query_as::<_, PreviewRow>(
+        "SELECT p.url_hash, p.url, p.status, p.title, p.description, p.image_url, p.site_name, p.fetched_at, p.expires_at
+         FROM message_links l
+         JOIN link_previews p ON p.url_hash = l.url_hash
+         WHERE l.message_id = ? AND p.status = 1
+         ORDER BY l.position, l.url_hash",
+    )
+    .bind(message_id)
+    .fetch_all(&mut *conn)
+    .await)?;
+    rows.into_iter().map(PreviewRow::into_preview).collect()
+}
+
 /// Links on a message, in position order.
 pub async fn links(conn: &mut SqliteConnection, message_id: Id) -> Result<Vec<MessageLink>, Error> {
     let rows = db(sqlx::query_as::<_, LinkRow>(

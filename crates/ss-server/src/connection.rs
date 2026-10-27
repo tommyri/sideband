@@ -82,12 +82,13 @@ impl Server {
         let (voice, media) = Voice::open(Arc::clone(&perms));
         let (stop, _) = watch::channel(false);
         let files = storage::Store::open(Arc::clone(&pool)).await?;
+        let bus = EventBus::new();
         Ok(Self {
-            auth: Auth::new(pool),
+            auth: Auth::new(Arc::clone(&pool)),
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
-            messages: Messages::new(Arc::clone(&perms)),
+            messages: Messages::new(Arc::clone(&perms), pool, bus.clone()),
             profiles: Profiles::new(Arc::clone(&perms), Arc::clone(&registry)),
             presence: Presence::new(Arc::clone(&registry)),
             files,
@@ -95,7 +96,7 @@ impl Server {
             voice,
             media,
             registry,
-            bus: EventBus::new(),
+            bus,
             stop,
         })
     }
@@ -377,6 +378,7 @@ fn welcome_envelope(
                     "voice".into(),
                     "messages".into(),
                     "dms".into(),
+                    "previews".into(),
                     "attachments".into(),
                 ],
             }),

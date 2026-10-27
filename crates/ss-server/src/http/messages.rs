@@ -182,6 +182,18 @@ fn message_json(message: &v1::Message) -> Value {
             ),
         );
     }
+    if !message.link_previews.is_empty() {
+        value.insert(
+            "linkPreviews".into(),
+            json!(
+                message
+                    .link_previews
+                    .iter()
+                    .map(preview_json)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
     if !message.mentions.is_empty() {
         value.insert(
             "mentions".into(),
@@ -213,6 +225,24 @@ fn user_json(user: &v1::User) -> Value {
         value.insert("avatarAttachmentId".into(), json!(b64(avatar)));
     }
     value.insert("kind".into(), json!(kind_name(user.kind)));
+    Value::Object(value)
+}
+
+fn preview_json(preview: &v1::LinkPreview) -> Value {
+    let mut value = Map::new();
+    value.insert("url".into(), json!(preview.url));
+    if let Some(title) = &preview.title {
+        value.insert("title".into(), json!(title));
+    }
+    if let Some(description) = &preview.description {
+        value.insert("description".into(), json!(description));
+    }
+    if let Some(image) = &preview.image_url {
+        value.insert("imageUrl".into(), json!(image));
+    }
+    if let Some(site) = &preview.site_name {
+        value.insert("siteName".into(), json!(site));
+    }
     Value::Object(value)
 }
 
