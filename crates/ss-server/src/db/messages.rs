@@ -149,6 +149,19 @@ pub async fn mentions(conn: &mut SqliteConnection, id: Id) -> Result<Vec<Id>, Er
     .await)
 }
 
+/// Newest visible message in a channel.
+pub async fn latest_id(conn: &mut SqliteConnection, channel_id: Id) -> Result<Option<Id>, Error> {
+    db(sqlx::query_scalar(
+        "SELECT id FROM messages
+         WHERE channel_id = ? AND deleted_at IS NULL
+         ORDER BY id DESC
+         LIMIT 1",
+    )
+    .bind(channel_id)
+    .fetch_optional(&mut *conn)
+    .await)
+}
+
 /// Newest `limit` visible messages older than `before`, in ascending id order.
 ///
 /// `before = None` pages from the newest message. `limit = 0` is empty.

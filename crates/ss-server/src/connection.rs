@@ -2,7 +2,7 @@
 //!
 //! The voice spike in the crate root still accepts any username. This server
 //! requires [`auth`] and then answers `Ping`, presence, profile, role, channel,
-//! text, and voice commands. Events are delivered to the actor on the command reply and
+//! direct message, text, and voice commands. Events are delivered to the actor on the command reply and
 //! published for every other visible session. Media datagrams are forwarded
 //! only to members of the same voice channel.
 
@@ -10,7 +10,7 @@ use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
-    handlers::{Channels, Messages, Presence, Profiles, Roles},
+    handlers::{Channels, DirectMessages, Messages, Presence, Profiles, Roles},
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
@@ -56,6 +56,7 @@ pub struct Server {
     auth: Auth,
     perms: Arc<PermissionService>,
     roles: Roles,
+    dms: DirectMessages,
     channels: Channels,
     messages: Messages,
     profiles: Profiles,
@@ -84,6 +85,7 @@ impl Server {
         Ok(Self {
             auth: Auth::new(pool),
             roles: Roles::new(Arc::clone(&perms)),
+            dms: DirectMessages::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
             messages: Messages::new(Arc::clone(&perms)),
             profiles: Profiles::new(Arc::clone(&perms), Arc::clone(&registry)),
@@ -374,6 +376,7 @@ fn welcome_envelope(
                     "presence".into(),
                     "voice".into(),
                     "messages".into(),
+                    "dms".into(),
                     "attachments".into(),
                 ],
             }),
@@ -568,6 +571,8 @@ async fn replies(
     let result = if let Some(result) = server.presence.dispatch(context.user_id, msg) {
         result
     } else if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.dms.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
         result

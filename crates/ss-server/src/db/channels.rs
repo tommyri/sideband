@@ -165,6 +165,35 @@ pub async fn remove_member(
     .await)?)
 }
 
+/// Live 1:1 DM whose members are exactly `left` and `right`.
+pub async fn find_pair(
+    conn: &mut SqliteConnection,
+    left: Id,
+    right: Id,
+) -> Result<Option<Channel>, Error> {
+    let id = db(sqlx::query_scalar(
+        "SELECT c.id FROM channels c
+         WHERE c.kind = ? AND c.deleted_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM channel_members m WHERE m.channel_id = c.id AND m.user_id = ?
+           )
+           AND EXISTS (
+             SELECT 1 FROM channel_members m WHERE m.channel_id = c.id AND m.user_id = ?
+           )
+           AND (SELECT COUNT(*) FROM channel_members m WHERE m.channel_id = c.id) = 2
+         LIMIT 1",
+    )
+    .bind(ChannelKind::Dm.as_i64())
+    .bind(left)
+    .bind(right)
+    .fetch_optional(&mut *conn)
+    .await)?;
+    match id {
+        Some(id) => get(conn, id).await,
+        None => Ok(None),
+    }
+}
+
 /// Members of a channel, ordered by user id.
 pub async fn members(conn: &mut SqliteConnection, channel_id: Id) -> Result<Vec<Id>, Error> {
     db(sqlx::query_scalar(

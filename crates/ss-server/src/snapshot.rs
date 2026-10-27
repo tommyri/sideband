@@ -48,7 +48,12 @@ pub async fn build_with(
         }
         let empty: &[Id] = &[];
         let members = members_of.get(&channel.id).map_or(empty, Vec::as_slice);
-        let wire = wire_channel(channel, members)?;
+        let last_message_id = if channel.kind.is_direct() {
+            messages::latest_id(&mut conn, channel.id).await?
+        } else {
+            None
+        };
+        let wire = wire_channel(channel, members, last_message_id)?;
         if channel.kind.is_direct() {
             direct_messages.push(wire);
         } else {
@@ -133,9 +138,11 @@ pub fn delivers(perms: &PermissionService, user: Id, event: &server_envelope::Ms
 }
 
 /// Wire form of a channel. `member_ids` is empty for guild channels.
+/// `last_message_id` is the newest visible DM message, when there is one.
 pub(crate) fn wire_channel(
     channel: &db::Channel,
     member_ids: &[Id],
+    last_message_id: Option<Id>,
 ) -> Result<v1::Channel, db::Error> {
     Ok(v1::Channel {
         id: id_to_bytes(channel.id),
@@ -149,6 +156,7 @@ pub(crate) fn wire_channel(
         created_by: Some(id_to_bytes(channel.created_by)),
         created_at: channel.created_at.as_millis(),
         member_ids: member_ids.iter().copied().map(id_to_bytes).collect(),
+        last_message_id: last_message_id.map(id_to_bytes),
     })
 }
 

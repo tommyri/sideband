@@ -58,6 +58,9 @@ message Channel {
   int64 created_at = 9;
   // DM participants. Empty for guild channels.
   repeated bytes member_ids = 10;
+  // Newest visible message in a DM. Absent when the conversation is empty,
+  // and absent on guild channels.
+  optional bytes last_message_id = 11;
 }
 
 // Create a channel. The server assigns the id and emits `ChannelCreated`.
@@ -110,10 +113,26 @@ message MoveChannel {
   int32 position = 3;
 }
 
-// Open a DM. Returns the existing DM when the same set already has one.
+// Open a DM or a group DM.
+// One other user returns the existing 1:1 channel for that unordered pair.
+// Two to nine other users always create a new group DM.
 message CreateDm {
   // Other participant user ids. The sender is included by the server.
   repeated bytes user_ids = 1;
+}
+
+// Leave a group DM. The caller is removed from the conversation.
+message LeaveDm {
+  // Group conversation to leave.
+  bytes channel_id = 1;
+}
+
+// Add people to a group DM. Only the creator may call this.
+message AddDmMembers {
+  // Group conversation.
+  bytes channel_id = 1;
+  // Users to add.
+  repeated bytes user_ids = 2;
 }
 
 // A channel was created.
