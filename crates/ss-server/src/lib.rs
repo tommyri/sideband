@@ -1,6 +1,9 @@
-//! Unauthenticated voice spike: QUIC control, connection membership, and opaque
-//! Opus forwarding. Accounts, persistence, and permissions arrive in phase 2.
+//! Voice spike plus the phase-2 SQLite schema.
+//!
+//! QUIC control, connection membership, and opaque Opus forwarding still do
+//! not read the database. Accounts and permissions use [`db`] from here on.
 
+pub mod db;
 pub mod media;
 pub mod voice;
 
