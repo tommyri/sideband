@@ -24,7 +24,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-014](T-014-opus-codec.md) | Opus codec wrapper | S | T-003 | done |
 | [T-015](T-015-jitter-buffer-mixer.md) | Jitter buffer, decoders, mixer | M | T-014 | done |
 | [T-016](T-016-minimal-forwarding-server.md) | Minimal forwarding server | S | T-004 | done |
-| [T-017](T-017-headless-cli-client.md) | Headless CLI client + latency measurement | M | T-010, T-014, T-015, T-016 | todo |
+| [T-017](T-017-headless-cli-client.md) | Headless CLI client + latency measurement | M | T-010, T-014, T-015, T-016 | done |
 | [T-018](T-018-spike-evaluation.md) | Spike evaluation vs TS3, parameter lock | S | T-017 | todo |
 
 ## Phase 2 — Server core
