@@ -111,6 +111,63 @@ pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
         .await)?)
 }
 
+/// Storage path of an existing blob with this hash, if one is already stored.
+pub async fn storage_for_hash(
+    conn: &mut SqliteConnection,
+    sha256: &[u8],
+) -> Result<Option<String>, Error> {
+    db(sqlx::query_scalar(
+        "SELECT storage_path FROM attachments WHERE sha256 = ? ORDER BY id LIMIT 1",
+    )
+    .bind(sha256)
+    .fetch_optional(&mut *conn)
+    .await)
+}
+
+/// Bytes this user has stored since `since` (Unix milliseconds), including deduped rows.
+pub async fn bytes_since(conn: &mut SqliteConnection, user: Id, since: i64) -> Result<i64, Error> {
+    db(sqlx::query_scalar(
+        "SELECT COALESCE(SUM(size), 0) FROM attachments WHERE uploader_id = ? AND created_at >= ?",
+    )
+    .bind(user)
+    .bind(since)
+    .fetch_one(&mut *conn)
+    .await)
+}
+
+/// Rows that still point at `storage_path`.
+pub async fn path_count(conn: &mut SqliteConnection, storage_path: &str) -> Result<i64, Error> {
+    db(
+        sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE storage_path = ?")
+            .bind(storage_path)
+            .fetch_one(&mut *conn)
+            .await,
+    )
+}
+
+/// Uploads with no message that are older than `before` and are not avatars.
+pub async fn unlinked_before(
+    conn: &mut SqliteConnection,
+    before: i64,
+) -> Result<Vec<Attachment>, Error> {
+    let rows = db(sqlx::query_as::<_, AttachmentRow>(
+        "SELECT id, uploader_id, message_id, filename, mime, size, sha256, width, height, storage_path, created_at
+         FROM attachments
+         WHERE message_id IS NULL
+           AND created_at < ?
+           AND id NOT IN (
+               SELECT avatar_attachment_id FROM users WHERE avatar_attachment_id IS NOT NULL
+           )
+         ORDER BY created_at, id",
+    )
+    .bind(before)
+    .fetch_all(&mut *conn)
+    .await)?;
+    rows.into_iter()
+        .map(AttachmentRow::into_attachment)
+        .collect()
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct AttachmentRow {
     id: Id,

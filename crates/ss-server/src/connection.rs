@@ -1,8 +1,8 @@
 //! Authenticated control-stream owner.
 //!
 //! The voice spike in the crate root still accepts any username. This server
-//! requires [`auth`] and then answers `Ping`, presence, role, channel, and
-//! voice commands. Events are delivered to the actor on the command reply and
+//! requires [`auth`] and then answers `Ping`, presence, profile, role, channel,
+//! text, and voice commands. Events are delivered to the actor on the command reply and
 //! published for every other visible session. Media datagrams are forwarded
 //! only to members of the same voice channel.
 
@@ -10,11 +10,11 @@ use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
-    handlers::{Channels, Messages, Presence, Roles},
+    handlers::{Channels, Messages, Presence, Profiles, Roles},
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
-    snapshot,
+    snapshot, storage,
     voice::{self, Voice},
 };
 use prost::Message;
@@ -58,11 +58,13 @@ pub struct Server {
     roles: Roles,
     channels: Channels,
     messages: Messages,
+    profiles: Profiles,
     presence: Presence,
     voice: Arc<Voice>,
     media: Arc<Forwarder>,
     registry: Arc<ConnectionRegistry>,
     bus: EventBus,
+    files: storage::Store,
     stop: watch::Sender<bool>,
 }
 
@@ -78,12 +80,15 @@ impl Server {
         let registry = Arc::new(ConnectionRegistry::new(registry::SLOW_CONSUMER_AFTER));
         let (voice, media) = Voice::open(Arc::clone(&perms));
         let (stop, _) = watch::channel(false);
+        let files = storage::Store::open(Arc::clone(&pool)).await?;
         Ok(Self {
             auth: Auth::new(pool),
             roles: Roles::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
             messages: Messages::new(Arc::clone(&perms)),
+            profiles: Profiles::new(Arc::clone(&perms), Arc::clone(&registry)),
             presence: Presence::new(Arc::clone(&registry)),
+            files,
             perms,
             voice,
             media,
@@ -96,6 +101,12 @@ impl Server {
     /// Opaque-media counters for the authenticated router.
     pub fn media_stats(&self) -> media::Stats {
         self.media.stats()
+    }
+
+    /// File store used by upload routes. The process does not bind HTTP yet.
+    #[must_use]
+    pub fn files(&self) -> storage::Store {
+        self.files.clone()
     }
 
     /// Live connections, presence, and the slow-consumer timer.
@@ -363,6 +374,7 @@ fn welcome_envelope(
                     "presence".into(),
                     "voice".into(),
                     "messages".into(),
+                    "attachments".into(),
                 ],
             }),
             resume_token: authed.resume_token.clone(),
@@ -560,6 +572,8 @@ async fn replies(
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.messages.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.profiles.dispatch(context.user_id, msg).await {
         result
     } else {
         return Answer {
