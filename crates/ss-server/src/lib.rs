@@ -9,15 +9,19 @@
 //! serve the authenticated membership and its datagram router.
 
 pub mod auth;
+pub mod backup;
+pub mod config;
 pub mod connection;
 pub mod db;
 pub mod events;
 pub mod handlers;
 pub mod http;
 pub mod media;
+pub mod observe;
 pub mod perms;
 pub mod previews;
 pub mod registry;
+pub mod serve;
 pub mod snapshot;
 pub mod storage;
 pub mod voice;

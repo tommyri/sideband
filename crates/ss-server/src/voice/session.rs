@@ -37,6 +37,12 @@ impl Voice {
         (voice, Arc::new(Forwarder::new(rooms)))
     }
 
+    /// Seats currently in a voice channel.
+    #[must_use]
+    pub fn member_count(&self) -> usize {
+        self.rooms.lock().member_count()
+    }
+
     pub(crate) fn attach(&self, conn: Id, user: Id, connection: quinn::Connection) {
         self.rooms.lock().attach(conn, user, connection);
     }

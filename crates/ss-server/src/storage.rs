@@ -129,11 +129,19 @@ pub struct Store {
 impl Store {
     /// Opens the store next to `pool`'s database file and starts orphan cleanup.
     pub async fn open(pool: Arc<db::Pool>) -> Result<Self, db::Error> {
+        Self::open_with_policy(pool, UploadPolicy::default()).await
+    }
+
+    /// Like [`Self::open`], using `policy` for the upload cap.
+    pub async fn open_with_policy(
+        pool: Arc<db::Pool>,
+        policy: UploadPolicy,
+    ) -> Result<Self, db::Error> {
         let data_dir = match pool.path().parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),
         };
-        Self::open_in(pool, data_dir, UploadPolicy::default()).await
+        Self::open_in(pool, data_dir, policy).await
     }
 
     /// Like [`Self::open`], with an explicit directory and policy.

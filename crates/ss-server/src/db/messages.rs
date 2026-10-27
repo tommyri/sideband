@@ -68,6 +68,7 @@ pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<
     .await)?;
     replace_mentions(&mut tx, message.id, &message.mentions).await?;
     db(tx.commit().await)?;
+    crate::observe::record_message();
     get(conn, message.id).await?.ok_or(Error::NotFound)
 }
 

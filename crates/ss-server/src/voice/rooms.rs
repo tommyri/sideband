@@ -108,6 +108,13 @@ impl Rooms {
         events
     }
 
+    pub(crate) fn member_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|peer| peer.seat.is_some())
+            .count()
+    }
+
     /// Connection and local mute flags for a user who is in voice.
     pub(crate) fn placed(&self, user: Id) -> Option<(Id, bool, bool)> {
         let conn = *self.by_user.get(&user)?;
