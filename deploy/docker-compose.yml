@@ -1,0 +1,26 @@
+# UDP 443 is voice. TCP 443 is the public HTTP listener (and ACME, when
+# that mode is on). Metrics stay on the host's loopback.
+
+services:
+  socialspeak:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: socialspeak:local
+    restart: unless-stopped
+    command: ["run", "--data-dir", "/data"]
+    environment:
+      SS_BIND_QUIC: 0.0.0.0:443
+      SS_BIND_HTTP: 0.0.0.0:443
+      SS_INTERNAL_BIND: 0.0.0.0:9101
+    ports:
+      - "443:443/udp"
+      - "443:443/tcp"
+      - "127.0.0.1:9101:9101"
+    volumes:
+      - socialspeak:/data
+    cap_add:
+      - NET_BIND_SERVICE
+
+volumes:
+  socialspeak:

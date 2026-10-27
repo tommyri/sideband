@@ -1,0 +1,7 @@
+.git
+.github
+.worktrees
+target
+apps
+fuzz
+socialspeak-pins.json
