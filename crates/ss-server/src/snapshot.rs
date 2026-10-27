@@ -15,7 +15,7 @@ use ss_proto::{
 };
 
 use crate::{
-    db::{self, EVERYONE_ROLE_ID, NewChannel, channels, read_states, roles, users},
+    db::{self, EVERYONE_ROLE_ID, NewChannel, channels, messages, read_states, roles, users},
     perms::PermissionService,
 };
 
@@ -88,7 +88,13 @@ pub async fn build_with(
         reads.push(v1::ReadState {
             channel_id: id_to_bytes(state.channel_id),
             last_read_message_id: id_to_bytes(state.last_read_message_id),
-            mention_count: 0,
+            mention_count: messages::unread_mentions(
+                &mut conn,
+                state.channel_id,
+                user,
+                state.last_read_message_id,
+            )
+            .await?,
         });
     }
     Ok(v1::Snapshot {
@@ -222,6 +228,16 @@ fn event_channel(event: &server_envelope::Msg) -> Option<Id> {
         server_envelope::Msg::ChannelDeleted(message) => {
             message.channel.as_ref().map(|channel| &channel.id)
         }
+        server_envelope::Msg::MessageCreated(message) => {
+            message.message.as_ref().map(|message| &message.channel_id)
+        }
+        server_envelope::Msg::MessageUpdated(message) => {
+            message.message.as_ref().map(|message| &message.channel_id)
+        }
+        server_envelope::Msg::MessageDeleted(message) => {
+            message.message.as_ref().map(|message| &message.channel_id)
+        }
+        server_envelope::Msg::TypingStarted(message) => Some(&message.channel_id),
         _ => None,
     }?;
     id_from_bytes(bytes).ok()

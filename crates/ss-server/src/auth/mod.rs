@@ -139,6 +139,11 @@ impl Auth {
         }
     }
 
+    /// Resolves a bearer session token and slides its expiry.
+    pub async fn authenticate_bearer(&self, token: &str) -> Result<Authenticated, Error> {
+        self.resume(token).await
+    }
+
     /// Display name from settings, or `SocialSpeak` when the row is missing.
     pub(crate) async fn server_name(&self) -> String {
         let Ok(mut conn) = self.pool.read().await else {
