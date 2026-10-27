@@ -8,6 +8,7 @@
 /data
 *.db
 *.db-journal
+socialspeak-pins.json
 
 # Desktop app (scaffolded in T-042)
 apps/desktop/node_modules

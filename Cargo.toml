@@ -34,6 +34,7 @@ criterion = "0.7"
 # OSCE also compiles Deep PLC; DRED remains a separate opt-in feature.
 opusic-c = { version = "=1.6.1", features = ["osce"] }
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.

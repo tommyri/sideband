@@ -8,7 +8,25 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+ss-audio.workspace = true
 ss-client-core.workspace = true
+ss-core.workspace = true
+ss-net.workspace = true
+ss-proto.workspace = true
+
+anyhow.workspace = true
+bytes.workspace = true
+rtrb.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ss-server = { path = "../ss-server", version = "0.1.0" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
