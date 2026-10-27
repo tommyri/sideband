@@ -1,12 +1,16 @@
 # ss-server
 
-The server owns control dispatch, voice membership (`voice::Registry`), and
-opaque audio fan-out (`media::Router`). Media payloads are never decoded.
+The server owns control dispatch, voice membership (`voice::Registry`),
+opaque audio fan-out (`media::Router`), and the SQLite schema in `db`.
+Media payloads are never decoded. The voice spike does not read accounts.
 T-016 is an unauthenticated spike: any Login/Register username gets a fresh
 user and an empty snapshot. Channel ids are arbitrary 16-byte ids; accounts,
 persistence, permissions, and session resumption arrive in phase 2.
 
 Run `cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433`.
+The first run creates `./data/socialspeak.db` and applies the embedded
+migrations. `--check-migrations` exits without listening when that file
+already matches the binary.
 The first run creates a persistent TLS identity and prints its fingerprint.
 Ctrl-C closes connections and reports media counters. The spike uses one
 Tokio runtime thread; blocking identity-file work is offloaded by ss-net.

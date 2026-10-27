@@ -13,6 +13,10 @@ struct Args {
     /// UDP socket address for QUIC.
     #[arg(long, default_value = "0.0.0.0:443")]
     bind: SocketAddr,
+    /// Exit after checking that `data-dir/socialspeak.db` already has every
+    /// embedded migration. Does not apply SQL and does not listen.
+    #[arg(long)]
+    check_migrations: bool,
 }
 
 // The spike is I/O-bound. Keep packet handling on one executor thread; TLS
@@ -25,6 +29,14 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    let database_path = args.data_dir.join("socialspeak.db");
+    if args.check_migrations {
+        ss_server::db::check(&database_path).await?;
+        tracing::info!(path = %database_path.display(), "migrations are current");
+        return Ok(());
+    }
+    let database = ss_server::db::Pool::open(&database_path).await?;
+    tracing::info!(path = %database.path().display(), "database ready");
     let identity = tls::generate_self_signed(&args.data_dir).await?;
     // generate_self_signed returns exactly one validated leaf certificate.
     let fingerprint = tls::fingerprint(identity.certificates[0].as_ref());

@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ss-core.workspace = true
+ss-core = { workspace = true, features = ["sqlx"] }
 ss-net.workspace = true
 ss-proto.workspace = true
 
@@ -18,6 +18,8 @@ clap.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true
+sha2.workspace = true
+sqlx = { workspace = true, features = ["macros"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

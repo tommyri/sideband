@@ -31,7 +31,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-020](T-020-database-schema.md) | SQLite schema, migrations, repositories | M | T-003 | todo |
+| [T-020](T-020-database-schema.md) | SQLite schema, migrations, repositories | M | T-003 | done |
 | [T-021](T-021-auth-sessions-invites.md) | Auth, sessions, invites, owner bootstrap | M | T-020, T-004 | todo |
 | [T-022](T-022-permissions-engine.md) | Permissions engine and roles | M | T-020 | todo |
 | [T-023](T-023-channel-management.md) | Channel tree management + snapshot | M | T-021, T-022 | todo |
