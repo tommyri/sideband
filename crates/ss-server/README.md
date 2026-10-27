@@ -2,7 +2,7 @@
 
 The server owns control dispatch, voice membership (`voice::Registry`),
 opaque audio fan-out (`media::Router`), accounts (`auth`, `connection`),
-permissions (`perms`), channels, presence, and the SQLite schema in `db`. Media is never decoded.
+permissions (`perms`), channels, presence, authenticated voice, and SQLite (`db`). Media is never decoded.
 
 `cargo run -p ss-server -- --data-dir ./data --bind 127.0.0.1:4433` runs
 the T-016 voice spike. It accepts any Login/Register username and does not
@@ -20,7 +20,7 @@ identity-file work are offloaded.
 One audio track is assigned per joined connection. Joins announce existing
 tracks to the newcomer and its track to all channel members. Leave, switch,
 and disconnect remove the old assignment. Mute/deaf flags affect forwarding.
-The spike advertises mono 48 kHz Opus; profile negotiation is future work.
+The spike advertises mono 48 kHz Opus. Authenticated joins use the channel profile.
 
 Sessions and outgoing control queues are bounded; a full 256-member bootstrap
 fits before the writer resumes. Oversized Welcome replies return INVALID. Slow control consumers are

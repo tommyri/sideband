@@ -377,7 +377,12 @@ async fn authenticated_hello_answers_ping_and_rejects_other_commands() {
     };
     assert_eq!(pong.sent_at, 42);
 
-    let unsupported = command(&mut stream, 3, Msg::JoinVoice(v1::JoinVoice::default())).await;
+    let unsupported = command(
+        &mut stream,
+        3,
+        Msg::SubscribeTrack(v1::SubscribeTrack::default()),
+    )
+    .await;
     assert_eq!(error_code(&unsupported), i32::from(v1::ErrorCode::Invalid));
     match unsupported.msg.unwrap() {
         Event::Error(error) => assert_eq!(error.message, "unsupported command"),

@@ -5,7 +5,8 @@
 //! loop. Accounts, invites, and sessions live in [`auth`]. Role checks and
 //! role commands live in [`perms`] and [`handlers`]. [`snapshot`] fills
 //! `Welcome`. [`registry`] tracks connections and presence, and [`events`]
-//! fans domain events out to other sessions.
+//! fans domain events out to other sessions. [`voice`] and [`media`] also
+//! serve the authenticated membership and its datagram router.
 
 pub mod auth;
 pub mod connection;

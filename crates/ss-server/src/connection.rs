@@ -1,18 +1,21 @@
 //! Authenticated control-stream owner.
 //!
 //! The voice spike in the crate root still accepts any username. This server
-//! requires [`auth`] and then answers `Ping`, presence, role, and channel
-//! commands. Events are delivered to the actor on the command reply and
-//! published for every other visible session.
+//! requires [`auth`] and then answers `Ping`, presence, role, channel, and
+//! voice commands. Events are delivered to the actor on the command reply and
+//! published for every other visible session. Media datagrams are forwarded
+//! only to members of the same voice channel.
 
 use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
     handlers::{Channels, Presence, Roles},
+    media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
     snapshot,
+    voice::{self, Voice},
 };
 use prost::Message;
 use ss_core::{Id, Permissions, Timestamp};
@@ -23,7 +26,7 @@ use ss_net::{
 };
 use ss_proto::{
     v1::{self, client_envelope::Msg, server_envelope},
-    validate::id_to_bytes,
+    validate::{id_from_bytes, id_to_bytes},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -55,6 +58,8 @@ pub struct Server {
     roles: Roles,
     channels: Channels,
     presence: Presence,
+    voice: Arc<Voice>,
+    media: Arc<Forwarder>,
     registry: Arc<ConnectionRegistry>,
     bus: EventBus,
     stop: watch::Sender<bool>,
@@ -70,6 +75,7 @@ impl Server {
     pub async fn open(pool: Arc<crate::db::Pool>) -> Result<Self, crate::db::Error> {
         let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await?);
         let registry = Arc::new(ConnectionRegistry::new(registry::SLOW_CONSUMER_AFTER));
+        let (voice, media) = Voice::open(Arc::clone(&perms));
         let (stop, _) = watch::channel(false);
         Ok(Self {
             auth: Auth::new(pool),
@@ -77,10 +83,17 @@ impl Server {
             channels: Channels::new(Arc::clone(&perms)),
             presence: Presence::new(Arc::clone(&registry)),
             perms,
+            voice,
+            media,
             registry,
             bus: EventBus::new(),
             stop,
         })
+    }
+
+    /// Opaque-media counters for the authenticated router.
+    pub fn media_stats(&self) -> media::Stats {
+        self.media.stats()
     }
 
     /// Live connections, presence, and the slow-consumer timer.
@@ -197,6 +210,12 @@ impl Server {
         if let Some(event) = event {
             self.bus.publish(Some(conn_id), event);
         }
+        self.voice.attach(conn_id, authed.user.id, quic.clone());
+        let voice_guard = VoiceGuard {
+            voice: Arc::clone(&self.voice),
+            bus: self.bus.clone(),
+            conn_id,
+        };
         let context = AuthedContext {
             user_id: authed.user.id,
             conn_id,
@@ -225,6 +244,7 @@ impl Server {
             Err(error) => Err(error),
         };
         drop(subscription);
+        drop(voice_guard);
         drop(unregister);
         result
     }
@@ -236,7 +256,7 @@ impl Server {
         authed: &auth::Authenticated,
         request_id: u32,
     ) -> Result<v1::ServerEnvelope, Error> {
-        let snapshot = match snapshot::build_with(&self.perms, authed.user.id, |id| {
+        let mut snapshot = match snapshot::build_with(&self.perms, authed.user.id, |id| {
             self.registry.presence(id)
         })
         .await
@@ -252,6 +272,7 @@ impl Server {
                 return reject(connection, stream, &envelope).await;
             }
         };
+        self.voice.fill(&mut snapshot, authed.user.id);
         let welcome =
             welcome_envelope(request_id, authed, &self.auth.server_name().await, snapshot);
         if welcome.encoded_len() > ss_proto::MAX_FRAME_LEN {
@@ -275,6 +296,9 @@ impl Server {
         welcome: v1::ServerEnvelope,
     ) -> Result<(), Error> {
         let (sender, receiver) = stream.split();
+        let media_conn = pump.quic.clone();
+        let forwarder = Arc::clone(&self.media);
+        let media_conn_id = context.conn_id;
         let write = write_outbound(
             sender,
             pump.outgoing,
@@ -291,9 +315,21 @@ impl Server {
             request_id,
             welcome,
         );
+        let datagrams = async move {
+            loop {
+                match media_conn.read_datagram().await {
+                    Ok(bytes) => {
+                        tokio::task::yield_now().await;
+                        forwarder.forward(media_conn_id, &bytes);
+                    }
+                    Err(error) => return Err(Error::Connection(error)),
+                }
+            }
+        };
         tokio::select! {
             result = read => result,
             result = write => result,
+            result = datagrams => result,
         }
     }
 }
@@ -323,6 +359,7 @@ fn welcome_envelope(
                     "roles".into(),
                     "channels".into(),
                     "presence".into(),
+                    "voice".into(),
                 ],
             }),
             resume_token: authed.resume_token.clone(),
@@ -491,6 +528,13 @@ async fn replies(
             events: Vec::new(),
         };
     };
+    if let Some(result) = server
+        .voice
+        .dispatch(context.conn_id, context.user_id, msg)
+        .await
+    {
+        return voice_answer(request_id, result);
+    }
     let result = if let Some(result) = server.presence.dispatch(context.user_id, msg) {
         result
     } else if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
@@ -505,17 +549,20 @@ async fn replies(
     };
     match result {
         Ok(reply) => {
+            server.voice.refresh_speak();
+            let mut events = reply.events;
+            let removed = deleted_channels(&events);
+            for channel in removed {
+                events.extend(server.voice.evacuate(channel));
+            }
             let mut frames = vec![v1::ServerEnvelope::ack(request_id, reply.ack)];
-            for event in &reply.events {
+            for event in &events {
                 frames.push(v1::ServerEnvelope {
                     request_id: 0,
                     msg: Some(event.clone()),
                 });
             }
-            Answer {
-                frames,
-                events: reply.events,
-            }
+            Answer { frames, events }
         }
         Err(error) => {
             tracing::debug!(%error, "command rejected");
@@ -529,6 +576,48 @@ async fn replies(
             }
         }
     }
+}
+
+fn voice_answer(request_id: u32, result: Result<voice::Outcome, crate::handlers::Error>) -> Answer {
+    match result {
+        Ok(outcome) => {
+            let mut frames = vec![v1::ServerEnvelope::ack(request_id, outcome.ack)];
+            for event in outcome.direct.iter().chain(&outcome.broadcast) {
+                frames.push(v1::ServerEnvelope {
+                    request_id: 0,
+                    msg: Some(event.clone()),
+                });
+            }
+            Answer {
+                frames,
+                events: outcome.broadcast,
+            }
+        }
+        Err(error) => {
+            tracing::debug!(%error, "voice command rejected");
+            Answer {
+                frames: vec![v1::ServerEnvelope::error(
+                    request_id,
+                    error.code(),
+                    error.wire_message(),
+                )],
+                events: Vec::new(),
+            }
+        }
+    }
+}
+
+fn deleted_channels(events: &[server_envelope::Msg]) -> Vec<Id> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let server_envelope::Msg::ChannelDeleted(deleted) = event else {
+                return None;
+            };
+            let channel = deleted.channel.as_ref()?;
+            id_from_bytes(&channel.id).ok()
+        })
+        .collect()
 }
 
 fn unsupported(request_id: u32) -> v1::ServerEnvelope {
@@ -553,6 +642,20 @@ async fn reject<T>(
     // `CloseOnDrop` closes it when this session returns.
     let _ = timeout(Duration::from_secs(1), connection.quic().closed()).await;
     Err(Error::Protocol)
+}
+
+struct VoiceGuard {
+    voice: Arc<Voice>,
+    bus: EventBus,
+    conn_id: Id,
+}
+
+impl Drop for VoiceGuard {
+    fn drop(&mut self) {
+        for event in self.voice.detach(self.conn_id) {
+            self.bus.publish(None, event);
+        }
+    }
 }
 
 struct Unregister {
