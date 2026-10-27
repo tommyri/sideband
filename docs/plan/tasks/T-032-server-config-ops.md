@@ -1,6 +1,6 @@
 # T-032 — Server configuration, CLI, tracing, metrics, graceful shutdown
 
-Status: todo
+Status: done
 Phase: 2
 Size: S
 Depends on: T-021
@@ -39,3 +39,19 @@ Deployment files (T-034), TLS specifics (T-033).
 - Shutdown completes < 2 s with connected clients.
 
 ## Notes from implementation
+
+- `init` writes `config.toml` with comments, opens the database, and prints
+  the owner invite and fingerprint. `run` loads that file, binds authenticated
+  QUIC, public HTTP, and `127.0.0.1:9101`. `SS_SERVER_NAME`, `SS_BIND_QUIC`,
+  `SS_BIND_HTTP`, `SS_PUBLIC_HOST`, `SS_TLS_MODE`, `SS_UPLOAD_MAX_BYTES`,
+  `SS_LINK_PREVIEWS`, `SS_LINK_PREVIEW_ALLOW`, `SS_LINK_PREVIEW_DENY`,
+  `SS_INTERNAL_BIND`, and `SS_LOG_JSON` override the file. An unknown key
+  fails `check-config`. The data dir is `$XDG_DATA_HOME/socialspeak` when
+  that variable is set, otherwise `./data`.
+- With no subcommand the process is still the unauthenticated voice spike.
+  `acme` and `files` are accepted in the file and rejected when `run` would
+  listen. Logs rotate under `logs/` and are copied to stderr.
+- `/metrics` exports connections, voice members, datagrams forwarded and
+  dropped, messages inserted, and SQLite write-lock time. SIGTERM and Ctrl-C
+  notice clients, close them, and checkpoint the WAL. `backup` writes a tar
+  of a serialized database image plus `attachments/`.

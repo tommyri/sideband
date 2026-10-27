@@ -15,7 +15,7 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
     /// Directory containing the database and the persistent TLS identity.
-    #[arg(long, default_value = "./data")]
+    #[arg(long, default_value_os_t = default_data_dir())]
     data_dir: PathBuf,
     /// UDP socket address for QUIC.
     #[arg(long, default_value = "0.0.0.0:443")]
@@ -28,6 +28,38 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write `config.toml`, the database, and a TLS identity.
+    Init {
+        /// Directory for the config, database, attachments, and TLS identity.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Serve authenticated QUIC and HTTP until SIGTERM or Ctrl-C.
+    Run {
+        /// Directory containing `config.toml`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Exit non-zero when `config.toml` has an unknown key or a bad value.
+    CheckConfig {
+        /// Directory containing `config.toml`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Print the certificate fingerprint.
+    Fingerprint {
+        /// Directory containing the TLS identity.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Write a tar of the database and attachments.
+    Backup {
+        /// Destination tar path.
+        path: PathBuf,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
     /// Create an invite code.
     Invite {
         #[command(subcommand)]
@@ -53,13 +85,19 @@ enum InviteAction {
         #[arg(long)]
         owner: bool,
         /// Directory containing `socialspeak.db`.
-        #[arg(long, default_value = "./data")]
+        #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
 }
 
 #[derive(Subcommand)]
 enum UserAction {
+    /// Print every username.
+    List {
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
     /// Replace a user's password hash.
     SetPassword {
         /// Login name. Matching is case-insensitive.
@@ -69,7 +107,7 @@ enum UserAction {
         #[arg(long)]
         password: String,
         /// Directory containing `socialspeak.db`.
-        #[arg(long, default_value = "./data")]
+        #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
     /// Record a permanent ban. A live session stays connected until restart.
@@ -81,7 +119,7 @@ enum UserAction {
         #[arg(long)]
         reason: Option<String>,
         /// Directory containing `socialspeak.db`.
-        #[arg(long, default_value = "./data")]
+        #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
     /// Lift every open ban for an account.
@@ -90,7 +128,7 @@ enum UserAction {
         #[arg(long)]
         username: String,
         /// Directory containing `socialspeak.db`.
-        #[arg(long, default_value = "./data")]
+        #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
 }
@@ -103,9 +141,13 @@ enum RoleAction {
         #[arg(long)]
         username: String,
         /// Directory containing `socialspeak.db`.
-        #[arg(long, default_value = "./data")]
+        #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
+}
+
+fn default_data_dir() -> PathBuf {
+    ss_server::config::default_data_dir()
 }
 
 // The spike is I/O-bound. Keep packet handling on one executor thread; TLS
@@ -113,40 +155,75 @@ enum RoleAction {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
     match args.command {
-        Some(Command::Invite {
-            action: InviteAction::Create { owner, data_dir },
-        }) => create_owner_invite(owner, data_dir).await,
-        Some(Command::User {
-            action:
-                UserAction::SetPassword {
-                    username,
-                    password,
-                    data_dir,
-                },
-        }) => reset_password(data_dir, &username, &password).await,
-        Some(Command::User {
-            action:
-                UserAction::Ban {
-                    username,
-                    reason,
-                    data_dir,
-                },
-        }) => ban_user(data_dir, &username, reason).await,
-        Some(Command::User {
-            action: UserAction::Unban { username, data_dir },
-        }) => unban_user(data_dir, &username).await,
-        Some(Command::Role {
-            action: RoleAction::GrantAdmin { username, data_dir },
-        }) => grant_admin(data_dir, &username).await,
-        None => serve(args.data_dir, args.bind, args.check_migrations).await,
+        Some(Command::Init { data_dir }) => ss_server::serve::init(data_dir).await?,
+        Some(Command::Run { data_dir }) => ss_server::serve::run(data_dir).await?,
+        Some(Command::CheckConfig { data_dir }) => {
+            ss_server::serve::check(&data_dir)?;
+            println!("config ok");
+        }
+        Some(Command::Fingerprint { data_dir }) => ss_server::serve::fingerprint(data_dir).await?,
+        Some(Command::Backup { path, data_dir }) => {
+            ss_server::serve::backup(data_dir, path).await?;
+        }
+        other => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .with_writer(std::io::stderr)
+                .init();
+            match other {
+                Some(Command::Invite {
+                    action: InviteAction::Create { owner, data_dir },
+                }) => create_owner_invite(owner, data_dir).await?,
+                Some(Command::User {
+                    action: UserAction::List { data_dir },
+                }) => list_users(data_dir).await?,
+                Some(Command::User {
+                    action:
+                        UserAction::SetPassword {
+                            username,
+                            password,
+                            data_dir,
+                        },
+                }) => reset_password(data_dir, &username, &password).await?,
+                Some(Command::User {
+                    action:
+                        UserAction::Ban {
+                            username,
+                            reason,
+                            data_dir,
+                        },
+                }) => ban_user(data_dir, &username, reason).await?,
+                Some(Command::User {
+                    action: UserAction::Unban { username, data_dir },
+                }) => unban_user(data_dir, &username).await?,
+                Some(Command::Role {
+                    action: RoleAction::GrantAdmin { username, data_dir },
+                }) => grant_admin(data_dir, &username).await?,
+                Some(
+                    Command::Init { .. }
+                    | Command::Run { .. }
+                    | Command::CheckConfig { .. }
+                    | Command::Fingerprint { .. }
+                    | Command::Backup { .. },
+                )
+                | None => serve(args.data_dir, args.bind, args.check_migrations).await?,
+            }
+        }
     }
+    Ok(())
+}
+
+async fn list_users(data_dir: PathBuf) -> anyhow::Result<()> {
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    let mut conn = pool.write().await;
+    for user in ss_server::db::users::list(&mut conn).await? {
+        println!("{}", user.username);
+    }
+    Ok(())
 }
 
 async fn create_owner_invite(owner: bool, data_dir: PathBuf) -> anyhow::Result<()> {

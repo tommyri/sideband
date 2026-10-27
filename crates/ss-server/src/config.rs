@@ -1,0 +1,359 @@
+//! `config.toml` in the data directory.
+//!
+//! The file is created with comments on first use. A key that is not in the
+//! template is an error, so a typo does not silently do nothing. Environment
+//! variables override individual fields and ignore unrelated `SS_*` names.
+
+use std::{
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
+
+use figment::{
+    Figment,
+    providers::{Format, Serialized, Toml},
+};
+use serde::{Deserialize, Serialize};
+
+/// Comments written the first time the data directory is prepared.
+pub const TEMPLATE: &str = r#"# SocialSpeak. SS_SERVER_NAME, SS_BIND_QUIC, SS_BIND_HTTP, SS_PUBLIC_HOST,
+# SS_TLS_MODE, SS_UPLOAD_MAX_BYTES, SS_LINK_PREVIEWS, SS_LINK_PREVIEW_ALLOW,
+# SS_LINK_PREVIEW_DENY, SS_INTERNAL_BIND, and SS_LOG_JSON override this file.
+
+[server]
+name = "SocialSpeak"
+bind_quic = "0.0.0.0:443"
+bind_http = "0.0.0.0:4430"
+public_host = "localhost"
+
+[tls]
+# self-signed, acme, or files. Listening supports self-signed.
+mode = "self-signed"
+
+[limits]
+upload_max_bytes = 26214400
+
+[previews]
+enabled = true
+allow = ""
+deny = ""
+
+[internal]
+bind = "127.0.0.1:9101"
+
+[logging]
+json = false
+"#;
+
+const ROOT_KEYS: &[&str] = &["server", "tls", "limits", "previews", "internal", "logging"];
+const SERVER_KEYS: &[&str] = &["name", "bind_quic", "bind_http", "public_host"];
+const TLS_KEYS: &[&str] = &["mode"];
+const LIMIT_KEYS: &[&str] = &["upload_max_bytes"];
+const PREVIEW_KEYS: &[&str] = &["enabled", "allow", "deny"];
+const INTERNAL_KEYS: &[&str] = &["bind"];
+const LOGGING_KEYS: &[&str] = &["json"];
+
+/// How the process loads its certificate. Only `self-signed` listens today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode {
+    /// Generate or reuse `tls/identity.json`.
+    SelfSigned,
+    /// Automatic certificates. Not implemented.
+    Acme,
+    /// Certificate files supplied by the operator. Not implemented.
+    Files,
+}
+
+impl TlsMode {
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value.trim() {
+            "self-signed" => Ok(Self::SelfSigned),
+            "acme" => Ok(Self::Acme),
+            "files" => Ok(Self::Files),
+            _ => Err(Error::Invalid(
+                "SS_TLS_MODE must be self-signed, acme, or files",
+            )),
+        }
+    }
+}
+
+/// One process configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Config {
+    /// Name, bind addresses, and the host clients should use.
+    pub server: ServerConfig,
+    /// Certificate source.
+    pub tls: TlsConfig,
+    /// Upload cap.
+    pub limits: LimitsConfig,
+    /// Link preview settings copied into the database at startup.
+    pub previews: PreviewsConfig,
+    /// Loopback listener for health and metrics.
+    pub internal: InternalConfig,
+    /// Log shape.
+    pub logging: LoggingConfig,
+}
+
+/// `[server]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ServerConfig {
+    /// Shown in `Welcome`.
+    pub name: String,
+    /// QUIC UDP address.
+    pub bind_quic: SocketAddr,
+    /// Public HTTP address for history, uploads, and webhooks.
+    pub bind_http: SocketAddr,
+    /// Host name operators tell clients. Certificate names are a later task.
+    pub public_host: String,
+}
+
+/// `[tls]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TlsConfig {
+    /// `self-signed`, `acme`, or `files`.
+    pub mode: TlsMode,
+}
+
+/// `[limits]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LimitsConfig {
+    /// Largest accepted upload, in bytes.
+    pub upload_max_bytes: u64,
+}
+
+/// `[previews]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PreviewsConfig {
+    /// Fetch Open Graph cards.
+    pub enabled: bool,
+    /// Comma-separated host allow list. Empty allows every public host.
+    pub allow: String,
+    /// Comma-separated host deny list.
+    pub deny: String,
+}
+
+/// `[internal]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct InternalConfig {
+    /// `/healthz` and `/metrics`.
+    pub bind: SocketAddr,
+}
+
+/// `[logging]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct LoggingConfig {
+    /// JSON lines instead of the text format.
+    pub json: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            name: "SocialSpeak".to_owned(),
+            bind_quic: SocketAddr::from(([0, 0, 0, 0], 443)),
+            bind_http: SocketAddr::from(([0, 0, 0, 0], 4430)),
+            public_host: "localhost".to_owned(),
+        }
+    }
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            mode: TlsMode::SelfSigned,
+        }
+    }
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            upload_max_bytes: 25 * 1024 * 1024,
+        }
+    }
+}
+
+impl Default for PreviewsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow: String::new(),
+            deny: String::new(),
+        }
+    }
+}
+
+impl Default for InternalConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 9101)),
+        }
+    }
+}
+
+/// A config file or environment value the process should not start with.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The file could not be read or written.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// A key is not part of the template.
+    #[error("unknown config key `{0}`")]
+    Unknown(String),
+    /// A value could not be parsed.
+    #[error("{0}")]
+    Invalid(&'static str),
+    /// Figment rejected the document.
+    #[error("{0}")]
+    Figment(Box<figment::Error>),
+    /// The TOML document is not a table.
+    #[error("{0}")]
+    Toml(#[from] toml::de::Error),
+}
+
+/// `$XDG_DATA_HOME/socialspeak`, or `./data` when that variable is unset.
+#[must_use]
+pub fn default_data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME").map_or_else(
+        || PathBuf::from("./data"),
+        |home| PathBuf::from(home).join("socialspeak"),
+    )
+}
+
+/// Path of the config file inside a data directory.
+#[must_use]
+pub fn path_in(data_dir: &Path) -> PathBuf {
+    data_dir.join("config.toml")
+}
+
+/// Writes [`TEMPLATE`] when the file is absent. Does not overwrite.
+pub fn ensure_file(data_dir: &Path) -> Result<PathBuf, Error> {
+    fs::create_dir_all(data_dir)?;
+    let path = path_in(data_dir);
+    if !path.is_file() {
+        fs::write(&path, TEMPLATE)?;
+    }
+    Ok(path)
+}
+
+/// Loads `data_dir/config.toml` and applies `SS_*` overrides.
+pub fn load(data_dir: &Path) -> Result<Config, Error> {
+    let path = path_in(data_dir);
+    let text = fs::read_to_string(&path)?;
+    parse(&text)
+}
+
+/// Parses TOML and applies `SS_*` overrides.
+pub fn parse(text: &str) -> Result<Config, Error> {
+    reject_unknown(text)?;
+    let mut config: Config = Figment::from(Serialized::defaults(Config::default()))
+        .merge(Toml::string(text))
+        .extract()
+        .map_err(|error| Error::Figment(Box::new(error)))?;
+    apply_env(&mut config)?;
+    Ok(config)
+}
+
+fn reject_unknown(text: &str) -> Result<(), Error> {
+    let value: toml::Value = toml::from_str(text)?;
+    let Some(root) = value.as_table() else {
+        return Err(Error::Invalid("config.toml must be a table"));
+    };
+    for (key, value) in root {
+        let allowed = match key.as_str() {
+            "server" => SERVER_KEYS,
+            "tls" => TLS_KEYS,
+            "limits" => LIMIT_KEYS,
+            "previews" => PREVIEW_KEYS,
+            "internal" => INTERNAL_KEYS,
+            "logging" => LOGGING_KEYS,
+            other if ROOT_KEYS.contains(&other) => continue,
+            other => return Err(Error::Unknown(other.to_owned())),
+        };
+        let Some(table) = value.as_table() else {
+            return Err(Error::Invalid("each config section must be a table"));
+        };
+        for child in table.keys() {
+            if !allowed.contains(&child.as_str()) {
+                return Err(Error::Unknown(format!("{key}.{child}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_env(config: &mut Config) -> Result<(), Error> {
+    if let Some(value) = env("SS_SERVER_NAME") {
+        config.server.name = value;
+    }
+    if let Some(value) = env("SS_BIND_QUIC") {
+        config.server.bind_quic = parse_addr(&value, "SS_BIND_QUIC")?;
+    }
+    if let Some(value) = env("SS_BIND_HTTP") {
+        config.server.bind_http = parse_addr(&value, "SS_BIND_HTTP")?;
+    }
+    if let Some(value) = env("SS_PUBLIC_HOST") {
+        config.server.public_host = value;
+    }
+    if let Some(value) = env("SS_TLS_MODE") {
+        config.tls.mode = TlsMode::parse(&value)?;
+    }
+    if let Some(value) = env("SS_UPLOAD_MAX_BYTES") {
+        config.limits.upload_max_bytes = value
+            .parse()
+            .map_err(|_| Error::Invalid("SS_UPLOAD_MAX_BYTES must be a number"))?;
+    }
+    if let Some(value) = env("SS_LINK_PREVIEWS") {
+        config.previews.enabled = matches!(value.as_str(), "1" | "on" | "true");
+    }
+    if let Some(value) = env("SS_LINK_PREVIEW_ALLOW") {
+        config.previews.allow = value;
+    }
+    if let Some(value) = env("SS_LINK_PREVIEW_DENY") {
+        config.previews.deny = value;
+    }
+    if let Some(value) = env("SS_INTERNAL_BIND") {
+        config.internal.bind = parse_addr(&value, "SS_INTERNAL_BIND")?;
+    }
+    if let Some(value) = env("SS_LOG_JSON") {
+        config.logging.json = matches!(value.as_str(), "1" | "true" | "on");
+    }
+    Ok(())
+}
+
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|value| !value.is_empty())
+}
+
+fn parse_addr(value: &str, name: &'static str) -> Result<SocketAddr, Error> {
+    value.parse().map_err(|_| match name {
+        "SS_BIND_QUIC" => Error::Invalid("SS_BIND_QUIC must be host:port"),
+        "SS_BIND_HTTP" => Error::Invalid("SS_BIND_HTTP must be host:port"),
+        _ => Error::Invalid("SS_INTERNAL_BIND must be host:port"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TEMPLATE, TlsMode, parse};
+
+    #[test]
+    fn the_template_loads_and_a_typo_is_rejected() {
+        let config = parse(TEMPLATE).unwrap();
+        assert_eq!(config.server.name, "SocialSpeak");
+        assert_eq!(config.tls.mode, TlsMode::SelfSigned);
+        assert_eq!(config.internal.bind.port(), 9101);
+        let typo = TEMPLATE.replace("public_host", "public_hst");
+        let error = parse(&typo).unwrap_err();
+        assert!(error.to_string().contains("server.public_hst"), "{error}");
+    }
+}

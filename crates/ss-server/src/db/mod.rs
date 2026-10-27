@@ -24,8 +24,9 @@ pub mod webhooks;
 pub(crate) mod testing;
 
 use std::{
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use sqlx::{
@@ -127,8 +128,22 @@ impl Pool {
     }
 
     /// The single writer. Hold it only around the repository calls it serves.
-    pub async fn write(&self) -> tokio::sync::MutexGuard<'_, sqlx::SqliteConnection> {
-        self.write.lock().await
+    ///
+    /// Dropping the guard records how long it was held.
+    pub async fn write(&self) -> WriteGuard<'_> {
+        WriteGuard {
+            started: Instant::now(),
+            guard: self.write.lock().await,
+        }
+    }
+
+    /// Truncates the WAL so a restart does not replay a partial commit.
+    pub async fn checkpoint(&self) -> Result<(), Error> {
+        let mut conn = self.write().await;
+        db(sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&mut *conn)
+            .await)?;
+        Ok(())
     }
 
     /// A connection from the read pool.
@@ -219,6 +234,32 @@ fn options(path: &Path, create: bool) -> SqliteConnectOptions {
         .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
         .busy_timeout(Duration::from_millis(5_000))
+}
+
+/// Times one write transaction. The mutex unlocks after the histogram sample.
+pub struct WriteGuard<'a> {
+    started: Instant,
+    guard: tokio::sync::MutexGuard<'a, sqlx::SqliteConnection>,
+}
+
+impl Drop for WriteGuard<'_> {
+    fn drop(&mut self) {
+        crate::observe::record_db(self.started.elapsed());
+    }
+}
+
+impl Deref for WriteGuard<'_> {
+    type Target = sqlx::SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for WriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
 }
 
 pub(crate) fn db<T>(result: Result<T, sqlx::Error>) -> Result<T, Error> {

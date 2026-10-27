@@ -39,6 +39,8 @@ criterion = "0.7"
 # OSCE also compiles Deep PLC; DRED remains a separate opt-in feature.
 opusic-c = { version = "=1.6.1", features = ["osce"] }
 clap = { version = "4", features = ["derive"] }
+# TOML config plus environment overrides. Unknown file keys stay errors.
+figment = { version = "0.10", features = ["toml", "env"] }
 crossterm = "0.28"
 getrandom = "0.2"
 # Per-IP login limits. Keyed quotas live in memory for the process lifetime.
@@ -47,6 +49,9 @@ governor = "0.10"
 hmac = "0.12"
 # Image width and height, including EXIF orientation. No re-encode in v1.
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Process counters. The internal listener renders them as Prometheus text.
+metrics = "0.24"
+metrics-exporter-prometheus = "0.17"
 # Content sniffing for uploads. The client-supplied type is ignored.
 infer = "0.19"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
@@ -73,7 +78,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 socket2 = "0.6"
+# Online database snapshot plus the attachments tree.
+tar = "0.4"
 tempfile = "3"
+toml = "0.8"
 webpki-roots = "1"
 # SQLite only. Networked drivers and the `any` driver stay off.
 sqlx = { version = "0.9", default-features = false, features = [
@@ -92,6 +100,7 @@ tokio = { version = "1", features = [
   "time",
 ] }
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = { version = "3", features = ["serde"] }
 

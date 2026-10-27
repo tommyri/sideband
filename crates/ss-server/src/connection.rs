@@ -55,6 +55,7 @@ pub struct AuthedContext {
 
 /// Accept loop that authenticates `Hello` before dispatching.
 pub struct Server {
+    pool: Arc<crate::db::Pool>,
     auth: Auth,
     perms: Arc<PermissionService>,
     roles: Roles,
@@ -81,11 +82,19 @@ struct Answer {
 impl Server {
     /// Loads permissions, then shares `pool` with CLI helpers and repository calls.
     pub async fn open(pool: Arc<crate::db::Pool>) -> Result<Self, crate::db::Error> {
+        Self::open_with(pool, storage::UploadPolicy::default()).await
+    }
+
+    /// Like [`Self::open`], with the upload cap from configuration.
+    pub async fn open_with(
+        pool: Arc<crate::db::Pool>,
+        policy: storage::UploadPolicy,
+    ) -> Result<Self, crate::db::Error> {
         let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await?);
         let registry = Arc::new(ConnectionRegistry::new(registry::SLOW_CONSUMER_AFTER));
         let (voice, media) = Voice::open(Arc::clone(&perms));
         let (stop, _) = watch::channel(false);
-        let files = storage::Store::open(Arc::clone(&pool)).await?;
+        let files = storage::Store::open_with_policy(Arc::clone(&pool), policy).await?;
         let bus = EventBus::new();
         let messages = Messages::new(Arc::clone(&perms), Arc::clone(&pool), bus.clone());
         let webhooks = Arc::new(Webhooks::new(
@@ -94,6 +103,7 @@ impl Server {
             bus.clone(),
         ));
         Ok(Self {
+            pool: Arc::clone(&pool),
             auth: Auth::new(Arc::clone(&pool)),
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
@@ -122,7 +132,30 @@ impl Server {
         self.media.stats()
     }
 
-    /// Incoming-webhook routes. The process does not bind HTTP yet.
+    /// Members currently sitting in a voice channel.
+    #[must_use]
+    pub fn voice_members(&self) -> usize {
+        self.voice.member_count()
+    }
+
+    /// History, uploads, audit, and incoming webhooks. `run` binds this.
+    pub fn public_routes(&self) -> axum::Router {
+        let auth = Arc::new(Auth::new(Arc::clone(&self.pool)));
+        let perms = Arc::clone(&self.perms);
+        crate::http::messages::router(Arc::clone(&auth), Arc::clone(&perms))
+            .merge(crate::http::audit::router(
+                Arc::clone(&auth),
+                Arc::clone(&perms),
+            ))
+            .merge(crate::http::attachments::router(
+                auth,
+                perms,
+                self.files.clone(),
+            ))
+            .merge(self.webhook_routes())
+    }
+
+    /// Incoming-webhook routes. `run` binds HTTP; tests call this directly.
     pub fn webhook_routes(&self) -> axum::Router {
         crate::http::webhooks::router(Arc::clone(&self.webhooks))
     }
