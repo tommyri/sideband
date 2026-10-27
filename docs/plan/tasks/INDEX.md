@@ -41,7 +41,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-027](T-027-attachments.md) | Attachments | M | T-026 | done |
 | [T-028](T-028-direct-messages.md) | DMs and group DMs | S | T-026 | done |
 | [T-029](T-029-link-previews.md) | Link previews (SSRF-safe) | M | T-026 | done |
-| [T-030](T-030-moderation.md) | Moderation + audit log | M | T-022, T-024, T-025 | todo |
+| [T-030](T-030-moderation.md) | Moderation + audit log | M | T-022, T-024, T-025 | done |
 | [T-031](T-031-incoming-webhooks.md) | Incoming webhooks | S | T-026 | todo |
 | [T-032](T-032-server-config-ops.md) | Config, CLI, tracing, metrics, shutdown | S | T-021 | todo |
 | [T-033](T-033-tls-modes.md) | TLS modes (self-signed, files, ACME) | S | T-004, T-032 | todo |

@@ -56,12 +56,33 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<AuditEntr
     Ok(row.map(AuditRow::into_entry))
 }
 
+const PAGE: &str = "SELECT id, actor_id, action, target_kind, target_id, details, created_at FROM audit_log WHERE (?1 IS NULL OR created_at < (SELECT created_at FROM audit_log WHERE id = ?1) OR (created_at = (SELECT created_at FROM audit_log WHERE id = ?1) AND id < ?1)) ORDER BY created_at DESC, id DESC LIMIT ?2";
+
 /// Newest `limit` audit rows. `limit = 0` is empty.
 pub async fn recent(conn: &mut SqliteConnection, limit: u32) -> Result<Vec<AuditEntry>, Error> {
     if limit == 0 {
         return Ok(Vec::new());
     }
     let rows = db(sqlx::query_as::<_, AuditRow>(RECENT)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *conn)
+        .await)?;
+    Ok(rows.into_iter().map(AuditRow::into_entry).collect())
+}
+
+/// Newest rows strictly before `before`, when that id exists.
+///
+/// A missing cursor yields an empty page. `limit = 0` is empty.
+pub async fn page(
+    conn: &mut SqliteConnection,
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<AuditEntry>, Error> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = db(sqlx::query_as::<_, AuditRow>(PAGE)
+        .bind(before)
         .bind(i64::from(limit))
         .fetch_all(&mut *conn)
         .await)?;

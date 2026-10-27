@@ -1,6 +1,6 @@
 # T-030 — Moderation: kick, ban/unban, server mute, move, audit log
 
-Status: todo
+Status: done
 Phase: 2
 Size: M
 Depends on: T-022, T-024, T-025
@@ -37,3 +37,16 @@ Timeouts/slowmode (backlog), word filters.
   permissions, audit rows written with correct actor/target/details.
 
 ## Notes from implementation
+
+- Kick and ban close every live connection for that user after `Kicked` or
+  `Banned`. A server mute is still only an in-memory flag and is cleared when
+  the process restarts. CLI `user ban` writes the row without closing a live
+  session; the next `Hello` is rejected.
+- Equal or higher roles cannot be kicked, banned, unbanned, or moved. An
+  administrator can. Nobody can moderate themselves. A move still requires the
+  target to be in voice and to be able to view the destination. Connect and
+  the user limit are bypassed.
+- `CreateInvite` needs `CREATE_INVITES`. Revoking someone else's invite needs
+  `MANAGE_SERVER`. Invite events go only to members who hold `MANAGE_SERVER`.
+- `GET /api/v1/audit-log` is newest first and requires `VIEW_AUDIT_LOG`.
+  `role grant-admin` is visible to a running server after it restarts.

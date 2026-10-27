@@ -20,6 +20,10 @@ use tokio::sync::mpsc;
 pub const CLOSE_SHUTDOWN: u32 = 1;
 /// QUIC close code when a control consumer stays wedged.
 pub const CLOSE_SLOW: u32 = 2;
+/// QUIC close code after a `Kicked` frame.
+pub const CLOSE_KICKED: u32 = 3;
+/// QUIC close code after a `Banned` frame.
+pub const CLOSE_BANNED: u32 = 4;
 /// How long a full outbound queue, or one stalled write, is tolerated.
 pub const SLOW_CONSUMER_AFTER: Duration = Duration::from_secs(10);
 /// Per-connection outbound control queue. Command replies wait for space.
@@ -288,7 +292,13 @@ impl ConnectionRegistry {
             }
         };
         if let Some((kicks, connection)) = kick {
-            kick_peer(&kicks, &connection, CLOSE_SLOW, SLOW_REASON, SLOW_NOTICE);
+            kick_peer(
+                &kicks,
+                &connection,
+                CLOSE_SLOW,
+                SLOW_REASON,
+                notice(SLOW_NOTICE),
+            );
         }
     }
 
@@ -297,7 +307,35 @@ impl ConnectionRegistry {
         let Some((kicks, connection)) = self.kick_pair(conn) else {
             return;
         };
-        kick_peer(&kicks, &connection, CLOSE_SLOW, SLOW_REASON, SLOW_NOTICE);
+        kick_peer(
+            &kicks,
+            &connection,
+            CLOSE_SLOW,
+            SLOW_REASON,
+            notice(SLOW_NOTICE),
+        );
+    }
+
+    /// Sends `notice` and closes every live connection for `user`.
+    pub(crate) fn disconnect_user(
+        &self,
+        user: Id,
+        notice: &v1::ServerEnvelope,
+        code: u32,
+        reason: &'static [u8],
+    ) {
+        let peers: Vec<_> = {
+            let inner = self.inner.lock();
+            inner
+                .book
+                .connection_ids(user)
+                .into_iter()
+                .filter_map(|conn| inner.peers.get(&conn).map(Peer::kick_pair))
+                .collect()
+        };
+        for (kicks, connection) in peers {
+            kick_peer(&kicks, &connection, code, reason, notice.clone());
+        }
     }
 
     /// Sends a shutdown notice and closes every connection with
@@ -313,7 +351,7 @@ impl ConnectionRegistry {
                 &connection,
                 CLOSE_SHUTDOWN,
                 SHUTDOWN_REASON,
-                SHUTDOWN_NOTICE,
+                notice(SHUTDOWN_NOTICE),
             );
         }
     }
@@ -334,10 +372,10 @@ fn kick_peer(
     connection: &quinn::Connection,
     code: u32,
     reason: &'static [u8],
-    text: &str,
+    frame: v1::ServerEnvelope,
 ) {
     let kick = Kick {
-        notice: notice(text),
+        notice: frame,
         code,
         reason,
     };

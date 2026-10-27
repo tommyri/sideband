@@ -10,7 +10,7 @@ use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
-    handlers::{Channels, DirectMessages, Messages, Presence, Profiles, Roles},
+    handlers::{Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles},
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
@@ -61,6 +61,7 @@ pub struct Server {
     messages: Messages,
     profiles: Profiles,
     presence: Presence,
+    moderation: Moderation,
     voice: Arc<Voice>,
     media: Arc<Forwarder>,
     registry: Arc<ConnectionRegistry>,
@@ -91,6 +92,11 @@ impl Server {
             messages: Messages::new(Arc::clone(&perms), pool, bus.clone()),
             profiles: Profiles::new(Arc::clone(&perms), Arc::clone(&registry)),
             presence: Presence::new(Arc::clone(&registry)),
+            moderation: Moderation::new(
+                Arc::clone(&perms),
+                Arc::clone(&registry),
+                Arc::clone(&voice),
+            ),
             files,
             perms,
             voice,
@@ -373,6 +379,7 @@ fn welcome_envelope(
                 features: vec![
                     "auth".into(),
                     "roles".into(),
+                    "moderation".into(),
                     "channels".into(),
                     "presence".into(),
                     "voice".into(),
@@ -571,6 +578,8 @@ async fn replies(
         return voice_answer(request_id, result);
     }
     let result = if let Some(result) = server.presence.dispatch(context.user_id, msg) {
+        result
+    } else if let Some(result) = server.moderation.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
         result
