@@ -12,7 +12,7 @@ rejects an unknown key. `backup` tars the database and attachments.
 
 With no subcommand, `--data-dir ./data --bind 127.0.0.1:4433` is still the
 unauthenticated spike. `invite create --owner`, `user list`, `user set-password`,
-`user ban`, `user unban`, `role grant-admin`, and `fingerprint` recover an account.
+`user ban`, `user unban`, `role grant-admin`, `fingerprint`, and `tls rotate` recover an account.
 `--check-migrations` exits without listening. The data dir is
 `$XDG_DATA_HOME/socialspeak` when that variable is set, otherwise `./data`.
 

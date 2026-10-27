@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 
 /// Comments written the first time the data directory is prepared.
 pub const TEMPLATE: &str = r#"# SocialSpeak. SS_SERVER_NAME, SS_BIND_QUIC, SS_BIND_HTTP, SS_PUBLIC_HOST,
-# SS_TLS_MODE, SS_UPLOAD_MAX_BYTES, SS_LINK_PREVIEWS, SS_LINK_PREVIEW_ALLOW,
-# SS_LINK_PREVIEW_DENY, SS_INTERNAL_BIND, and SS_LOG_JSON override this file.
+# SS_TLS_MODE, SS_TLS_CERT, SS_TLS_KEY, SS_ACME_EMAIL, SS_ACME_DIRECTORY,
+# SS_TLS_CHALLENGE, SS_HTTP_REDIRECT, SS_UPLOAD_MAX_BYTES, SS_LINK_PREVIEWS,
+# SS_LINK_PREVIEW_ALLOW, SS_LINK_PREVIEW_DENY, SS_INTERNAL_BIND, and SS_LOG_JSON
+# override this file.
 
 [server]
 name = "SocialSpeak"
@@ -28,8 +30,18 @@ bind_http = "0.0.0.0:4430"
 public_host = "localhost"
 
 [tls]
-# self-signed, acme, or files. Listening supports self-signed.
+# self-signed, acme, or files.
 mode = "self-signed"
+# files mode. PEM, leaf certificate first. Relative paths stay in the data directory.
+cert_path = ""
+key_path = ""
+# acme mode. public_host must be a DNS name Let's Encrypt can reach.
+acme_email = ""
+acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
+# http-01 or tls-alpn-01.
+challenge = "http-01"
+# Bind TCP 80 as well: serve the HTTP-01 challenge and redirect every other path.
+http_redirect = false
 
 [limits]
 upload_max_bytes = 26214400
@@ -48,22 +60,45 @@ json = false
 
 const ROOT_KEYS: &[&str] = &["server", "tls", "limits", "previews", "internal", "logging"];
 const SERVER_KEYS: &[&str] = &["name", "bind_quic", "bind_http", "public_host"];
-const TLS_KEYS: &[&str] = &["mode"];
+/// Let's Encrypt production directory. An empty `acme_directory` means this URL.
+pub const ACME_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+const TLS_KEYS: &[&str] = &[
+    "mode",
+    "cert_path",
+    "key_path",
+    "acme_email",
+    "acme_directory",
+    "challenge",
+    "http_redirect",
+];
 const LIMIT_KEYS: &[&str] = &["upload_max_bytes"];
 const PREVIEW_KEYS: &[&str] = &["enabled", "allow", "deny"];
 const INTERNAL_KEYS: &[&str] = &["bind"];
 const LOGGING_KEYS: &[&str] = &["json"];
 
-/// How the process loads its certificate. Only `self-signed` listens today.
+/// How the process loads its certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TlsMode {
     /// Generate or reuse `tls/identity.json`.
     SelfSigned,
-    /// Automatic certificates. Not implemented.
+    /// Order a certificate for `public_host`.
     Acme,
-    /// Certificate files supplied by the operator. Not implemented.
+    /// PEM files supplied by the operator.
     Files,
+}
+
+/// How an ACME server proves control of `public_host`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AcmeChallenge {
+    /// `/.well-known/acme-challenge/` on the public HTTP listener.
+    #[default]
+    #[serde(rename = "http-01")]
+    Http01,
+    /// TCP on the QUIC port, ALPN `acme-tls/1`.
+    #[serde(rename = "tls-alpn-01")]
+    TlsAlpn01,
 }
 
 impl TlsMode {
@@ -74,6 +109,18 @@ impl TlsMode {
             "files" => Ok(Self::Files),
             _ => Err(Error::Invalid(
                 "SS_TLS_MODE must be self-signed, acme, or files",
+            )),
+        }
+    }
+}
+
+impl AcmeChallenge {
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value.trim() {
+            "http-01" => Ok(Self::Http01),
+            "tls-alpn-01" => Ok(Self::TlsAlpn01),
+            _ => Err(Error::Invalid(
+                "SS_TLS_CHALLENGE must be http-01 or tls-alpn-01",
             )),
         }
     }
@@ -107,7 +154,7 @@ pub struct ServerConfig {
     pub bind_quic: SocketAddr,
     /// Public HTTP address for history, uploads, and webhooks.
     pub bind_http: SocketAddr,
-    /// Host name operators tell clients. Certificate names are a later task.
+    /// Host name operators tell clients. ACME orders a certificate for this name.
     pub public_host: String,
 }
 
@@ -117,6 +164,18 @@ pub struct ServerConfig {
 pub struct TlsConfig {
     /// `self-signed`, `acme`, or `files`.
     pub mode: TlsMode,
+    /// PEM certificate chain for `files` mode. Leaf first.
+    pub cert_path: String,
+    /// PEM private key for `files` mode.
+    pub key_path: String,
+    /// Account contact for `acme` mode.
+    pub acme_email: String,
+    /// ACME directory URL. Empty selects Let's Encrypt production.
+    pub acme_directory: String,
+    /// HTTP-01 or TLS-ALPN-01.
+    pub challenge: AcmeChallenge,
+    /// Also bind TCP port 80 for the HTTP-01 challenge and redirect other paths.
+    pub http_redirect: bool,
 }
 
 /// `[limits]`.
@@ -170,6 +229,12 @@ impl Default for TlsConfig {
     fn default() -> Self {
         Self {
             mode: TlsMode::SelfSigned,
+            cert_path: String::new(),
+            key_path: String::new(),
+            acme_email: String::new(),
+            acme_directory: ACME_DIRECTORY.to_owned(),
+            challenge: AcmeChallenge::Http01,
+            http_redirect: false,
         }
     }
 }
@@ -307,6 +372,24 @@ fn apply_env(config: &mut Config) -> Result<(), Error> {
     if let Some(value) = env("SS_TLS_MODE") {
         config.tls.mode = TlsMode::parse(&value)?;
     }
+    if let Some(value) = env("SS_TLS_CERT") {
+        config.tls.cert_path = value;
+    }
+    if let Some(value) = env("SS_TLS_KEY") {
+        config.tls.key_path = value;
+    }
+    if let Some(value) = env("SS_ACME_EMAIL") {
+        config.tls.acme_email = value;
+    }
+    if let Some(value) = env("SS_ACME_DIRECTORY") {
+        config.tls.acme_directory = value;
+    }
+    if let Some(value) = env("SS_TLS_CHALLENGE") {
+        config.tls.challenge = AcmeChallenge::parse(&value)?;
+    }
+    if let Some(value) = env("SS_HTTP_REDIRECT") {
+        config.tls.http_redirect = matches!(value.as_str(), "1" | "on" | "true");
+    }
     if let Some(value) = env("SS_UPLOAD_MAX_BYTES") {
         config.limits.upload_max_bytes = value
             .parse()
@@ -344,13 +427,16 @@ fn parse_addr(value: &str, name: &'static str) -> Result<SocketAddr, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEMPLATE, TlsMode, parse};
+    use super::{ACME_DIRECTORY, AcmeChallenge, TEMPLATE, TlsMode, parse};
 
     #[test]
     fn the_template_loads_and_a_typo_is_rejected() {
         let config = parse(TEMPLATE).unwrap();
         assert_eq!(config.server.name, "SocialSpeak");
         assert_eq!(config.tls.mode, TlsMode::SelfSigned);
+        assert_eq!(config.tls.challenge, AcmeChallenge::Http01);
+        assert_eq!(config.tls.acme_directory, ACME_DIRECTORY);
+        assert!(!config.tls.http_redirect);
         assert_eq!(config.internal.bind.port(), 9101);
         let typo = TEMPLATE.replace("public_host", "public_hst");
         let error = parse(&typo).unwrap_err();

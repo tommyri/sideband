@@ -44,7 +44,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-030](T-030-moderation.md) | Moderation + audit log | M | T-022, T-024, T-025 | done |
 | [T-031](T-031-incoming-webhooks.md) | Incoming webhooks | S | T-026 | done |
 | [T-032](T-032-server-config-ops.md) | Config, CLI, tracing, metrics, shutdown | S | T-021 | done |
-| [T-033](T-033-tls-modes.md) | TLS modes (self-signed, files, ACME) | S | T-004, T-032 | todo |
+| [T-033](T-033-tls-modes.md) | TLS modes (self-signed, files, ACME) | S | T-004, T-032 | done |
 | [T-034](T-034-deployment.md) | Deployment artifacts | S | T-032 | todo |
 
 ## Phase 3 — Desktop client

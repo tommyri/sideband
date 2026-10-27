@@ -41,6 +41,8 @@ opusic-c = { version = "=1.6.1", features = ["osce"] }
 clap = { version = "4", features = ["derive"] }
 # TOML config plus environment overrides. Unknown file keys stay errors.
 figment = { version = "0.10", features = ["toml", "env"] }
+# ACME's state machine is a `Stream`.
+futures = { version = "0.3", default-features = false, features = ["std"] }
 crossterm = "0.28"
 getrandom = "0.2"
 # Per-IP login limits. Keyed quotas live in memory for the process lifetime.
@@ -54,6 +56,8 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.17"
 # Content sniffing for uploads. The client-supplied type is ignored.
 infer = "0.19"
+# Certificate file changes. The QUIC socket stays open across a reload.
+notify = "8"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.
@@ -70,6 +74,10 @@ quinn-udp = { version = "0.5", default-features = false }
 # Preview fetches. No cookies, no system proxy, rustls only.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 rcgen = "0.14"
+# PEM certificates and keys for `files` mode.
+rustls-pemfile = "2"
+# ACME account, orders, and HTTP-01 challenges. Ring, same as QUIC. The cache lives in `tls/acme`.
+rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tls12", "tokio"] }
 rtrb = "0.4"
 # Sinc resampling only. The FFT resampler is a different algorithm.
 rubato = { version = "5", default-features = false }
