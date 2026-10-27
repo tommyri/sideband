@@ -1,26 +1,41 @@
 //! Authenticated control-stream owner.
 //!
 //! The voice spike in the crate root still accepts any username. This server
-//! requires [`auth`] and then answers `Ping` and the role commands. Other
-//! commands are rejected until later tasks register handlers.
+//! requires [`auth`] and then answers `Ping`, presence, role, and channel
+//! commands. Events are delivered to the actor on the command reply and
+//! published for every other visible session.
 
 use crate::{
     Error, MAX_CONNECTIONS,
     auth::{self, Auth},
-    handlers::{Channels, Roles},
+    events::{EventBus, ServerEvent},
+    handlers::{Channels, Presence, Roles},
     perms::PermissionService,
+    registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
+    snapshot,
 };
 use prost::Message;
 use ss_core::{Id, Permissions, Timestamp};
-use ss_net::{Connection, control::ServerStream, server::Endpoint};
+use ss_net::{
+    Connection,
+    control::{ControlError, ServerStream},
+    server::Endpoint,
+};
 use ss_proto::{
     v1::{self, client_envelope::Msg, server_envelope},
     validate::id_to_bytes,
 };
 use std::{sync::Arc, time::Duration};
-use tokio::{task::JoinSet, time::timeout};
+use tokio::{
+    sync::{broadcast, mpsc, watch},
+    task::JoinSet,
+    time::timeout,
+};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+const NOTICE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Lets the notice frame leave the socket before `CONNECTION_CLOSE`.
+const NOTICE_GRACE: Duration = Duration::from_millis(100);
 
 /// Identity and permission cache for one accepted control stream.
 pub struct AuthedContext {
@@ -39,25 +54,61 @@ pub struct Server {
     perms: Arc<PermissionService>,
     roles: Roles,
     channels: Channels,
+    presence: Presence,
+    registry: Arc<ConnectionRegistry>,
+    bus: EventBus,
+    stop: watch::Sender<bool>,
+}
+
+struct Answer {
+    frames: Vec<v1::ServerEnvelope>,
+    events: Vec<server_envelope::Msg>,
 }
 
 impl Server {
     /// Loads permissions, then shares `pool` with CLI helpers and repository calls.
     pub async fn open(pool: Arc<crate::db::Pool>) -> Result<Self, crate::db::Error> {
         let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await?);
+        let registry = Arc::new(ConnectionRegistry::new(registry::SLOW_CONSUMER_AFTER));
+        let (stop, _) = watch::channel(false);
         Ok(Self {
             auth: Auth::new(pool),
             roles: Roles::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
+            presence: Presence::new(Arc::clone(&registry)),
             perms,
+            registry,
+            bus: EventBus::new(),
+            stop,
         })
+    }
+
+    /// Live connections, presence, and the slow-consumer timer.
+    pub fn registry(&self) -> &ConnectionRegistry {
+        &self.registry
+    }
+
+    /// Notifies every connection, closes them, and stops [`Self::run`].
+    pub fn shutdown(&self) {
+        self.registry.shutdown();
+        let _ = self.stop.send(true);
     }
 
     /// Accepts up to [`MAX_CONNECTIONS`] peers. Dropping this future closes them.
     pub async fn run(self: Arc<Self>, endpoint: Endpoint) {
         let mut tasks = JoinSet::new();
+        let mut stop = self.stop.subscribe();
+        if *stop.borrow() {
+            return;
+        }
         loop {
             tokio::select! {
+                biased;
+                changed = stop.changed() => {
+                    if changed.is_err() || *stop.borrow() {
+                        break;
+                    }
+                }
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
                     if tasks.len() >= MAX_CONNECTIONS {
@@ -81,6 +132,10 @@ impl Server {
                 _ = tasks.join_next(), if !tasks.is_empty() => {}
             }
         }
+        let _ = timeout(Duration::from_secs(2), async {
+            while tasks.join_next().await.is_some() {}
+        })
+        .await;
         tasks.shutdown().await;
     }
 
@@ -118,12 +173,74 @@ impl Server {
                 return reject(&connection, &mut stream, &envelope).await;
             }
         };
+        let mut subscription = self.bus.subscribe();
+        let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
+        let (kicks, kick_rx) = mpsc::channel(1);
+        let quic = connection.quic().clone();
+        let event = self.registry.register(Registration {
+            conn_id,
+            user_id: authed.user.id,
+            connection: quic.clone(),
+            outbound: outbound.clone(),
+            kicks,
+            client: ClientInfo {
+                name: hello.client_name.clone(),
+                version: hello.client_version.clone(),
+                os: hello.os.clone(),
+            },
+        });
+        let unregister = Unregister {
+            registry: Arc::clone(&self.registry),
+            bus: self.bus.clone(),
+            conn_id,
+        };
+        if let Some(event) = event {
+            self.bus.publish(Some(conn_id), event);
+        }
         let context = AuthedContext {
             user_id: authed.user.id,
             conn_id,
             perms_cache: authed.permissions,
         };
-        let snapshot = match crate::snapshot::build(&self.perms, authed.user.id).await {
+        let result = match self
+            .prepare_welcome(&connection, &mut stream, &authed, request_id)
+            .await
+        {
+            Ok(welcome) => {
+                self.pump(
+                    &context,
+                    stream,
+                    Pump {
+                        outbound,
+                        outgoing,
+                        kicks: kick_rx,
+                        quic,
+                    },
+                    &mut subscription,
+                    request_id,
+                    welcome,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        drop(subscription);
+        drop(unregister);
+        result
+    }
+
+    async fn prepare_welcome(
+        &self,
+        connection: &Connection,
+        stream: &mut ServerStream,
+        authed: &auth::Authenticated,
+        request_id: u32,
+    ) -> Result<v1::ServerEnvelope, Error> {
+        let snapshot = match snapshot::build_with(&self.perms, authed.user.id, |id| {
+            self.registry.presence(id)
+        })
+        .await
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 tracing::debug!(%error, "snapshot failed");
@@ -132,26 +249,60 @@ impl Server {
                     v1::ErrorCode::Internal,
                     "internal error",
                 );
-                return reject(&connection, &mut stream, &envelope).await;
+                return reject(connection, stream, &envelope).await;
             }
         };
-        let welcome = welcome_envelope(
-            request_id,
-            &authed,
-            &self.auth.server_name().await,
-            snapshot,
-        );
+        let welcome =
+            welcome_envelope(request_id, authed, &self.auth.server_name().await, snapshot);
         if welcome.encoded_len() > ss_proto::MAX_FRAME_LEN {
             let error = v1::ServerEnvelope::error(
                 request_id,
                 v1::ErrorCode::Invalid,
                 "welcome response is too large",
             );
-            return reject(&connection, &mut stream, &error).await;
+            return reject(connection, stream, &error).await;
         }
-        stream.send(&welcome).await?;
-        dispatch_loop(self, context, stream, request_id).await
+        Ok(welcome)
     }
+
+    async fn pump(
+        &self,
+        context: &AuthedContext,
+        stream: ServerStream,
+        pump: Pump,
+        subscription: &mut broadcast::Receiver<ServerEvent>,
+        request_id: u32,
+        welcome: v1::ServerEnvelope,
+    ) -> Result<(), Error> {
+        let (sender, receiver) = stream.split();
+        let write = write_outbound(
+            sender,
+            pump.outgoing,
+            pump.kicks,
+            pump.quic,
+            Arc::clone(&self.registry),
+        );
+        let read = read_inbound(
+            self,
+            context,
+            receiver,
+            pump.outbound,
+            subscription,
+            request_id,
+            welcome,
+        );
+        tokio::select! {
+            result = read => result,
+            result = write => result,
+        }
+    }
+}
+
+struct Pump {
+    outbound: mpsc::Sender<v1::ServerEnvelope>,
+    outgoing: mpsc::Receiver<v1::ServerEnvelope>,
+    kicks: mpsc::Receiver<Kick>,
+    quic: quinn::Connection,
 }
 
 fn welcome_envelope(
@@ -167,7 +318,12 @@ fn welcome_envelope(
             server_info: Some(v1::ServerInfo {
                 name: server_name.to_owned(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                features: vec!["auth".into(), "roles".into(), "channels".into()],
+                features: vec![
+                    "auth".into(),
+                    "roles".into(),
+                    "channels".into(),
+                    "presence".into(),
+                ],
             }),
             resume_token: authed.resume_token.clone(),
             snapshot: Some(snapshot),
@@ -189,30 +345,127 @@ fn wire_user(user: &crate::db::User) -> v1::User {
     }
 }
 
-async fn dispatch_loop(
+async fn read_inbound(
     server: &Server,
-    context: AuthedContext,
-    stream: ServerStream,
+    context: &AuthedContext,
+    mut receiver: ss_net::control::ControlReceiver<v1::ClientEnvelope>,
+    outbound: mpsc::Sender<v1::ServerEnvelope>,
+    subscription: &mut broadcast::Receiver<ServerEvent>,
     mut last_request: u32,
+    welcome: v1::ServerEnvelope,
 ) -> Result<(), Error> {
-    let (mut sender, mut receiver) = stream.split();
+    outbound
+        .send(welcome)
+        .await
+        .map_err(|_| Error::Control(ControlError::Closed))?;
     loop {
-        let envelope = receiver.recv().await?;
-        if envelope.request_id <= last_request {
-            return Err(Error::Protocol);
-        }
-        last_request = envelope.request_id;
-        for frame in replies(server, &context, &envelope).await {
-            sender.send(&frame).await?;
+        tokio::select! {
+            inbound = receiver.recv() => {
+                let envelope = inbound?;
+                if envelope.request_id <= last_request {
+                    return Err(Error::Protocol);
+                }
+                last_request = envelope.request_id;
+                if matches!(envelope.msg, Some(Msg::Ping(_))) {
+                    server.registry.record_rtt(context.conn_id);
+                }
+                let answer = replies(server, context, &envelope).await;
+                for frame in answer.frames {
+                    outbound
+                        .send(frame)
+                        .await
+                        .map_err(|_| Error::Control(ControlError::Closed))?;
+                }
+                for event in answer.events {
+                    server.bus.publish(Some(context.conn_id), event);
+                }
+            }
+            event = subscription.recv() => {
+                match event {
+                    Ok(event) => deliver(server, context, &event),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        server.registry.kick_slow(context.conn_id);
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     }
+    Ok(())
+}
+
+fn deliver(server: &Server, context: &AuthedContext, event: &ServerEvent) {
+    if event.origin == Some(context.conn_id) {
+        return;
+    }
+    if !snapshot::delivers(&server.perms, context.user_id, &event.msg) {
+        return;
+    }
+    server.registry.enqueue(
+        context.conn_id,
+        v1::ServerEnvelope {
+            request_id: 0,
+            msg: Some((*event.msg).clone()),
+        },
+    );
+}
+
+async fn write_outbound(
+    mut sender: ss_net::control::ControlSender<v1::ServerEnvelope>,
+    mut outgoing: mpsc::Receiver<v1::ServerEnvelope>,
+    mut kick_rx: mpsc::Receiver<Kick>,
+    quic: quinn::Connection,
+    registry: Arc<ConnectionRegistry>,
+) -> Result<(), Error> {
+    loop {
+        tokio::select! {
+            biased;
+            kick = kick_rx.recv() => {
+                let Some(kick) = kick else { break };
+                notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
+                break;
+            }
+            frame = outgoing.recv() => {
+                let Some(frame) = frame else { break };
+                match timeout(registry.slow_after(), sender.send(&frame)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => return Err(Error::Control(error)),
+                    Err(_) => {
+                        notify_and_close(
+                            &mut sender,
+                            &quic,
+                            &registry::notice("control consumer too slow"),
+                            registry::CLOSE_SLOW,
+                            b"control consumer too slow",
+                        )
+                        .await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn notify_and_close(
+    sender: &mut ss_net::control::ControlSender<v1::ServerEnvelope>,
+    quic: &quinn::Connection,
+    notice: &v1::ServerEnvelope,
+    code: u32,
+    reason: &[u8],
+) {
+    let _ = timeout(NOTICE_TIMEOUT, sender.send(notice)).await;
+    tokio::time::sleep(NOTICE_GRACE).await;
+    quic.close(code.into(), reason);
 }
 
 async fn replies(
     server: &Server,
     context: &AuthedContext,
     envelope: &v1::ClientEnvelope,
-) -> Vec<v1::ServerEnvelope> {
+) -> Answer {
     let request_id = envelope.request_id;
     tracing::trace!(
         user_id = %context.user_id,
@@ -221,42 +474,59 @@ async fn replies(
         "dispatch"
     );
     if let Some(Msg::Ping(ping)) = &envelope.msg {
-        return vec![v1::ServerEnvelope {
-            request_id,
-            msg: Some(server_envelope::Msg::Pong(v1::Pong {
-                sent_at: ping.sent_at,
-                server_time: Timestamp::now().as_millis(),
-            })),
-        }];
+        return Answer {
+            frames: vec![v1::ServerEnvelope {
+                request_id,
+                msg: Some(server_envelope::Msg::Pong(v1::Pong {
+                    sent_at: ping.sent_at,
+                    server_time: Timestamp::now().as_millis(),
+                })),
+            }],
+            events: Vec::new(),
+        };
     }
     let Some(msg) = &envelope.msg else {
-        return vec![unsupported(request_id)];
+        return Answer {
+            frames: vec![unsupported(request_id)],
+            events: Vec::new(),
+        };
     };
-    let result = if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
+    let result = if let Some(result) = server.presence.dispatch(context.user_id, msg) {
+        result
+    } else if let Some(result) = server.roles.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
         result
     } else {
-        return vec![unsupported(request_id)];
+        return Answer {
+            frames: vec![unsupported(request_id)],
+            events: Vec::new(),
+        };
     };
     match result {
         Ok(reply) => {
             let mut frames = vec![v1::ServerEnvelope::ack(request_id, reply.ack)];
-            for event in reply.events {
+            for event in &reply.events {
                 frames.push(v1::ServerEnvelope {
                     request_id: 0,
-                    msg: Some(event),
+                    msg: Some(event.clone()),
                 });
             }
-            frames
+            Answer {
+                frames,
+                events: reply.events,
+            }
         }
         Err(error) => {
             tracing::debug!(%error, "command rejected");
-            vec![v1::ServerEnvelope::error(
-                request_id,
-                error.code(),
-                error.wire_message(),
-            )]
+            Answer {
+                frames: vec![v1::ServerEnvelope::error(
+                    request_id,
+                    error.code(),
+                    error.wire_message(),
+                )],
+                events: Vec::new(),
+            }
         }
     }
 }
@@ -285,10 +555,26 @@ async fn reject<T>(
     Err(Error::Protocol)
 }
 
+struct Unregister {
+    registry: Arc<ConnectionRegistry>,
+    bus: EventBus,
+    conn_id: Id,
+}
+
+impl Drop for Unregister {
+    fn drop(&mut self) {
+        if let Some(event) = self.registry.unregister(self.conn_id) {
+            self.bus.publish(None, event);
+        }
+    }
+}
+
 struct CloseOnDrop(quinn::Connection);
 
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
-        self.0.close(0_u32.into(), b"session ended");
+        if self.0.close_reason().is_none() {
+            self.0.close(0_u32.into(), b"session ended");
+        }
     }
 }

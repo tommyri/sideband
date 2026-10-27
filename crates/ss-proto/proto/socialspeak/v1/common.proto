@@ -110,6 +110,14 @@ message Presence {
   string activity = 2;
 }
 
+// Sets the caller's presence. Offline is reserved for the last disconnect.
+message SetPresence {
+  // Online, idle, or do-not-disturb. Offline is rejected.
+  PresenceStatus status = 1;
+  // Free-form activity. Empty clears it. At most 128 characters.
+  string activity = 2;
+}
+
 // A server member: profile, role ids, and presence.
 message Member {
   // Profile. Absent only in a malformed payload.

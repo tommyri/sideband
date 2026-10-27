@@ -77,6 +77,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `SetUserRoles` | `user_id`, `role_ids[]` | |
 | `SetChannelOverride` | `channel_id`, `role_id`, `allow(u64)`, `deny(u64)` | Table exists in MVP; UI may come later |
 | `UpdateProfile` | `display_name`, `avatar_attachment_id` | |
+| `SetPresence` | `status`, `activity` | Online, idle, or do-not-disturb. Offline is the last disconnect |
 | `SubscribeTrack` / `UnsubscribeTrack` | `track_id` | Video (phase 5); audio is auto-subscribed |
 | `RequestKeyframe` | `track_id` | Video (phase 5) |
 | `SetPreferredQuality` | `track_id`, `max_height`, `max_fps` | Video (phase 5) |

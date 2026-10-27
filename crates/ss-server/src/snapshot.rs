@@ -1,9 +1,10 @@
 //! `Welcome` snapshot and the visibility filter for channel events.
 //!
-//! Presence is offline until T-024. Voice states and tracks are empty until
-//! T-025. A delete event is not visible after the channel is gone, so the
-//! actor's own command reply is sent without this filter; other sessions
-//! must use [`delivers`].
+//! [`build`] reports every member offline. The accept loop uses
+//! [`build_with`] so live connections show the registry's presence. Voice
+//! states and tracks are empty until T-025. A delete event is not visible
+//! after the channel is gone, so the actor's own command reply is sent
+//! without this filter; other sessions must use [`delivers`].
 
 use std::collections::HashMap;
 
@@ -19,8 +20,17 @@ use crate::{
 };
 
 /// Builds the snapshot for `user`, seeding the default tree when the guild
-/// has never had a channel.
+/// has never had a channel. Every member is offline.
 pub async fn build(perms: &PermissionService, user: Id) -> Result<v1::Snapshot, db::Error> {
+    build_with(perms, user, offline_presence).await
+}
+
+/// Like [`build`], with `presence` supplying each member's status.
+pub async fn build_with(
+    perms: &PermissionService,
+    user: Id,
+    presence: impl Fn(Id) -> v1::Presence,
+) -> Result<v1::Snapshot, db::Error> {
     ensure_defaults(perms, user).await?;
     perms.reload().await?;
     let mut conn = perms.pool().read().await?;
@@ -67,11 +77,7 @@ pub async fn build(perms: &PermissionService, user: Id) -> Result<v1::Snapshot, 
         members.push(v1::Member {
             user: Some(wire_user(&account)),
             roles: role_ids.into_iter().map(id_to_bytes).collect(),
-            // T-024 owns real presence. Until then everyone is offline.
-            presence: Some(v1::Presence {
-                status: i32::from(v1::PresenceStatus::Offline),
-                activity: String::new(),
-            }),
+            presence: Some(presence(account.id)),
         });
     }
     let mut reads = Vec::new();
@@ -94,6 +100,15 @@ pub async fn build(perms: &PermissionService, user: Id) -> Result<v1::Snapshot, 
         read_states: reads,
         direct_messages,
     })
+}
+
+/// Offline presence used when the caller has no connection registry.
+#[must_use]
+pub fn offline_presence(_user: Id) -> v1::Presence {
+    v1::Presence {
+        status: i32::from(v1::PresenceStatus::Offline),
+        activity: String::new(),
+    }
 }
 
 /// Whether `user` should be sent `event`.
