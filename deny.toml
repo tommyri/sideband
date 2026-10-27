@@ -24,6 +24,12 @@ allow = [
   "Zlib",
 ]
 
+# Mozilla trust-store data already used by ss-net. Keep the permission scoped
+# to this dependency; redistribution must include its bundled LICENSE text.
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

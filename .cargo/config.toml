@@ -1,0 +1,4 @@
+[env]
+# Keep Rust and bundled C/C++ dependencies on the documented macOS baseline.
+# Ignored by non-Apple target toolchains; an explicit caller override still wins.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

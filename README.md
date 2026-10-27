@@ -12,7 +12,10 @@ decision record are in [`docs/design`](docs/design/README.md).
 Requires Rust 1.99.1 (pinned in `rust-toolchain.toml`), a nightly toolchain
 with `rustfmt` (`rustup toolchain install nightly --profile minimal --component rustfmt`),
 and [`just`](https://github.com/casey/just). Nightly is used only to format;
-builds and tests use 1.99.1.
+builds and tests use 1.99.1. Bundled libopus also requires CMake and a C/C++
+compiler. Cargo defaults the macOS deployment target to 13.0.
+Build prerequisites (macOS: Xcode Command Line Tools and `brew install cmake`; Linux:
+`build-essential cmake`; Windows: Visual Studio C++ build tools and CMake).
 
 ```sh
 just check

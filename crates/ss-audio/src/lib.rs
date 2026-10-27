@@ -3,6 +3,8 @@
 //! Device I/O, resampling, the Opus wrapper, the jitter buffer, and the
 //! mixer live here. Nothing in this crate opens a socket.
 
+pub mod codec;
+
 /// Package name. Dependents reference this so the crate graph stays linked.
 pub const NAME: &str = "ss-audio";
 
