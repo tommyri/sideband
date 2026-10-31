@@ -47,6 +47,20 @@ pub struct DeviceInfo {
     pub output: bool,
 }
 
+/// Stored microphone permission for this process. See [`super::microphone_access`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneAccess {
+    /// The user allowed the microphone.
+    Granted,
+    /// The user, or a device-management policy, refused it.
+    Denied,
+    /// Nobody has been asked yet. Opening capture shows the system prompt
+    /// when the app bundle declares a usage description.
+    Undetermined,
+    /// The platform has no readable decision.
+    Unknown,
+}
+
 /// Something the settings screen or the voice session should react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceEvent {
@@ -68,6 +82,20 @@ pub enum DeviceEvent {
         /// The device that was open.
         id: DeviceId,
     },
+    /// The open capture stream has delivered nothing but digital zeros for
+    /// the first second after it opened. Reported once per stream.
+    ///
+    /// A real microphone always has a noise floor. On macOS this is how a
+    /// denied permission, or an app bundle without
+    /// `NSMicrophoneUsageDescription`, looks: CoreAudio runs the stream and
+    /// zeroes it. A virtual device with nothing playing into it, or a
+    /// hardware mute, looks the same; `access` tells them apart.
+    SilentInput {
+        /// The capture device.
+        id: DeviceId,
+        /// The stored permission when the silence was noticed.
+        access: MicrophoneAccess,
+    },
     /// The capture device is on an 8 or 16 kHz hands-free path.
     LowQualityInput {
         /// The device that was opened.
@@ -75,6 +103,36 @@ pub enum DeviceEvent {
         /// The rate the stream actually opened at.
         sample_rate: u32,
     },
+}
+
+impl DeviceEvent {
+    /// `true` when a stream open in `direction` on `open` should be dropped
+    /// and opened again.
+    ///
+    /// That is the case when its device is lost, or when the host default
+    /// moved to another device and the stream was opened on the default
+    /// (`follows_default`, an `id` of `None` at open). CoreAudio's
+    /// default-output unit follows a new default by itself, but capture stays
+    /// on the device it opened, so an AirPods connect needs this reopen.
+    #[must_use]
+    pub fn requires_reopen(
+        &self,
+        direction: Direction,
+        open: &DeviceId,
+        follows_default: bool,
+    ) -> bool {
+        match self {
+            Self::Lost {
+                direction: lost,
+                id,
+            } => *lost == direction && id == open,
+            Self::DefaultChanged {
+                direction: changed,
+                id: Some(id),
+            } => follows_default && *changed == direction && id != open,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +260,96 @@ mod tests {
                 direction: Direction::Capture,
                 id: Some(_),
             }
+        )));
+    }
+
+    #[test]
+    fn a_new_default_reopens_only_streams_that_follow_the_default() {
+        let builtin = DeviceId::new("coreaudio:BuiltInMicrophoneDevice");
+        let airpods = DeviceId::new("coreaudio:airpods");
+        let changed = DeviceEvent::DefaultChanged {
+            direction: Direction::Capture,
+            id: Some(airpods.clone()),
+        };
+        assert!(changed.requires_reopen(Direction::Capture, &builtin, true));
+        assert!(!changed.requires_reopen(Direction::Capture, &builtin, false));
+        assert!(!changed.requires_reopen(Direction::Playback, &builtin, true));
+        assert!(!changed.requires_reopen(Direction::Capture, &airpods, true));
+        let none = DeviceEvent::DefaultChanged {
+            direction: Direction::Capture,
+            id: None,
+        };
+        assert!(!none.requires_reopen(Direction::Capture, &builtin, true));
+    }
+
+    #[test]
+    fn a_lost_device_reopens_its_own_stream() {
+        let airpods = DeviceId::new("coreaudio:airpods");
+        let builtin = DeviceId::new("coreaudio:BuiltInSpeakerDevice");
+        let lost = DeviceEvent::Lost {
+            direction: Direction::Playback,
+            id: airpods.clone(),
+        };
+        assert!(lost.requires_reopen(Direction::Playback, &airpods, false));
+        assert!(!lost.requires_reopen(Direction::Playback, &builtin, true));
+        assert!(!lost.requires_reopen(Direction::Capture, &airpods, true));
+        assert!(!DeviceEvent::Removed(airpods.clone()).requires_reopen(
+            Direction::Playback,
+            &airpods,
+            true
+        ));
+    }
+
+    #[test]
+    fn airpods_connect_then_disconnect_reopens_capture_twice() {
+        // Inventory snapshots as CoreAudio reports them: AirPods appear and
+        // become the default input, then disappear and the default returns.
+        let builtin = device("coreaudio:BuiltInMicrophoneDevice");
+        let airpods = device("coreaudio:airpods");
+        let on_builtin = Defaults {
+            input: Some(builtin.id.clone()),
+            output: None,
+        };
+        let on_airpods = Defaults {
+            input: Some(airpods.id.clone()),
+            output: None,
+        };
+        let before = [builtin.clone()];
+        let both = [builtin.clone(), airpods.clone()];
+
+        let connect = diff_devices(
+            &before,
+            &both,
+            &on_builtin,
+            &on_airpods,
+            Some(&builtin.id),
+            None,
+        );
+        assert!(connect.iter().any(|event| event.requires_reopen(
+            Direction::Capture,
+            &builtin.id,
+            true
+        )));
+
+        let disconnect = diff_devices(
+            &both,
+            &before,
+            &on_airpods,
+            &on_builtin,
+            Some(&airpods.id),
+            None,
+        );
+        assert!(disconnect.iter().any(|event| matches!(
+            event,
+            DeviceEvent::Lost {
+                direction: Direction::Capture,
+                ..
+            }
+        )));
+        assert!(disconnect.iter().any(|event| event.requires_reopen(
+            Direction::Capture,
+            &airpods.id,
+            true
         )));
     }
 

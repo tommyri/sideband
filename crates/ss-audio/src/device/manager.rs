@@ -4,6 +4,7 @@
 //! poll interval is [`POLL_INTERVAL`]. An open stream also sets a lost flag
 //! from the host error callback, and the poll turns that into
 //! [`DeviceEvent::Lost`] so the voice graph can open a new stream in-process.
+//! The same poll reports a capture stream that has delivered only zeros.
 
 use std::{
     str::FromStr,
@@ -13,15 +14,15 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use rtrb::{Consumer, Producer};
 
 use super::{
-    Error, GraphConfig,
-    stream::{CaptureStream, PlaybackStream},
+    Error, GraphConfig, MicrophoneAccess, microphone_access,
+    stream::{CaptureStream, Counters, PlaybackStream},
     watch::{
         Defaults, DeviceEvent, DeviceId, DeviceInfo, Direction, diff_devices, is_low_quality_input,
     },
@@ -30,9 +31,22 @@ use super::{
 /// How often the inventory thread compares the host's device list.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// How long a capture stream may deliver only zeros before
+/// [`DeviceEvent::SilentInput`].
+pub const SILENCE_GRACE: Duration = Duration::from_secs(1);
+
 struct ActiveStream {
     id: DeviceId,
     lost: Arc<AtomicBool>,
+    reported: bool,
+    /// Capture only: the stream's counters, when it opened, and whether its
+    /// silence was already reported.
+    silence: Option<Silence>,
+}
+
+struct Silence {
+    counters: Arc<Counters>,
+    opened: Instant,
     reported: bool,
 }
 
@@ -111,6 +125,9 @@ impl DeviceManager {
     ///
     /// [`Error::Channels`] when `config.channels` is not 1 or 2.
     /// [`Error::NoDevice`] when the id or the default input is missing.
+    /// [`Error::PermissionDenied`] when the operating system has a stored
+    /// refusal for the microphone, or the host rejects the stream for that
+    /// reason.
     /// [`Error::Unsupported`] and [`Error::Backend`] when the device rejects the stream.
     pub fn open_capture(
         &self,
@@ -118,10 +135,28 @@ impl DeviceManager {
         config: GraphConfig,
     ) -> Result<(CaptureStream, Consumer<f32>), Error> {
         check_channels(config)?;
+        // CoreAudio opens a denied microphone and zeroes it. Refuse up front.
+        if microphone_access() == MicrophoneAccess::Denied {
+            return Err(Error::PermissionDenied);
+        }
         let (device, device_id, name) = resolve_input(id)?;
         let (stream, consumer) = CaptureStream::open(&device, config, device_id.clone())?;
+        // Opening may have shown the first-use prompt, and the user may have refused.
+        if microphone_access() == MicrophoneAccess::Denied {
+            return Err(Error::PermissionDenied);
+        }
         self.note_quality(&name, &stream);
-        self.watch(Direction::Capture, device_id, stream.lost_flag());
+        let silence = Silence {
+            counters: stream.shared_counters(),
+            opened: Instant::now(),
+            reported: false,
+        };
+        self.watch(
+            Direction::Capture,
+            device_id,
+            stream.lost_flag(),
+            Some(silence),
+        );
         Ok((stream, consumer))
     }
 
@@ -140,7 +175,7 @@ impl DeviceManager {
         check_channels(config)?;
         let (device, device_id, _) = resolve_output(id)?;
         let (stream, producer) = PlaybackStream::open(&device, config, device_id.clone())?;
-        self.watch(Direction::Playback, device_id, stream.lost_flag());
+        self.watch(Direction::Playback, device_id, stream.lost_flag(), None);
         Ok((stream, producer))
     }
 
@@ -157,7 +192,13 @@ impl DeviceManager {
         );
     }
 
-    fn watch(&self, direction: Direction, id: DeviceId, lost: Arc<AtomicBool>) {
+    fn watch(
+        &self,
+        direction: Direction,
+        id: DeviceId,
+        lost: Arc<AtomicBool>,
+        silence: Option<Silence>,
+    ) {
         let mut active = self
             .active
             .lock()
@@ -166,6 +207,7 @@ impl DeviceManager {
             id,
             lost,
             reported: false,
+            silence,
         };
         match direction {
             Direction::Capture => active.capture = Some(slot),
@@ -290,6 +332,12 @@ fn poll_loop(stop: &AtomicBool, active: &Mutex<Active>, tx: &SyncSender<DeviceEv
         );
         note_callback_loss(&mut guard.capture, Direction::Capture, &mut events);
         note_callback_loss(&mut guard.playback, Direction::Playback, &mut events);
+        note_silence(
+            &mut guard.capture,
+            Instant::now(),
+            microphone_access,
+            &mut events,
+        );
         drop(guard);
         if !events.is_empty() {
             tracing::debug!(count = events.len(), "audio device inventory changed");
@@ -324,11 +372,126 @@ fn note_callback_loss(
     }
 }
 
+/// Report a capture stream that has run for [`SILENCE_GRACE`] with callbacks
+/// but without one non-zero sample. Once per stream.
+fn note_silence(
+    slot: &mut Option<ActiveStream>,
+    now: Instant,
+    access: impl FnOnce() -> MicrophoneAccess,
+    events: &mut Vec<DeviceEvent>,
+) {
+    let Some(stream) = slot else {
+        return;
+    };
+    let Some(silence) = stream.silence.as_mut() else {
+        return;
+    };
+    if silence.reported
+        || stream.lost.load(Ordering::Acquire)
+        || silence.counters.callbacks() == 0
+        || silence.counters.has_signal()
+        || now.saturating_duration_since(silence.opened) < SILENCE_GRACE
+    {
+        return;
+    }
+    silence.reported = true;
+    events.push(DeviceEvent::SilentInput {
+        id: stream.id.clone(),
+        access: access(),
+    });
+}
+
 fn send(tx: &SyncSender<DeviceEvent>, event: DeviceEvent) {
     match tx.try_send(event) {
         Ok(()) | Err(TrySendError::Disconnected(_)) => {}
         Err(TrySendError::Full(_)) => {
             tracing::debug!("dropping an audio device event because the queue is full");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use super::{ActiveStream, MicrophoneAccess, SILENCE_GRACE, Silence, note_silence};
+    use crate::device::{Counters, DeviceEvent, DeviceId};
+
+    fn capture(opened: Instant) -> (Option<ActiveStream>, Arc<Counters>) {
+        let counters = Arc::new(Counters::default());
+        let slot = ActiveStream {
+            id: DeviceId::new("coreaudio:BuiltInMicrophoneDevice"),
+            lost: Arc::new(AtomicBool::new(false)),
+            reported: false,
+            silence: Some(Silence {
+                counters: Arc::clone(&counters),
+                opened,
+                reported: false,
+            }),
+        };
+        (Some(slot), counters)
+    }
+
+    #[test]
+    fn a_zeroed_capture_is_reported_once_after_the_grace_period() {
+        let opened = Instant::now();
+        let (mut slot, counters) = capture(opened);
+        counters.callbacks.store(200, Ordering::Relaxed);
+        let mut events = Vec::new();
+        note_silence(
+            &mut slot,
+            opened + Duration::from_millis(500),
+            || MicrophoneAccess::Undetermined,
+            &mut events,
+        );
+        assert_eq!(events, Vec::new(), "inside the grace period");
+        let later = opened + SILENCE_GRACE;
+        note_silence(
+            &mut slot,
+            later,
+            || MicrophoneAccess::Undetermined,
+            &mut events,
+        );
+        assert_eq!(
+            events,
+            [DeviceEvent::SilentInput {
+                id: DeviceId::new("coreaudio:BuiltInMicrophoneDevice"),
+                access: MicrophoneAccess::Undetermined,
+            }]
+        );
+        note_silence(
+            &mut slot,
+            later + SILENCE_GRACE,
+            || MicrophoneAccess::Undetermined,
+            &mut events,
+        );
+        assert_eq!(events.len(), 1, "reported once");
+    }
+
+    #[test]
+    fn a_live_or_idle_capture_is_not_silent() {
+        let opened = Instant::now();
+        let later = opened + 2 * SILENCE_GRACE;
+        let mut events = Vec::new();
+
+        let (mut live, counters) = capture(opened);
+        counters.callbacks.store(200, Ordering::Relaxed);
+        counters.signal.store(true, Ordering::Relaxed);
+        note_silence(&mut live, later, || MicrophoneAccess::Granted, &mut events);
+
+        let (mut not_started, _) = capture(opened);
+        note_silence(
+            &mut not_started,
+            later,
+            || MicrophoneAccess::Granted,
+            &mut events,
+        );
+        assert_eq!(events, Vec::new());
     }
 }

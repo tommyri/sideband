@@ -12,6 +12,12 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 - Audio from the shared screen/app during streams.
 - Windows `uiAccess` manifest for PTT visibility into elevated games.
 - Bluetooth LE Audio / LC3 headset quality detection improvements.
+- macOS device clocks: correct `cpal`'s capture and playback timestamps by
+  `kAudioStreamPropertyLatency` (about 50 ms on the MacBook microphone and
+  14 ms on its speakers) and remove the double-counted buffer, after an
+  acoustic check. See `docs/plan/notes/audio-macos.md`.
+- macOS: `kAudioDevicePropertyVoiceActivityDetectionState` as a
+  "muted but talking" hint (macOS 14 and newer). Not a T-052 gate source.
 
 ## Text
 - Reactions, pins, threads, message forwarding.

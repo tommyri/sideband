@@ -18,7 +18,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::{
     DeviceId, Error, SAMPLES_PER_CHANNEL,
-    convert::{Framer, pull_playback, push_capture, push_unframed},
+    convert::{Framer, note_signal, pull_playback, push_capture, push_unframed},
     select::{GraphConfig, choose_format},
 };
 use crate::resample::{GRAPH_RATE, RateConverter};
@@ -30,6 +30,7 @@ pub struct Counters {
     pub(crate) overruns: AtomicU64,
     pub(crate) callbacks: AtomicU64,
     pub(crate) resampler_active: AtomicBool,
+    pub(crate) signal: AtomicBool,
 }
 
 impl Counters {
@@ -55,6 +56,13 @@ impl Counters {
     #[must_use]
     pub fn resampler_active(&self) -> bool {
         self.resampler_active.load(Ordering::Relaxed)
+    }
+
+    /// `true` once a capture callback delivered a sample that is not digital
+    /// zero. Always `false` for playback.
+    #[must_use]
+    pub fn has_signal(&self) -> bool {
+        self.signal.load(Ordering::Acquire)
     }
 }
 
@@ -162,7 +170,7 @@ impl CaptureStream {
             )?;
             (stream, Some(worker))
         };
-        stream.play().map_err(Error::Backend)?;
+        stream.play().map_err(Error::backend)?;
         tracing::info!(
             device = %device_id,
             rate = chosen.sample_rate,
@@ -232,6 +240,10 @@ impl CaptureStream {
     pub(crate) fn lost_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.lost)
     }
+
+    pub(crate) fn shared_counters(&self) -> Arc<Counters> {
+        Arc::clone(&self.counters)
+    }
 }
 
 impl PlaybackStream {
@@ -289,7 +301,7 @@ impl PlaybackStream {
             )?;
             (stream, Some(worker))
         };
-        stream.play().map_err(Error::Backend)?;
+        stream.play().map_err(Error::backend)?;
         tracing::info!(
             device = %device_id,
             rate = chosen.sample_rate,
@@ -421,7 +433,7 @@ struct Chosen {
 fn choose_input(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, Error> {
     let ranges = device
         .supported_input_configs()
-        .map_err(Error::Backend)?
+        .map_err(Error::backend)?
         .collect::<Vec<_>>();
     finish_choice(&ranges, config)
 }
@@ -429,7 +441,7 @@ fn choose_input(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, Er
 fn choose_output(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, Error> {
     let ranges = device
         .supported_output_configs()
-        .map_err(Error::Backend)?
+        .map_err(Error::backend)?
         .collect::<Vec<_>>();
     finish_choice(&ranges, config)
 }
@@ -519,12 +531,16 @@ where
     let counters = endpoint.counters;
     let clock = endpoint.clock;
     let mut pending = Framer::new(graph_channels * SAMPLES_PER_CHANNEL);
+    let mut signal = false;
     device
         .build_input_stream::<T, _, _>(
             chosen.config,
             move |data, info| {
                 let timestamp = info.timestamp();
                 clock.publish(timestamp.capture);
+                if !signal {
+                    signal = note_signal(data, &counters);
+                }
                 if whole_frames {
                     push_capture(
                         data,
@@ -547,7 +563,7 @@ where
             move |error| on_stream_error(&error, &lost, &counters_err, true),
             None,
         )
-        .map_err(Error::Backend)
+        .map_err(Error::backend)
 }
 
 fn build_playback(args: PlaybackBuild<'_>) -> Result<cpal::Stream, Error> {
@@ -591,7 +607,7 @@ where
             move |error| on_stream_error(&error, &lost, &counters_err, false),
             None,
         )
-        .map_err(Error::Backend)
+        .map_err(Error::backend)
 }
 
 fn on_stream_error(error: &cpal::Error, lost: &AtomicBool, counters: &Counters, capture: bool) {

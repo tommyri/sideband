@@ -15,6 +15,9 @@ use crate::mixer::SAMPLES_PER_CHANNEL;
 /// Graph rate. Device I/O is converted to and from this rate.
 pub const GRAPH_RATE: u32 = 48_000;
 
+/// Consumed samples kept before a pending buffer is shifted down.
+const COMPACT_AFTER: usize = 8_192;
+
 /// A fixed-input sinc resampler, or a copy when both rates are [`GRAPH_RATE`].
 pub struct RateConverter {
     channels: usize,
@@ -183,15 +186,26 @@ impl RateConverter {
     }
 
     fn compact_in(&mut self) {
-        if self.in_read > 0 && (self.in_read == self.pending_in.len() || self.in_read > 8_192) {
+        if self.in_read > 0
+            && (self.in_read == self.pending_in.len() || self.in_read > COMPACT_AFTER)
+        {
             self.pending_in.drain(..self.in_read);
             self.in_read = 0;
         }
     }
 
+    /// Drop samples already pulled. A caller that pulls whole frames leaves a
+    /// partial frame behind, so waiting for an empty buffer would let the
+    /// vector grow for as long as the stream runs.
     fn compact_out(&mut self) {
-        if self.out_read > 0 && self.out_read == self.pending_out.len() {
+        if self.out_read == 0 {
+            return;
+        }
+        if self.out_read == self.pending_out.len() {
             self.pending_out.clear();
+            self.out_read = 0;
+        } else if self.out_read >= COMPACT_AFTER {
+            self.pending_out.drain(..self.out_read);
             self.out_read = 0;
         }
     }
@@ -255,6 +269,30 @@ mod tests {
             decibels.abs() < 0.5,
             "amplitude error {decibels} dB (rms {actual_rms}, expected {expected_rms})"
         );
+    }
+
+    #[test]
+    fn pulling_whole_frames_keeps_the_output_buffer_bounded() {
+        // A 44.1 kHz capture worker pulls 10 ms frames and leaves a partial
+        // frame behind almost every time. Twenty simulated seconds must not
+        // accumulate the consumed samples.
+        let mut converter = RateConverter::new(44_100, GRAPH_RATE, 1).unwrap();
+        let block = vec![0.25; 227];
+        let mut frame = [0.0; 480];
+        let mut frames = 0usize;
+        for _ in 0..(44_100 * 20 / block.len()) {
+            converter.push(&block).unwrap();
+            while converter.pull_frame(&mut frame) {
+                frames += 1;
+            }
+        }
+        assert!(frames > 1_990, "{frames} frames");
+        assert!(
+            converter.pending_out.len() < 2 * super::COMPACT_AFTER,
+            "pending output grew to {} samples",
+            converter.pending_out.len()
+        );
+        assert!(converter.pending_in.len() < 2 * super::COMPACT_AFTER);
     }
 
     fn sine(rate: u32, frequency: f32, seconds: f32, amplitude: f32) -> Vec<f32> {

@@ -19,7 +19,8 @@ Run `cargo test -p ss-audio --features dred` for optional recovery coverage;
 `cargo bench -p ss-audio --bench codec` checks the 1 ms frame processing budget.
 
 `device` opens capture and playback through `cpal`, resamples with rubato
-when the hardware rate is not 48 kHz, and reports hot-plug and lost devices.
+when the hardware rate is not 48 kHz, and reports hot-plug, lost devices,
+and capture that is only zeros (a denied macOS microphone looks like that).
 `jitter` admits bounded audio timing metadata and releases ordered packets.
 `receive::TrackReceiver` emits stereo 10 ms quanta. `mixer` sums them. T-041
 connects the mixer to the playback ring.
@@ -27,7 +28,8 @@ connects the mixer to the playback ring.
 
 ## May depend on
 
-`ss-core`, plus `cpal`, `rubato`, Opus bindings, and `rtrb`.
+`ss-core`, plus `cpal`, `rubato`, Opus bindings, `rtrb`, and on macOS
+`objc2-avf-audio` for the microphone permission.
 
 ## Must not depend on
 

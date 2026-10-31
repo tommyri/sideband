@@ -64,6 +64,13 @@ notify = "8"
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.
 cpal = { version = "0.18", default-features = false }
+# macOS microphone permission status (`AVAudioApplication.recordPermission`).
+# CoreAudio opens a denied microphone and delivers zeros, so ss-audio asks first.
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = [
+  "std",
+  "AVAudioApplication",
+] }
 parking_lot = "0.12"
 prost = "0.14"
 prost-build = "0.14"

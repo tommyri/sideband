@@ -25,6 +25,9 @@ pub mod platform {
     //!
     //! `unsafe` is allowed in this module for CoreAudio, WASAPI, and
     //! PipeWire bindings. Every `unsafe` block needs a `// SAFETY:` comment.
+
+    #[cfg(target_os = "macos")]
+    pub(crate) mod macos;
 }
 
 #[cfg(test)]
