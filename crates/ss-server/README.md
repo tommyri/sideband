@@ -20,6 +20,8 @@ One audio track is assigned per joined connection. Joins announce existing
 tracks to the newcomer and its track to all channel members. Leave, switch,
 and disconnect remove the old assignment. Mute/deaf flags affect forwarding.
 The spike advertises mono 48 kHz Opus. Authenticated joins use the channel profile.
+`media::streams` relays subscribed video GOPs with per-viewer drop-oldest
+budgets, permission/membership cleanup, private quality hints, and counters.
 
 Sessions and outgoing control queues are bounded; a full 256-member bootstrap
 fits before the writer resumes. Oversized Welcome replies return INVALID. Slow control consumers are

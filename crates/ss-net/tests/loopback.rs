@@ -635,3 +635,68 @@ async fn ipv4_mapped_ipv6_client_reaches_an_ipv4_server() {
     );
     client.close(0, b"done");
 }
+
+#[tokio::test]
+async fn video_frame_reads_resume_after_cancellation_and_bound_lengths() {
+    use ss_net::media::{
+        StreamHeader,
+        stream::{Frame, GroupReader, MAX_FRAME_BYTES},
+    };
+    let mut server = Server::new().await;
+    let (client, _client_control, peer, _server_control) = server.pair().await;
+    let header = StreamHeader {
+        media: DatagramHeader {
+            version: 0,
+            kind: 1,
+            flags: 0,
+            track_id: 7,
+            seq: 2,
+            timestamp: 48_000,
+        },
+        group_id: 3,
+    };
+    let mut prefix = BytesMut::new();
+    header.encode_into(&mut prefix).unwrap();
+    let mut send = client.quic().open_uni().await.unwrap();
+    send.write_all(&prefix).await.unwrap();
+    let mut reader = within(GroupReader::accept(peer.quic())).await.unwrap();
+    let frame_prefix = [0, 0, 0, 4, 0, 0, 0, 9, 1];
+    send.write_all(&frame_prefix[..3]).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), reader.next_frame())
+            .await
+            .is_err()
+    );
+    send.write_all(&frame_prefix[3..]).await.unwrap();
+    send.write_all(b"ab").await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), reader.next_frame())
+            .await
+            .is_err()
+    );
+    send.write_all(b"cd").await.unwrap();
+    send.finish().unwrap();
+    assert_eq!(
+        within(reader.next_frame()).await.unwrap(),
+        Some(Frame {
+            timestamp: 9,
+            keyframe: true,
+            payload: bytes::Bytes::from_static(b"abcd")
+        })
+    );
+    assert!(within(reader.next_frame()).await.unwrap().is_none());
+    for (length, flags) in [
+        (0_u32, 1_u8),
+        (u32::try_from(MAX_FRAME_BYTES + 1).unwrap(), 1),
+        (1, 2),
+        (1, 0),
+    ] {
+        let mut send = client.quic().open_uni().await.unwrap();
+        send.write_all(&prefix).await.unwrap();
+        let mut frame = length.to_be_bytes().to_vec();
+        frame.extend_from_slice(&[0, 0, 0, 0, flags]);
+        send.write_all(&frame).await.unwrap();
+        let mut reader = within(GroupReader::accept(peer.quic())).await.unwrap();
+        assert!(within(reader.next_frame()).await.is_err());
+    }
+}

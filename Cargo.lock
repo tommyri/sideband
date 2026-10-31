@@ -4106,6 +4106,7 @@ dependencies = [
 name = "ss-client-core"
 version = "0.1.0"
 dependencies = [
+ "quinn",
  "ss-audio",
  "ss-core",
  "ss-input",

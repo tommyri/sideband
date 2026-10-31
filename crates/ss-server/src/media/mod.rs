@@ -5,6 +5,7 @@
 
 mod permitted;
 mod spike;
+pub mod streams;
 
 pub use permitted::Forwarder;
 pub use spike::{Router, Stats};

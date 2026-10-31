@@ -1,5 +1,7 @@
 //! Media headers from protocol §4–§5. Payloads remain opaque and borrowed.
 
+pub mod stream;
+
 use bytes::{BufMut, BytesMut};
 
 /// Largest track id in the canonical three-byte unsigned LEB128 encoding.

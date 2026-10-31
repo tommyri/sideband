@@ -11,6 +11,7 @@ pub(crate) struct Rooms {
     channels: HashMap<Id, HashSet<Id>>,
     server_mute: HashSet<Id>,
     next_track: u32,
+    pub(crate) video: crate::media::streams::State,
 }
 
 struct Peer {
@@ -81,14 +82,24 @@ impl Flags {
 }
 
 impl Rooms {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(registry: std::sync::Arc<crate::registry::ConnectionRegistry>) -> Self {
         Self {
             peers: HashMap::new(),
             by_user: HashMap::new(),
             channels: HashMap::new(),
             server_mute: HashSet::new(),
             next_track: 0,
+            video: crate::media::streams::State::new(registry),
         }
+    }
+
+    pub(crate) fn allocate_track(&mut self) -> Option<u32> {
+        let next = self
+            .next_track
+            .checked_add(1)
+            .filter(|id| *id <= ss_net::media::MAX_TRACK_ID)?;
+        self.next_track = next;
+        Some(next)
     }
 
     pub(crate) fn attach(&mut self, conn: Id, user: Id, connection: quinn::Connection) {
@@ -141,6 +152,7 @@ impl Rooms {
     }
 
     pub(crate) fn leave(&mut self, conn: Id) -> Vec<v1::server_envelope::Msg> {
+        let mut events = self.video.depart(conn);
         let (user, seat) = {
             let Some(peer) = self.peers.get_mut(&conn) else {
                 return Vec::new();
@@ -159,10 +171,11 @@ impl Rooms {
                 self.channels.remove(&seat.channel);
             }
         }
-        vec![
+        events.extend([
             track_removed(seat.track),
             voice_state(user, conn, None, false, false, seat.flags.server_mute()),
-        ]
+        ]);
+        events
     }
 
     /// Move `plan.conn` into `plan.channel`, or update mute flags in place.
@@ -201,12 +214,7 @@ impl Rooms {
                 return Err(JoinError::Full);
             }
         }
-        let track = self
-            .next_track
-            .checked_add(1)
-            .filter(|track| *track <= ss_net::media::MAX_TRACK_ID)
-            .ok_or(JoinError::TracksExhausted)?;
-        self.next_track = track;
+        let track = self.allocate_track().ok_or(JoinError::TracksExhausted)?;
         let server_mute = self.server_mute.contains(&user);
         let seat = Seat {
             channel,
@@ -333,6 +341,7 @@ impl Rooms {
             ));
             tracks.push(track_message(peer.user, *conn, seat));
         }
+        tracks.extend(self.video.snapshot(visible));
         (states, tracks)
     }
 
@@ -350,7 +359,7 @@ impl Rooms {
         let Some(members) = self.members(channel) else {
             return Vec::new();
         };
-        let mut events = Vec::new();
+        let mut events = self.video.channel_events(channel);
         for conn in members {
             if *conn == joiner {
                 continue;
