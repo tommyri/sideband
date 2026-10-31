@@ -26,6 +26,8 @@ ss-net = { path = "crates/ss-net", version = "0.1.0" }
 ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
 
 allocation-counter = "0.8"
+# Optional RNNoise speech probability; no CLI, C API, or signal adapters.
+nnnoiseless = { version = "=0.5.2", default-features = false }
 anyhow = "1"
 # In-memory permission snapshot. Handlers swap it after a role mutation.
 arc-swap = "1"

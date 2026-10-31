@@ -9,6 +9,7 @@ pub mod jitter;
 pub mod mixer;
 pub mod receive;
 pub mod resample;
+pub mod vad;
 
 /// Package name. Dependents reference this so the crate graph stays linked.
 pub const NAME: &str = "ss-audio";

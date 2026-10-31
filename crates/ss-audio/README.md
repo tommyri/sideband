@@ -25,9 +25,14 @@ when the hardware rate is not 48 kHz, and reports hot-plug and lost devices.
 connects the mixer to the playback ring.
 `cargo test -p ss-audio --test sim -- --nocapture` reports network simulations.
 
+`vad` gates 48 kHz mono/stereo capture in 10 ms quanta, with pre-roll,
+hangover, calibration, and a 50 Hz meter. Optional `rnnoise` adds speech
+probability; audio stays unchanged. Construct/process on the capture worker.
+Run `cargo test -p ss-audio --features rnnoise --test vad` for both modes.
+
 ## May depend on
 
-`ss-core`, plus `cpal`, `rubato`, Opus bindings, and `rtrb`.
+`ss-core`, plus `cpal`, `rubato`, Opus bindings, `rtrb`, optional `nnnoiseless`.
 
 ## Must not depend on
 

@@ -10,8 +10,10 @@ publish = false
 [features]
 default = []
 dred = ["opusic-c/dred"]
+rnnoise = ["dep:nnnoiseless"]
 
 [dependencies]
+nnnoiseless = { workspace = true, optional = true }
 ss-core.workspace = true
 opusic-c.workspace = true
 rtrb.workspace = true
