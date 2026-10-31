@@ -25,9 +25,14 @@ when the hardware rate is not 48 kHz, and reports hot-plug and lost devices.
 connects the mixer to the playback ring.
 `cargo test -p ss-audio --test sim -- --nocapture` reports network simulations.
 
+`processing::Chain` runs opt-in echo, noise, and gain stages on the capture
+worker, never a callback; with all off it touches no sample. Features `aec`
+(sonora) and `rnnoise`; `deepfilter` is reserved. `cargo bench -p ss-audio
+--all-features --bench processing` checks 1.5 ms per stage, 3 ms per chain.
+
 ## May depend on
 
-`ss-core`, plus `cpal`, `rubato`, Opus bindings, and `rtrb`.
+`ss-core`, `cpal`, `rubato`, Opus bindings, `rtrb`; optional `sonora`, `nnnoiseless`.
 
 ## Must not depend on
 

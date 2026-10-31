@@ -64,7 +64,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | todo |
 | [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | todo |
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | todo |
-| [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | todo |
+| [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | done |
 | [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | todo |
 | [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | todo |
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | todo |

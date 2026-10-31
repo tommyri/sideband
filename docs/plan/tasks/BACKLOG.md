@@ -5,6 +5,10 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 ## Voice
 - Time-stretching (WSOLA) in the jitter buffer for smoother adaptation.
 - GTCRN noise suppression once a clean Rust/ONNX streaming path is packaged.
+  It is the best quality-per-CPU candidate we have looked at (T-053).
+- DeepFilterNet3 noise suppression (`ss-audio/deepfilter`, reserved by T-053)
+  once a crates.io release exposes streaming inference and a low-latency
+  model fits the 10 MB budget.
 - Opus HD / 96 kHz "studio" channel profile (experimental extension).
 - Whisper/private talk to one user while in a channel (TeamSpeak-style).
 - Positional/3D audio for games (per-user pan).

@@ -9,13 +9,19 @@ publish = false
 
 [features]
 default = []
+aec = ["dep:sonora"]
+# Reserved: no DeepFilterNet3 build meets the dependency and model rules (T-053 notes).
+deepfilter = []
 dred = ["opusic-c/dred"]
+rnnoise = ["dep:nnnoiseless"]
 
 [dependencies]
+nnnoiseless = { workspace = true, optional = true }
 ss-core.workspace = true
 opusic-c.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
+sonora = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -32,6 +38,10 @@ proptest.workspace = true
 
 [[bench]]
 name = "codec"
+harness = false
+
+[[bench]]
+name = "processing"
 harness = false
 
 [lints]

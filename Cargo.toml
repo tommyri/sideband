@@ -26,6 +26,8 @@ ss-net = { path = "crates/ss-net", version = "0.1.0" }
 ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
 
 allocation-counter = "0.8"
+# Optional RNNoise speech probability; no CLI, C API, or signal adapters.
+nnnoiseless = { version = "=0.5.2", default-features = false }
 anyhow = "1"
 # In-memory permission snapshot. Handlers swap it after a role mutation.
 arc-swap = "1"
@@ -88,6 +90,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 socket2 = "0.6"
+# Optional WebRTC APM port (AEC3, noise suppression, AGC2). Pure Rust; no
+# examples feature, so no second cpal or CLI dependencies.
+sonora = { version = "=0.2.0", default-features = false }
 # Online database snapshot plus the attachments tree.
 tar = "0.4"
 tempfile = "3"
