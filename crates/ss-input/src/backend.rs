@@ -1,16 +1,18 @@
 //! Runtime selection of the input backend.
 //!
-//! [`Backend::detect`] is the function later tasks replace. It is not behind
-//! a cargo feature, so this crate links on Windows, macOS, and Linux today.
+//! [`Backend::detect`] selects the native macOS listener and keeps the mock
+//! on Windows/Linux pending their tasks. No platform cargo features.
 
 use std::{fmt, time::Duration};
 
 use tracing::debug;
 
+#[cfg(not(target_os = "macos"))]
+use crate::mock::MockListener;
+
 use crate::{
     error::Error,
     listener::{Caps, CapturedBinding, Handle, Handler, Listener},
-    mock::MockListener,
 };
 
 /// The input backend for this process.
@@ -25,23 +27,21 @@ pub struct Backend {
 impl Backend {
     /// Select the listener for this process.
     ///
-    /// This build always returns [`MockListener`]. The body of this function
-    /// is what later tasks replace:
-    ///
-    /// - Windows: Raw Input, with a low-level hook fallback
-    /// - macOS: a listen-only `CGEventTap`
-    /// - Linux: the XDG GlobalShortcuts portal when `WAYLAND_DISPLAY` is set,
-    ///   otherwise X11 XInput2, with evdev only when the user opts in
+    /// macOS uses a listen-only session event tap with Input Monitoring.
+    /// Windows and Linux still use the mock pending T-048 and T-050.
+    /// Detection itself never prompts; start/capture request permission.
     ///
     /// That is decision D8. Hotkey registration is intentionally not used:
     /// it swallows the key and cannot bind mouse buttons. No backend cargo
     /// feature is required to compile.
     #[must_use]
     pub fn detect() -> Self {
-        debug!("selected the mock input backend");
-        Self {
-            listener: Box::new(MockListener::new(Caps::mock())),
-        }
+        #[cfg(target_os = "macos")]
+        let listener: Box<dyn Listener> = Box::new(crate::macos::MacListener::new());
+        #[cfg(not(target_os = "macos"))]
+        let listener: Box<dyn Listener> = Box::new(MockListener::new(Caps::mock()));
+        debug!(os = std::env::consts::OS, "selected input backend");
+        Self { listener }
     }
 
     /// Capabilities of the selected listener.
@@ -89,15 +89,19 @@ impl fmt::Debug for Backend {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
     use std::time::Duration;
 
+    #[cfg(not(target_os = "macos"))]
     use super::Backend;
+    #[cfg(not(target_os = "macos"))]
     use crate::{
         binding::{Binding, Code},
         error::Error,
         listener::Caps,
     };
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn detect_reports_mock_limits_and_starts() {
         let backend = Backend::detect();
@@ -123,11 +127,11 @@ mod tests {
 
     #[test]
     fn none_caps_explain_an_unavailable_session() {
-        let caps = Caps::none();
+        let caps = crate::Caps::none();
         assert!(!caps.mouse_buttons);
         assert!(!caps.passthrough);
         assert!(caps.needs_permission.is_none());
         assert!(!caps.binding_set_by_system);
-        assert_eq!(caps.limitations, [Caps::UNAVAILABLE_LIMITATION]);
+        assert_eq!(caps.limitations, [crate::Caps::UNAVAILABLE_LIMITATION]);
     }
 }

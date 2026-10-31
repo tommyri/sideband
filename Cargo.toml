@@ -18,6 +18,9 @@ rust-version = "1.99"
 version = "0.1.0"
 
 [workspace.dependencies]
+# macOS listen-only input taps and their dedicated Core Foundation run loop.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop", "CFDate", "CFString"] }
 ss-audio = { path = "crates/ss-audio", version = "0.1.0" }
 ss-client-core = { path = "crates/ss-client-core", version = "0.1.0" }
 ss-core = { path = "crates/ss-core", version = "0.1.0" }
