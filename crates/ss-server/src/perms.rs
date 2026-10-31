@@ -95,6 +95,11 @@ impl PermissionService {
         }
     }
 
+    /// Resolved permissions for a user in a channel, including overrides.
+    pub fn channel_permissions(&self, user: Id, channel: Id) -> Result<Permissions, AccessError> {
+        self.cache.load().channel_permissions(user, channel)
+    }
+
     /// Highest role position `user` holds. `@everyone` counts.
     #[must_use]
     pub fn highest_role_position(&self, user: Id) -> i64 {

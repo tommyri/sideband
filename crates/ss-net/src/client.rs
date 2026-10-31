@@ -101,6 +101,30 @@ impl ServerCertVerifier for Verifier {
     }
 }
 
+/// TLS configuration for HTTPS using an already approved QUIC leaf pin.
+/// Uses the same verifier and handshake signature checks as QUIC. The caller
+/// must obtain this pin from its store; this function never approves a peer.
+pub fn pinned_tls_config(pin: Fingerprint) -> Result<rustls::ClientConfig, Error> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let webpki = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .map_err(|_| Error::Config("invalid CA roots"))?;
+    Ok(
+        rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(Verifier {
+                pin: Some(pin),
+                rejection: Arc::default(),
+                observed: Arc::default(),
+                webpki,
+                provider,
+            }))
+            .with_no_client_auth(),
+    )
+}
+
 /// Connects to a hostname or bare IP. No application data is sent before trust
 /// succeeds. Unknown self-signed certificates return `Untrusted`; pin changes
 /// return `FingerprintChanged`. Explicit approval is `PinStore::set`, then retry.

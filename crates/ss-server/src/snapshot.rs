@@ -1,10 +1,10 @@
 //! `Welcome` snapshot and the visibility filter for channel events.
 //!
 //! [`build`] reports every member offline. The accept loop uses
-//! [`build_with`] so live connections show the registry's presence. Voice
-//! states and tracks are empty until T-025. A delete event is not visible
-//! after the channel is gone, so the actor's own command reply is sent
-//! without this filter; other sessions must use [`delivers`].
+//! [`build_with`] so live connections show the registry's presence. The voice
+//! service fills voice states and tracks separately. The connection owner
+//! diffs [`channel_view`] for channel/permission events, including revocation;
+//! [`delivers`] filters other fan-out events against current visibility.
 
 use std::collections::HashMap;
 
@@ -53,7 +53,11 @@ pub async fn build_with(
         } else {
             None
         };
-        let wire = wire_channel(channel, members, last_message_id)?;
+        let mut wire = wire_channel(channel, members, last_message_id)?;
+        wire.effective_permissions = perms
+            .channel_permissions(user, channel.id)
+            .ok()
+            .map(|p| p.bits());
         if channel.kind.is_direct() {
             direct_messages.push(wire);
         } else {
@@ -163,6 +167,7 @@ pub(crate) fn wire_channel(
         created_at: channel.created_at.as_millis(),
         member_ids: member_ids.iter().copied().map(id_to_bytes).collect(),
         last_message_id: last_message_id.map(id_to_bytes),
+        effective_permissions: None,
     })
 }
 
@@ -318,4 +323,40 @@ fn wire_user(user: &db::User) -> v1::User {
         avatar_attachment_id: user.avatar_attachment_id.map(id_to_bytes),
         kind: i32::from(kind),
     }
+}
+
+/// Current personalized channel view. Used after visibility/permission changes
+/// so connected clients gain newly visible channels and purge revoked ones.
+pub(crate) async fn channel_view(
+    perms: &PermissionService,
+    user: Id,
+) -> Result<std::collections::BTreeMap<Id, v1::Channel>, db::Error> {
+    let mut conn = perms.pool().read().await?;
+    let listed = channels::list(&mut conn).await?;
+    let mut members: HashMap<Id, Vec<Id>> = HashMap::new();
+    for (channel, member) in channels::memberships(&mut conn).await? {
+        members.entry(channel).or_default().push(member);
+    }
+    let mut view = std::collections::BTreeMap::new();
+    for channel in listed {
+        let Ok(permissions) = perms.channel_permissions(user, channel.id) else {
+            continue;
+        };
+        if !permissions.contains(Permissions::VIEW_CHANNEL) {
+            continue;
+        }
+        let last = if channel.kind.is_direct() {
+            messages::latest_id(&mut conn, channel.id).await?
+        } else {
+            None
+        };
+        let mut wire = wire_channel(
+            &channel,
+            members.get(&channel.id).map_or(&[], Vec::as_slice),
+            last,
+        )?;
+        wire.effective_permissions = Some(permissions.bits());
+        view.insert(channel.id, wire);
+    }
+    Ok(view)
 }

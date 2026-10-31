@@ -4106,10 +4106,20 @@ dependencies = [
 name = "ss-client-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "getrandom 0.2.17",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
  "ss-audio",
  "ss-core",
  "ss-input",
  "ss-net",
+ "ss-proto",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4208,6 +4218,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "ss-client-core",
  "ss-core",
  "ss-net",
  "ss-proto",
@@ -4215,6 +4226,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "toml 0.8.23",
  "tower",
  "tracing",

@@ -61,6 +61,9 @@ message Channel {
   // Newest visible message in a DM. Absent when the conversation is empty,
   // and absent on guild channels.
   optional bytes last_message_id = 11;
+  // Permissions resolved by the server for the receiving user, including
+  // channel overrides. Absent on older servers and non-personalized records.
+  optional uint64 effective_permissions = 12;
 }
 
 // Create a channel. The server assigns the id and emits `ChannelCreated`.

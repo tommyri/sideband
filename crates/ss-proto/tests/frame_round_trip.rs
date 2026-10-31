@@ -102,6 +102,7 @@ fn voice(sample: &Sample) -> Option<VoiceSettings> {
 
 fn channel(sample: &Sample) -> Channel {
     Channel {
+        effective_permissions: Some(ss_core::Permissions::EVERYONE.bits()),
         id: sample.blob.clone(),
         kind: code(sample.pick, 6),
         name: sample.text.clone(),

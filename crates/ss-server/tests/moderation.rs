@@ -141,6 +141,10 @@ async fn equal_roles_cannot_kick_and_a_kick_leaves_voice() {
 
     let joined = command(&mut cyd, 2, join(&voice)).await;
     assert!(matches!(joined.msg, Some(Event::Ack(_))));
+    // Observe the join before testing the leave. A command Ack on another
+    // connection does not guarantee its earlier bus events have been drained.
+    let entered = next_voice_state(&mut ada, cyd_id).await;
+    assert_eq!(entered.channel_id.as_ref(), Some(&voice));
     let kicked = command(
         &mut ada,
         5,

@@ -202,6 +202,12 @@ but TLS handshake signatures are always verified. Unpinned certificates use
 WebPKI with Mozilla roots; an accepted public certificate is recorded before
 returning the connection. Any later pin change needs explicit approval.
 
+T-040 reuses that verifier for HTTPS history. The approved QUIC pin covers
+HTTPS on the same host, including a separately configured TCP port. History
+never performs a second trust-on-first-use decision, follows redirects, or
+uses environment proxies. The host owns session-token persistence separately
+from `PinStore`, so it can use an OS keychain without imposing one on the core.
+
 ## D11 — Protobuf is the control API
 
 Control messages are protobuf, generated with `prost` at build time.

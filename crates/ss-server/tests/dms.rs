@@ -235,7 +235,8 @@ async fn group_conversation_renames_adds_and_leaves() {
         }),
     )
     .await;
-    let added = next_channel(&mut dee, false).await;
+    // Newly visible conversations are creations in this session's view.
+    let added = next_channel(&mut dee, true).await;
     assert!(has_member(&added, dee_id));
     assert_eq!(added.member_ids.len(), 4);
     let _ = next_channel(&mut ada, false).await;

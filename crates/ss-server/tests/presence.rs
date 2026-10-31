@@ -212,6 +212,17 @@ async fn hidden_channel_events_are_not_delivered() {
     )
     .await;
     assert!(matches!(override_ack.msg, Some(Event::Ack(_))));
+    let removed = timeout(DEADLINE, async {
+        loop {
+            if let Some(Event::ChannelDeleted(event)) = member_stream.recv().await.unwrap().msg {
+                break event.channel.unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(removed.id, secret);
+    assert_eq!(removed.name, "secret");
 
     let renamed = command(
         &mut admin_stream,
