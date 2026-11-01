@@ -92,7 +92,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 |---|---|---|
 | `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id |
 | `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook }` | `Webhook.token` is only on `CreateWebhook` |
-| `Error` | `request_id`, `code` (enum), `message` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION` |
+| `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
 | `MemberJoined` / `MemberLeft` / `MemberUpdated` | `Member{user, roles, presence}` | |
@@ -108,6 +108,27 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `InviteCreated` / `InviteRevoked` | `Invite` | admins only |
 | `Kicked` / `Banned` | `reason`, `expires_at?` | sent then connection closed |
 | `ServerNotice` | `text` | shutdown warnings etc. |
+
+### Limits
+
+Quotas and input limits are listed in [`docs/security.md`](../security.md)
+sections 6 and 7. The ones a client must handle:
+
+- A rejected `Hello` because of a quota is `RATE_LIMITED` with
+  `retry_after_ms`, and the connection closes. Reconnect after the wait.
+- Commands other than `Ping` share a per-account budget (burst 100, then 20
+  per second). `SendMessage` and `Typing` have tighter quotas of their own.
+  `Ping` is never rate limited.
+- The server answers every first Initial with a QUIC Retry (address
+  validation); `quinn` clients follow it transparently. Then at most 32
+  connections per address (IPv6: per /64), pending handshakes
+  included. Further handshakes are refused.
+- Names (display, channel, group DM, role, webhook) are trimmed and stored in
+  NFC; hidden characters are `INVALID`: Unicode categories Cc, Cf, Zl, Zp,
+  Co, Cn and every default-ignorable code point, except U+200D and
+  U+FE0E/U+FE0F, which emoji need. Topics are at most
+  1024 characters. A message carries at most 10 attachments, each once.
+  Changing the display name needs `CHANGE_NICKNAME`.
 
 ## 4. Media datagrams (audio)
 
@@ -173,6 +194,16 @@ in `TrackAdded.codec` (e.g. `avc1.64001f` + `description`).
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
 | GET | `/api/v1/audit-log?before=&limit=` | admins |
 | GET | `/metrics` | internal listener only |
+
+Every public response carries `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a
+`default-src 'none'; frame-ancestors 'none'; sandbox` CSP, and
+`Cache-Control: no-store` unless the route sets its own. A request over a
+quota is `429` with `Retry-After` (seconds). Bodies are capped at 64 KiB
+except uploads; webhook posts need `Content-Type: application/json` (`415`
+otherwise). A request has 10 s to send its head and 30 s to finish (300 s for
+attachment transfers). At most 64 connections per address; a connection idle
+for 60 s or open for 10 minutes is closed, so clients must reconnect.
 
 ## 7. Versioning
 

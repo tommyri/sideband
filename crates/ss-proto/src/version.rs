@@ -53,6 +53,7 @@ pub fn unsupported_version(request_id: u32) -> ServerEnvelope {
             message: "unsupported protocol version".to_owned(),
             min_version: Some(SUPPORTED_RANGE.min),
             max_version: Some(SUPPORTED_RANGE.max),
+            retry_after_ms: None,
         })),
     }
 }

@@ -30,10 +30,28 @@ allow = [
 name = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
+# cpal 0.18 promotes its audio threads through this crate. MPL-2.0 is
+# file-level copyleft: shipping it unmodified in the desktop client is fine,
+# and changes to its own files would have to be published. The server does
+# not link it. Scoped to this crate only; maintainer sign-off noted in T-061.
+[[licenses.exceptions]]
+name = "audio_thread_priority"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
+# One TLS crypto provider: rustls with ring, for QUIC, ACME, and previews.
+# aws-lc breaks the static musl build and would make provider selection
+# ambiguous; OpenSSL is not used at all.
+deny = [
+  { name = "aws-lc-rs", reason = "rustls is pinned to the ring provider" },
+  { name = "aws-lc-sys", reason = "rustls is pinned to the ring provider" },
+  { name = "openssl", reason = "TLS is rustls only" },
+  { name = "openssl-sys", reason = "TLS is rustls only" },
+  { name = "native-tls", reason = "TLS is rustls only" },
+]
 
 [sources]
 unknown-registry = "deny"

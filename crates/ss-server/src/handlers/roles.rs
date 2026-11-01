@@ -42,9 +42,10 @@ pub enum Error {
     /// The name, id, or permission bits are not valid.
     #[error("{0}")]
     Invalid(&'static str),
-    /// The command arrived faster than its quota.
+    /// The command arrived faster than its quota. The duration is how long
+    /// until the next one would be accepted.
     #[error("{0}")]
-    RateLimited(&'static str),
+    RateLimited(&'static str, std::time::Duration),
     /// SQLite failed. The wire message stays generic.
     #[error(transparent)]
     Database(#[from] db::Error),
@@ -57,8 +58,16 @@ impl Error {
             Self::Forbidden(_) => ErrorCode::Forbidden,
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Invalid(_) => ErrorCode::Invalid,
-            Self::RateLimited(_) => ErrorCode::RateLimited,
+            Self::RateLimited(..) => ErrorCode::RateLimited,
             Self::Database(_) => ErrorCode::Internal,
+        }
+    }
+
+    /// How long a rate-limited caller should wait. `None` for other failures.
+    pub(crate) fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::RateLimited(_, wait) => Some(*wait),
+            _ => None,
         }
     }
 
@@ -117,7 +126,7 @@ impl Roles {
     /// Creates a role at the requested position. Positions are not compacted.
     pub async fn create(&self, actor: Id, command: &v1::CreateRole) -> Result<CommandReply, Error> {
         self.require(actor, Permissions::MANAGE_ROLES)?;
-        let name = role_name(&command.name)?.to_owned();
+        let name = role_name(&command.name)?;
         let permissions = bits(command.permissions)?;
         let position = i64::from(command.position);
         self.ensure_position(actor, position)?;
@@ -176,7 +185,7 @@ impl Roles {
                 .await?
                 .ok_or(Error::NotFound("role not found"))?;
             let name = match &command.name {
-                Some(name) => role_name(name)?.to_owned(),
+                Some(name) => role_name(name)?,
                 None => current.name.clone(),
             };
             let permissions = match command.permissions {
@@ -446,13 +455,11 @@ async fn audit(
     Ok(())
 }
 
-fn role_name(name: &str) -> Result<&str, Error> {
-    let len = name.chars().count();
-    if (1..=100).contains(&len) {
-        Ok(name)
-    } else {
-        Err(Error::Invalid("role name must be 1 to 100 characters"))
-    }
+fn role_name(name: &str) -> Result<String, Error> {
+    crate::text::name(name, 100).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("role name must be 1 to 100 characters"),
+        crate::text::NameError::Hidden => Error::Invalid("role name contains a hidden character"),
+    })
 }
 
 fn bits(value: u64) -> Result<Permissions, Error> {

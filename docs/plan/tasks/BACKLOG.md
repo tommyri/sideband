@@ -34,3 +34,11 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 ## Ops
 - Automated SQLite backups to S3-compatible storage.
 - Prometheus alert rules.
+
+## Security (from T-061, `docs/security.md` section 12)
+- Serve the public REST listener over TLS with the QUIC certificate (it is
+  plaintext today); keep ACME HTTP-01 on the port-80 redirect listener and
+  update `deploy/smoke.sh`.
+- Per-sender bitrate cap on voice datagrams before fan-out.
+- Store invite codes hashed, shown once like webhook tokens.
+- `Retry-After` for the daily upload byte quota.

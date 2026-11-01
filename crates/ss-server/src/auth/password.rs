@@ -9,6 +9,7 @@ use argon2::{
     Algorithm, Argon2, Params, Version,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
+use zeroize::Zeroizing;
 
 /// Memory cost in kibibytes. 19 MiB.
 const MEMORY_KIB: u32 = 19_456;
@@ -17,7 +18,7 @@ const PARALLELISM: u32 = 1;
 
 /// Hashes `password` off the runtime.
 pub(crate) async fn hash(password: &str) -> Result<String, Error> {
-    let password = password.to_owned();
+    let password = Zeroizing::new(password.to_owned());
     let probe = take_probe();
     blocking(move || {
         probe.wait();
@@ -30,7 +31,7 @@ pub(crate) async fn hash(password: &str) -> Result<String, Error> {
 ///
 /// A mismatch is `Ok(false)`. A malformed hash is [`Error::Password`].
 pub(crate) async fn verify(password: &str, stored: &str) -> Result<bool, Error> {
-    let password = password.to_owned();
+    let password = Zeroizing::new(password.to_owned());
     let stored = stored.to_owned();
     let probe = take_probe();
     blocking(move || {

@@ -1,11 +1,12 @@
 //! `UpdateProfile`.
 //!
-//! An empty display name keeps the current one. An empty avatar id clears the
-//! picture. A present id must be a file this user uploaded.
+//! An empty display name keeps the current one. Changing it requires
+//! `CHANGE_NICKNAME`. An empty avatar id clears the picture. A present id
+//! must be a file this user uploaded.
 
 use std::sync::Arc;
 
-use ss_core::Id;
+use ss_core::{Id, Permissions};
 use ss_proto::{
     v1::{self, ack, server_envelope},
     validate::{id_from_bytes, id_to_bytes},
@@ -50,6 +51,11 @@ impl Profiles {
             .await?
             .ok_or(Error::NotFound("unknown user"))?;
         let display_name = chosen_name(&current.display_name, &command.display_name)?;
+        if display_name != current.display_name {
+            self.perms
+                .check(actor, None, Permissions::CHANGE_NICKNAME)
+                .map_err(|_| Error::Forbidden("missing change nickname"))?;
+        }
         let avatar_attachment_id = match &command.avatar_attachment_id {
             None => current.avatar_attachment_id,
             Some(bytes) if bytes.is_empty() => None,
@@ -84,17 +90,13 @@ impl Profiles {
 }
 
 fn chosen_name(current: &str, requested: &str) -> Result<String, Error> {
-    let trimmed = requested.trim();
-    if trimmed.is_empty() {
+    if requested.trim().is_empty() {
         return Ok(current.to_owned());
     }
-    if trimmed.chars().count() > MAX_DISPLAY {
-        return Err(Error::Invalid("display name is too long"));
-    }
-    if trimmed.chars().any(char::is_control) {
-        return Err(Error::Invalid("display name is not valid"));
-    }
-    Ok(trimmed.to_owned())
+    crate::text::name(requested, MAX_DISPLAY).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("display name is too long"),
+        crate::text::NameError::Hidden => Error::Invalid("display name is not valid"),
+    })
 }
 
 async fn owned_avatar(conn: &mut sqlx::SqliteConnection, actor: Id, id: Id) -> Result<Id, Error> {

@@ -8,7 +8,7 @@ mod limiter;
 mod password;
 mod token;
 
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use sqlx::Connection;
 use ss_core::{Id, Permissions, Timestamp, UserKind};
@@ -20,6 +20,11 @@ use crate::db::{
 
 /// `server_settings` key for the unused owner bootstrap code.
 pub const OWNER_INVITE: &str = "owner_invite";
+
+/// Longest accepted username, in bytes. Usernames are ASCII.
+const MAX_USERNAME_BYTES: usize = 32;
+/// Longest accepted password, in bytes. Longer logins fail without hashing.
+const MAX_PASSWORD_BYTES: usize = 128;
 
 /// Ninety days, in milliseconds. Presenting the token pushes expiry forward.
 const SESSION_TTL_MS: i64 = 90 * 24 * 60 * 60 * 1000;
@@ -39,9 +44,13 @@ pub enum Error {
         /// Text placed on the wire. The proto `Error` has no expiry field.
         message: String,
     },
-    /// This address used its five login or register attempts for the minute.
+    /// This address used its login or register attempts, or it already
+    /// failed against a username that is locked.
     #[error("too many login attempts")]
-    RateLimited,
+    RateLimited {
+        /// How long until the next attempt is allowed.
+        retry_after: Duration,
+    },
     /// The invite is missing, revoked, expired, or already used up.
     #[error("invite is not valid")]
     InvalidInvite,
@@ -77,13 +86,21 @@ impl Error {
         match self {
             Self::Unauthenticated | Self::Disabled => ErrorCode::Unauthenticated,
             Self::Banned { .. } => ErrorCode::Banned,
-            Self::RateLimited => ErrorCode::RateLimited,
+            Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::InvalidInvite | Self::Invalid(_) => ErrorCode::Invalid,
             Self::Conflict => ErrorCode::Conflict,
             Self::NotFound => ErrorCode::NotFound,
             Self::OwnerExists | Self::Database(_) | Self::Password | Self::Random | Self::Join => {
                 ErrorCode::Internal
             }
+        }
+    }
+
+    /// How long a rate-limited caller should wait. `None` for other failures.
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimited { retry_after } => Some(*retry_after),
+            _ => None,
         }
     }
 
@@ -99,7 +116,8 @@ impl Error {
 }
 
 /// An account that just passed `Hello`, plus the token to send in `Welcome`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` redacts the token and the password hash.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Authenticated {
     /// Account row. The password hash is still on the struct; do not log it.
     pub user: db::User,
@@ -110,6 +128,16 @@ pub struct Authenticated {
     /// Channel checks use [`crate::perms`]. This value is not refreshed when
     /// a role changes.
     pub permissions: Permissions,
+}
+
+impl std::fmt::Debug for Authenticated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Authenticated")
+            .field("user", &self.user)
+            .field("resume_token", &db::REDACTED)
+            .field("permissions", &self.permissions)
+            .finish()
+    }
 }
 
 /// Password login, registration, and session lookup for one process.
@@ -159,7 +187,9 @@ impl Auth {
     }
 
     fn limit(&self, peer: IpAddr) -> Result<(), Error> {
-        self.limiter.check(peer).map_err(|()| Error::RateLimited)
+        self.limiter
+            .check(peer)
+            .map_err(|retry_after| Error::RateLimited { retry_after })
     }
 
     async fn register(
@@ -193,17 +223,28 @@ impl Auth {
         login: &v1::Login,
         peer: IpAddr,
     ) -> Result<Authenticated, Error> {
+        if login.username.len() > MAX_USERNAME_BYTES || login.password.len() > MAX_PASSWORD_BYTES {
+            return Err(Error::Unauthenticated);
+        }
         self.limit(peer)?;
+        self.limiter
+            .admit(&login.username, peer)
+            .map_err(|retry_after| Error::RateLimited { retry_after })?;
         let found = {
             let mut conn = self.pool.read().await?;
             users::get_by_username(&mut conn, &login.username).await?
         };
-        let Some(user) = found else {
+        let verified = match found {
+            Some(user) => password::verify(&login.password, &user.password_hash)
+                .await?
+                .then_some(user),
+            None => None,
+        };
+        let Some(user) = verified else {
+            self.limiter.failed(&login.username, peer);
             return Err(Error::Unauthenticated);
         };
-        if !password::verify(&login.password, &user.password_hash).await? {
-            return Err(Error::Unauthenticated);
-        }
+        self.limiter.succeeded(&login.username, peer);
         self.start_session(user.id, device_name(hello)).await
     }
 
@@ -212,14 +253,20 @@ impl Auth {
             return Err(Error::Unauthenticated);
         }
         let digest = token::hash(token);
-        let mut conn = self.pool.write().await;
-        let Some(session) = sessions::get_by_token_hash(&mut conn, &digest).await? else {
+        // Look the token up on a read connection first. An unknown token must
+        // not queue behind (or hold up) the single SQLite writer.
+        let found = {
+            let mut conn = self.pool.read().await?;
+            sessions::get_by_token_hash(&mut conn, &digest).await?
+        };
+        let Some(session) = found else {
             return Err(Error::Unauthenticated);
         };
         let now = Timestamp::now();
         if session.expires_at.is_some_and(|expires| expires <= now) {
             return Err(Error::Unauthenticated);
         }
+        let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, session.user_id).await?;
         sessions::slide(&mut conn, session.id, now, expiry(now)).await?;
         let permissions = permissions_for(&mut conn, user.id).await?;
@@ -253,7 +300,7 @@ impl Auth {
         let permissions = permissions_for(&mut conn, user.id).await?;
         Ok(Authenticated {
             user,
-            resume_token: issued.token,
+            resume_token: issued.token.to_string(),
             permissions,
         })
     }
@@ -261,6 +308,7 @@ impl Auth {
     async fn insert_registration(&self, pending: Pending) -> Result<Authenticated, Error> {
         let mut guard = self.pool.write().await;
         let mut tx = guard.begin().await.map_err(db::Error::from)?;
+        ensure_distinct(&mut tx, &pending.username).await?;
         let owner = claim_invite(&mut tx, &pending).await?;
         let display_name = pending.username.clone();
         let user = users::insert(
@@ -297,7 +345,7 @@ impl Auth {
         tx.commit().await.map_err(db::Error::from)?;
         Ok(Authenticated {
             user,
-            resume_token: pending.issued.token,
+            resume_token: pending.issued.token.to_string(),
             permissions,
         })
     }
@@ -462,12 +510,58 @@ const fn expiry(now: Timestamp) -> Timestamp {
     Timestamp::from_millis(now.as_millis().saturating_add(SESSION_TTL_MS))
 }
 
+/// Rejects a username that reads like an existing one, such as `rnike` next
+/// to `mike` or `adm1n` next to `admin`. Exact (case-insensitive) duplicates
+/// are left to the `UNIQUE COLLATE NOCASE` index.
+async fn ensure_distinct(conn: &mut sqlx::SqliteConnection, username: &str) -> Result<(), Error> {
+    let wanted = username_skeleton(username);
+    let taken = users::list(conn)
+        .await?
+        .iter()
+        .any(|user| username_skeleton(&user.username) == wanted);
+    if taken { Err(Error::Conflict) } else { Ok(()) }
+}
+
+/// Folds ASCII look-alikes so confusable usernames compare equal.
+///
+/// Usernames are restricted to `a-z 0-9 _ .`, so NFC normalization is the
+/// identity on every accepted name and only these ASCII confusables remain:
+/// `rn`/`m`, `vv`/`w`, `cl`/`d`, `0`/`o`, `1`/`i`/`l`, and `_`/`.`.
+#[must_use]
+pub fn username_skeleton(username: &str) -> String {
+    let lower = username.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        let folded_pair = match bytes.get(index..index.saturating_add(2)) {
+            Some(b"rn") => Some('m'),
+            Some(b"vv") => Some('w'),
+            Some(b"cl") => Some('d'),
+            _ => None,
+        };
+        if let Some(folded) = folded_pair {
+            out.push(folded);
+            index = index.saturating_add(2);
+            continue;
+        }
+        out.push(match byte {
+            b'0' => 'o',
+            b'1' | b'i' => 'l',
+            b'_' => '.',
+            other => char::from(other),
+        });
+        index = index.saturating_add(1);
+    }
+    out
+}
+
 fn validate_username(username: &str) -> Result<(), Error> {
     let length = username.chars().count();
     let charset = username.bytes().all(|byte| {
         byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'.')
     });
-    if (3..=32).contains(&length) && charset {
+    if (3..=MAX_USERNAME_BYTES).contains(&length) && charset {
         Ok(())
     } else {
         Err(Error::Invalid(
@@ -477,7 +571,7 @@ fn validate_username(username: &str) -> Result<(), Error> {
 }
 
 fn validate_password(password: &str) -> Result<(), Error> {
-    if (8..=128).contains(&password.len()) {
+    if (8..=MAX_PASSWORD_BYTES).contains(&password.len()) {
         Ok(())
     } else {
         Err(Error::Invalid("password must be 8 to 128 bytes"))
@@ -490,5 +584,52 @@ fn device_name(hello: &v1::Hello) -> String {
         "unknown".to_owned()
     } else {
         name.chars().take(64).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{username_skeleton, validate_username};
+
+    #[test]
+    fn confusable_usernames_share_a_skeleton() {
+        for (left, right) in [
+            ("mike", "rnike"),
+            ("admin", "adm1n"),
+            ("admin", "admln"),
+            ("bob", "b0b"),
+            ("wendy", "vvendy"),
+            ("dave", "clave"),
+            ("john.doe", "john_doe"),
+            ("Alice", "alice"),
+        ] {
+            assert_eq!(
+                username_skeleton(left),
+                username_skeleton(right),
+                "{left} {right}"
+            );
+        }
+        for (left, right) in [("mike", "mika"), ("bob", "bobby"), ("ann", "anna")] {
+            assert_ne!(
+                username_skeleton(left),
+                username_skeleton(right),
+                "{left} {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn usernames_are_short_ascii() {
+        assert!(validate_username("ada.l_33").is_ok());
+        for bad in [
+            "ab",
+            "Ada",
+            "ad a",
+            "caf\u{e9}",
+            "cafe\u{301}",
+            &"a".repeat(33),
+        ] {
+            assert!(validate_username(bad).is_err(), "{bad:?}");
+        }
     }
 }

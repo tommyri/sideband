@@ -7,6 +7,7 @@
 
 pub mod attachments;
 pub mod audit;
+pub mod hardening;
 pub mod info;
 pub mod internal;
 pub mod messages;

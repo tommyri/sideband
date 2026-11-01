@@ -42,6 +42,7 @@ pub use channels::{ChannelUpdate, NewChannel};
 pub use invites::NewInvite;
 pub use link_previews::NewLinkPreview;
 pub use messages::NewMessage;
+pub(crate) use model::REDACTED;
 pub use model::{
     Attachment, AuditEntry, Ban, Channel, ChannelOverride, Invite, LinkPreview, Message,
     MessageLink, PreviewStatus, ReadState, Role, Session, Setting, User, Webhook,

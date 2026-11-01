@@ -296,7 +296,14 @@ async fn login_attempts_are_limited_per_address() {
         .hello(&login("ghost", PASSWORD), peer(8))
         .await
         .unwrap_err();
-    assert!(matches!(limited, auth::Error::RateLimited));
+    let auth::Error::RateLimited { retry_after } = limited else {
+        panic!("expected a rate limit, got {limited:?}");
+    };
+    assert!(
+        retry_after > std::time::Duration::from_secs(10)
+            && retry_after <= std::time::Duration::from_secs(12),
+        "{retry_after:?}"
+    );
     let other = accounts
         .auth
         .hello(&login("ghost", PASSWORD), peer(9))
@@ -656,4 +663,99 @@ fn succeed(args: &[&str]) -> String {
         command.output.status
     );
     String::from_utf8(command.output.stdout).unwrap()
+}
+
+#[tokio::test]
+async fn hammering_a_username_cannot_lock_its_owner_out() {
+    let accounts = Accounts::new().await;
+    accounts.register(&accounts.code, "victim").await;
+    // A spread-out attacker: one address per guess, so the per-address gate
+    // never trips. Only failures count against the username.
+    for address in 0..12 {
+        let error = accounts
+            .auth
+            .hello(&login("Victim", "wrong-password"), peer(20 + address))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, auth::Error::Unauthenticated), "{error:?}");
+    }
+    // An address that already failed against the locked username waits.
+    let limited = accounts
+        .auth
+        .hello(&login("victim", "wrong-password"), peer(20))
+        .await
+        .unwrap_err();
+    let auth::Error::RateLimited { retry_after } = limited else {
+        panic!("expected a rate limit, got {limited:?}");
+    };
+    assert!(
+        retry_after > std::time::Duration::from_secs(300),
+        "{retry_after:?}"
+    );
+    // A fresh attacker address gets exactly one guess, then waits too.
+    let first = accounts
+        .auth
+        .hello(&login("victim", "wrong-password"), peer(40))
+        .await
+        .unwrap_err();
+    assert!(matches!(first, auth::Error::Unauthenticated), "{first:?}");
+    let second = accounts
+        .auth
+        .hello(&login("victim", "wrong-password"), peer(40))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(second, auth::Error::RateLimited { .. }),
+        "{second:?}"
+    );
+    // The owner, from an address that never failed, still logs in.
+    let owner = accounts
+        .auth
+        .hello(&login("victim", PASSWORD), peer(50))
+        .await
+        .expect("the correct password is not locked out");
+    assert_eq!(owner.user.username, "victim");
+    let other = accounts
+        .auth
+        .hello(&login("bystander", "wrong-password"), peer(41))
+        .await
+        .unwrap_err();
+    assert!(matches!(other, auth::Error::Unauthenticated), "{other:?}");
+}
+
+#[tokio::test]
+async fn confusable_usernames_cannot_register() {
+    let accounts = Accounts::new().await;
+    let owner = accounts.register(&accounts.code, "mike").await;
+    insert_invite(&accounts, owner.user.id, "lookalikes", None, None).await;
+    for (index, lookalike) in ["rnike", "m1ke", "mlke"].into_iter().enumerate() {
+        let error = accounts
+            .auth
+            .hello(
+                &register("lookalikes", lookalike, PASSWORD),
+                peer(60 + u8::try_from(index).unwrap()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, auth::Error::Conflict),
+            "{lookalike}: {error:?}"
+        );
+    }
+    accounts
+        .auth
+        .hello(&register("lookalikes", "mika", PASSWORD), peer(70))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn debug_output_never_shows_tokens_or_password_hashes() {
+    let accounts = Accounts::new().await;
+    let owner = accounts.register(&accounts.code, "ada").await;
+    let text = format!("{owner:?}");
+    assert!(!text.contains(&owner.resume_token), "{text}");
+    assert!(!text.contains(&owner.user.password_hash), "{text}");
+    assert!(!text.contains("$argon2id$"), "{text}");
+    assert!(text.contains("<redacted>"));
 }

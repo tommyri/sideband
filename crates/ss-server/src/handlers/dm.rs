@@ -329,12 +329,12 @@ fn group_name(command: &v1::UpdateChannel) -> Result<String, Error> {
         ));
     }
     let name = command.name.as_deref().unwrap_or("");
-    let len = name.chars().count();
-    if (1..=MAX_NAME).contains(&len) {
-        Ok(name.to_owned())
-    } else {
-        Err(Error::Invalid("channel name must be 1 to 64 characters"))
-    }
+    crate::text::name(name, MAX_NAME).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("channel name must be 1 to 64 characters"),
+        crate::text::NameError::Hidden => {
+            Error::Invalid("channel name contains a hidden character")
+        }
+    })
 }
 
 fn required_id(bytes: &[u8]) -> Result<Id, Error> {

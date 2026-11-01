@@ -140,6 +140,8 @@ message Error {
   optional uint32 min_version = 4;
   // Highest protocol version the server accepts. Set for `PROTOCOL_VERSION`.
   optional uint32 max_version = 5;
+  // Milliseconds until the same request can succeed. Set for `RATE_LIMITED`.
+  optional uint32 retry_after_ms = 6;
 }
 
 // A member joined the server.

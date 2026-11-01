@@ -28,7 +28,13 @@ use axum::{
 };
 use futures::Stream;
 use notify::Watcher;
-use rustls::server::ResolvesServerCert;
+use rustls::{
+    pki_types::{
+        CertificateDer, PrivateKeyDer,
+        pem::{self, PemObject},
+    },
+    server::ResolvesServerCert,
+};
 use rustls_acme::{AcmeConfig, UseChallenge, caches::DirCache};
 use ss_net::tls::{CertResolver, Fingerprint, TlsConfig};
 use tokio::net::TcpListener;
@@ -411,7 +417,7 @@ fn cached_fingerprint(dir: &Path) -> Option<Fingerprint> {
 }
 
 fn pem_fingerprint(bytes: &[u8]) -> Option<Fingerprint> {
-    let cert = rustls_pemfile::certs(&mut &bytes[..]).next()?.ok()?;
+    let cert = CertificateDer::pem_slice_iter(bytes).next()?.ok()?;
     Some(ss_net::tls::fingerprint(cert.as_ref()))
 }
 
@@ -482,13 +488,16 @@ fn dns_name(host: &str) -> bool {
 fn load_pem(cert_path: &Path, key_path: &Path) -> Result<TlsConfig, Error> {
     let cert_bytes = std::fs::read(cert_path)?;
     let key_bytes = std::fs::read(key_path)?;
-    let certificates =
-        rustls_pemfile::certs(&mut cert_bytes.as_slice()).collect::<Result<Vec<_>, _>>()?;
+    let certificates = CertificateDer::pem_slice_iter(&cert_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::Invalid("certificate file is not valid PEM"))?;
     if certificates.is_empty() {
         return Err(Error::Invalid("certificate file has no certificate"));
     }
-    let private_key = rustls_pemfile::private_key(&mut key_bytes.as_slice())?
-        .ok_or(Error::Invalid("private key file has no key"))?;
+    let private_key = PrivateKeyDer::from_pem_slice(&key_bytes).map_err(|error| match error {
+        pem::Error::NoItemsFound => Error::Invalid("private key file has no key"),
+        _ => Error::Invalid("private key file is not valid PEM"),
+    })?;
     Ok(TlsConfig {
         certificates,
         private_key,

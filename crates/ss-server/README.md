@@ -26,6 +26,8 @@ fits before the writer resumes. Oversized Welcome replies return INVALID. Slow c
 closed instead of losing track events. The media path reuses Bytes, validates
 ownership, skips the sender and deaf peers, and counts invalid input and send
 drops. It drops new packets when Quinn's bounded send queue is full.
+Quotas live in `limits`, name rules in `text`, HTTP headers, deadlines, and
+the accept loop in `http::hardening`; `docs/security.md` lists them all.
 
 `cargo test -p ss-server` covers real loopback QUIC clients and zero steady
 forwarding allocations. Run the ignored `sustained_twenty_clients` test with

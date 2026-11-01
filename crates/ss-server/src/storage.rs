@@ -116,7 +116,9 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        use zeroize::Zeroize;
         let _ = self.stop.send(true);
+        self.key.zeroize();
     }
 }
 
@@ -492,7 +494,7 @@ fn extension(filename: &str) -> String {
     }
 }
 
-fn normalize_filename(raw: &str) -> String {
+pub(crate) fn normalize_filename(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
     let mut cleaned = String::new();
     for ch in base.chars() {
@@ -631,18 +633,32 @@ fn path_escape(filename: &str) -> String {
 async fn load_key(data_dir: &Path) -> Result<[u8; 32], std::io::Error> {
     tokio::fs::create_dir_all(data_dir).await?;
     let path = data_dir.join(KEY_FILE);
-    if let Ok(bytes) = tokio::fs::read(&path).await
-        && bytes.len() == 32
-    {
-        let mut key = [0; 32];
-        key.copy_from_slice(&bytes);
-        return Ok(key);
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        let bytes = zeroize::Zeroizing::new(bytes);
+        if bytes.len() == 32 {
+            let mut key = [0; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
     }
     let mut key = [0; 32];
     getrandom::getrandom(&mut key).map_err(|_| std::io::Error::other("os random failed"))?;
-    tokio::fs::write(&path, key).await?;
+    write_private(&path, &key).await?;
     restrict_key(&path).await?;
     Ok(key)
+}
+
+/// Creates or truncates `path` as owner-only before any byte is written, so
+/// the key is never readable by other users, even briefly.
+async fn write_private(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use tokio::io::AsyncWriteExt;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).await?;
+    file.write_all(bytes).await?;
+    file.sync_all().await
 }
 
 async fn restrict_key(path: &Path) -> Result<(), std::io::Error> {

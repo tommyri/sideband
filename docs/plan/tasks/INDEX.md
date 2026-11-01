@@ -76,7 +76,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
 | [T-060](T-060-reconnect-resilience.md) | Session resume, migration, restart handling | M | T-040, T-041, T-024, T-025 | todo |
-| [T-061](T-061-security-review-fuzzing.md) | Security review, fuzzing, rate limits | M | T-021, T-022, T-026, T-027, T-029, T-030, T-031 | todo |
+| [T-061](T-061-security-review-fuzzing.md) | Security review, fuzzing, rate limits | M | T-021, T-022, T-026, T-027, T-029, T-030, T-031 | done |
 | [T-062](T-062-load-soak-test.md) | Load and soak testing | S | T-017, T-025, T-026 | todo |
 | [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032 | todo |
 | [T-064](T-064-documentation.md) | Documentation | S | T-034, T-057 | todo |

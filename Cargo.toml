@@ -50,6 +50,16 @@ governor = "0.10"
 # Signed download tokens. HMAC-SHA256 over the attachment id and expiry.
 hmac = "0.12"
 # Image width and height, including EXIF orientation. No re-encode in v1.
+# Public HTTP accept loop: header-read deadline and a connection cap. Axum's
+# `serve` sets neither. Both crates are already in the graph through axum.
+hyper = { version = "1", default-features = false }
+hyper-util = { version = "0.1", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
+# NFC for display, channel, role, and webhook names. Already compiled in
+# through `url`'s IDNA support; this adds no crate to the graph.
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
+# General category and Default_Ignorable_Code_Point for the same names. Also
+# already in the graph through IDNA.
+icu_properties = { version = "2", default-features = false, features = ["compiled_data"] }
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 # Process counters. The internal listener renders them as Prometheus text.
 metrics = "0.24"
@@ -76,8 +86,6 @@ quinn-udp = { version = "0.5", default-features = false }
 # Preview fetches. No cookies, no system proxy, rustls only.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 rcgen = "0.14"
-# PEM certificates and keys for `files` mode.
-rustls-pemfile = "2"
 # ACME account, orders, and HTTP-01 challenges. Ring, same as QUIC. The cache lives in `tls/acme`.
 rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tls12", "tokio"] }
 rtrb = "0.4"
@@ -92,6 +100,7 @@ socket2 = "0.6"
 tar = "0.4"
 tempfile = "3"
 toml = "0.8"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 webpki-roots = "1"
 # SQLite only. Networked drivers and the `any` driver stay off.
 sqlx = { version = "0.9", default-features = false, features = [
@@ -113,6 +122,8 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = { version = "3", features = ["serde"] }
+# Wipes session tokens, passwords, and the attachment signing key on drop.
+zeroize = "1"
 
 # Pedantic lints allowed workspace-wide. Each one is noisy here without
 # catching defects:

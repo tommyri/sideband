@@ -106,13 +106,15 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     let quic = tokio::spawn(Arc::clone(&server).run(endpoint.clone()));
     let site = tokio::spawn(listen(
         public,
-        server
-            .public_routes()
-            .merge(http::info::router(
-                Arc::clone(&pool),
-                identity.fingerprint_slot(),
-            ))
-            .merge(identity.challenge_routes()),
+        http::hardening::harden(
+            server
+                .public_routes()
+                .merge(http::info::router(
+                    Arc::clone(&pool),
+                    identity.fingerprint_slot(),
+                ))
+                .merge(identity.challenge_routes()),
+        ),
         stop_rx.clone(),
     ));
     let redirect = match identity.redirect() {
@@ -154,12 +156,10 @@ async fn open_server(pool: &Arc<Pool>, config: &Config) -> Result<Arc<connection
 }
 
 async fn listen(listener: TcpListener, app: axum::Router, mut stop: watch::Receiver<bool>) {
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+    http::hardening::serve(listener, app, async move {
         let _ = stop.changed().await;
-    });
-    if let Err(error) = server.await {
-        tracing::debug!(%error, "http listener stopped");
-    }
+    })
+    .await;
 }
 
 async fn print_invite(pool: &Pool) -> Result<(), Error> {

@@ -252,8 +252,8 @@ async fn create_owner_invite(owner: bool, data_dir: PathBuf) -> anyhow::Result<(
     let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
     match ss_server::auth::create_owner_invite(&pool).await {
         Ok(code) => {
+            // stdout only: the code grants Admin and must not reach log files.
             println!("owner invite: {code}");
-            tracing::info!("owner invite: {code}");
             Ok(())
         }
         Err(ss_server::auth::Error::OwnerExists) => {
@@ -304,8 +304,8 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr, check_migrations: bool) -> a
     let database = ss_server::db::Pool::open(&database_path).await?;
     tracing::info!(path = %database.path().display(), "database ready");
     if let Some(code) = ss_server::auth::ensure_owner_invite(&database).await? {
+        // stdout only: the code grants Admin and must not reach log files.
         println!("owner invite: {code}");
-        tracing::info!("owner invite: {code}");
     }
     let identity = tls::generate_self_signed(&data_dir).await?;
     // generate_self_signed returns exactly one validated leaf certificate.

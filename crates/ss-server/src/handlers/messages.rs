@@ -3,9 +3,8 @@
 //! The server stores raw text. Mentions are `<@ULID>` plus an authorized
 //! `@everyone`. History pages live on the HTTP routes.
 
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
 use ss_core::{ChannelKind, Id, Permissions, Timestamp};
 use ss_proto::{
     v1::{self, ack, server_envelope},
@@ -15,6 +14,7 @@ use ss_proto::{
 use crate::{
     db::{self, NewMessage, attachments, channels, link_previews, messages, read_states, users},
     events::EventBus,
+    limits::{KeyedLimiter, quota},
     perms::{AccessError, PermissionService},
     previews::{PreviewJob, PreviewQueue},
 };
@@ -24,18 +24,16 @@ use super::{CommandReply, Error};
 const MAX_CHARS: usize = 4000;
 const MAX_NONCE: usize = 128;
 const MAX_MENTIONS: usize = 50;
+const MAX_ATTACHMENTS: usize = 10;
 const EDIT_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const SEND_BURST: u32 = 5;
 const EVERYONE: &str = "@everyone";
 
-type IdLimiter = RateLimiter<Id, DefaultKeyedStateStore<Id>, DefaultClock>;
-type TypingLimiter = RateLimiter<(Id, Id), DefaultKeyedStateStore<(Id, Id)>, DefaultClock>;
-
 /// Text commands for one process.
 pub struct Messages {
     perms: Arc<PermissionService>,
-    sends: IdLimiter,
-    typing: TypingLimiter,
+    sends: KeyedLimiter<Id>,
+    typing: KeyedLimiter<(Id, Id)>,
     previews: PreviewQueue,
 }
 
@@ -43,14 +41,10 @@ impl Messages {
     /// Five sends per five seconds, and one typing event per five seconds.
     #[must_use]
     pub fn new(perms: Arc<PermissionService>, pool: Arc<db::Pool>, bus: EventBus) -> Self {
-        let send_quota = Quota::with_period(Duration::from_secs(5))
-            .expect("five seconds")
-            .allow_burst(NonZeroU32::new(SEND_BURST).expect("burst"));
-        let typing_quota = Quota::with_period(Duration::from_secs(5)).expect("five seconds");
         Self {
             perms,
-            sends: RateLimiter::keyed(send_quota),
-            typing: RateLimiter::keyed(typing_quota),
+            sends: KeyedLimiter::new(quota(SEND_BURST, Duration::from_secs(5))),
+            typing: KeyedLimiter::new(quota(1, Duration::from_secs(5))),
             previews: PreviewQueue::new(pool, bus),
         }
     }
@@ -85,6 +79,9 @@ impl Messages {
         let content = body(&command.content)?;
         let nonce = nonce(command.nonce.as_deref())?;
         let (mentioned, everyone) = parse_mentions(&content)?;
+        if command.attachment_ids.len() > MAX_ATTACHMENTS {
+            return Err(Error::Invalid("a message can carry at most 10 attachments"));
+        }
         self.allow(
             actor,
             channel_id,
@@ -118,9 +115,9 @@ impl Messages {
         let reply_to = reply_target(&mut conn, channel_id, command.reply_to.as_deref()).await?;
         let mentions = known_users(&mut conn, &mentioned).await?;
         let files = claimable_files(&mut conn, actor, &command.attachment_ids).await?;
-        if self.sends.check_key(&actor).is_err() {
-            return Err(Error::RateLimited("sending messages too quickly"));
-        }
+        self.sends
+            .check(&actor)
+            .map_err(|wait| Error::RateLimited("sending messages too quickly", wait))?;
         let id = Id::generate();
         let stored = messages::insert(
             &mut conn,
@@ -251,9 +248,9 @@ impl Messages {
         let mut conn = self.perms.pool().read().await?;
         require_text(&mut conn, channel_id).await?;
         drop(conn);
-        if self.typing.check_key(&(actor, channel_id)).is_err() {
-            return Err(Error::RateLimited("typing is rate limited"));
-        }
+        self.typing
+            .check(&(actor, channel_id))
+            .map_err(|wait| Error::RateLimited("typing is rate limited", wait))?;
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
             events: vec![server_envelope::Msg::TypingStarted(v1::TypingStarted {
@@ -429,6 +426,9 @@ async fn claimable_files(
     let mut files = Vec::new();
     for raw in ids {
         let id = required_id(raw, "attachment id must be 16 bytes")?;
+        if files.iter().any(|file: &db::Attachment| file.id == id) {
+            return Err(Error::Invalid("attachment is listed twice"));
+        }
         let file = attachments::get(conn, id)
             .await?
             .ok_or(Error::NotFound("unknown attachment"))?;
@@ -465,7 +465,7 @@ fn nonce(value: Option<&str>) -> Result<Option<String>, Error> {
     }
 }
 
-fn parse_mentions(content: &str) -> Result<(Vec<Id>, bool), Error> {
+pub(crate) fn parse_mentions(content: &str) -> Result<(Vec<Id>, bool), Error> {
     let mut users = Vec::new();
     let mut rest = content;
     while let Some(start) = rest.find("<@") {
