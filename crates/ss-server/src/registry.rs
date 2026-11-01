@@ -292,6 +292,7 @@ impl ConnectionRegistry {
             }
         };
         if let Some((kicks, connection)) = kick {
+            crate::observe::record_slow_disconnect();
             kick_peer(
                 &kicks,
                 &connection,
@@ -307,6 +308,7 @@ impl ConnectionRegistry {
         let Some((kicks, connection)) = self.kick_pair(conn) else {
             return;
         };
+        crate::observe::record_slow_disconnect();
         kick_peer(
             &kicks,
             &connection,

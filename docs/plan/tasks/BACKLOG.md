@@ -44,3 +44,11 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 ## Ops
 - Automated SQLite backups to S3-compatible storage.
 - Prometheus alert rules.
+- Request larger UDP socket buffers on the server endpoint (quinn-udp
+  `set_recv_buffer_size`/`set_send_buffer_size`). Today the socket keeps the
+  kernel default (208 KiB on Linux), so the `rmem_max` sysctl in
+  `deploy/README.md` only raises a ceiling nobody asks for. Do it if the
+  T-062 VPS runs show `RcvbufErrors` (see `docs/plan/notes/load-test.md`).
+- Load-test bot accounts: a server-side way to seed N accounts without the
+  five-per-minute login limit (100 bots take about 20 minutes to register
+  once; tokens are reused afterwards).

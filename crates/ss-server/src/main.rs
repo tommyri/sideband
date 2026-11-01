@@ -165,10 +165,34 @@ fn default_data_dir() -> PathBuf {
     ss_server::config::default_data_dir()
 }
 
-// The spike is I/O-bound. Keep packet handling on one executor thread; TLS
-// identity file work and password hashing use spawn_blocking.
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+/// Runtime worker override. Unset, 0, or 1 keeps the single-threaded runtime.
+const WORKER_THREADS: &str = "SS_WORKER_THREADS";
+
+// The server is I/O-bound. By default packet handling stays on one executor
+// thread; TLS identity file work and password hashing use spawn_blocking.
+// `SS_WORKER_THREADS=N` (N > 1) selects a multi-threaded runtime for load
+// experiments; docs/plan/notes/load-test.md records the measured effect.
+fn main() -> anyhow::Result<()> {
+    let workers = std::env::var(WORKER_THREADS)
+        .ok()
+        .map(|value| value.trim().parse::<usize>())
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("{WORKER_THREADS} must be a whole number"))?
+        .unwrap_or(1);
+    let runtime = if workers > 1 {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .enable_all()
+            .build()?
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+    };
+    runtime.block_on(start())
+}
+
+async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
         Some(Command::Init { data_dir }) => ss_server::serve::init(data_dir).await?,

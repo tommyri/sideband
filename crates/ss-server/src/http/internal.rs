@@ -43,7 +43,23 @@ fn sample(server: &Server) {
         "socialspeak_datagrams_dropped_total",
         "Datagrams dropped before a recipient accepted them"
     );
+    metrics::describe_counter!(
+        "socialspeak_datagrams_received_total",
+        "Datagrams read from senders"
+    );
+    metrics::describe_counter!(
+        "socialspeak_datagrams_rejected_total",
+        "Datagrams refused: bad header, wrong track, muted, or not seated"
+    );
     metrics::describe_counter!("socialspeak_messages_total", "Messages inserted");
+    metrics::describe_counter!(
+        "socialspeak_sessions_total",
+        "Authenticated sessions opened"
+    );
+    metrics::describe_counter!(
+        "socialspeak_slow_disconnects_total",
+        "Connections closed because the control consumer fell behind"
+    );
     metrics::describe_histogram!(
         "socialspeak_db_seconds",
         "Time a writer held the SQLite lock"
@@ -53,7 +69,11 @@ fn sample(server: &Server) {
     let stats = server.media_stats();
     metrics::counter!("socialspeak_datagrams_forwarded_total").absolute(stats.forwarded);
     metrics::counter!("socialspeak_datagrams_dropped_total").absolute(stats.dropped);
+    metrics::counter!("socialspeak_datagrams_received_total").absolute(stats.received);
+    metrics::counter!("socialspeak_datagrams_rejected_total").absolute(stats.rejected);
     metrics::counter!("socialspeak_messages_total").absolute(observe::messages());
+    metrics::counter!("socialspeak_sessions_total").absolute(observe::sessions());
+    metrics::counter!("socialspeak_slow_disconnects_total").absolute(observe::slow_disconnects());
 }
 
 fn as_f64(value: usize) -> f64 {

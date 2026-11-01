@@ -99,7 +99,11 @@ async fn run_serves_metrics_and_shuts_down_with_a_client() {
         "socialspeak_voice_members",
         "socialspeak_datagrams_forwarded",
         "socialspeak_datagrams_dropped",
+        "socialspeak_datagrams_received",
+        "socialspeak_datagrams_rejected",
         "socialspeak_messages",
+        "socialspeak_sessions",
+        "socialspeak_slow_disconnects",
         "socialspeak_db_seconds",
     ] {
         assert!(metrics.contains(series), "{series} missing from {metrics}");
