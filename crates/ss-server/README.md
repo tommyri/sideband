@@ -6,7 +6,9 @@ permissions (`perms`), channels, presence, voice, text, direct messages, link pr
 
 `ss-server init` writes `config.toml`, the database, and a TLS identity, then
 prints the owner invite and fingerprint. `ss-server run` serves authenticated
-QUIC and HTTP. `/healthz` and `/metrics` listen on `127.0.0.1:9101`. Ctrl-C
+QUIC and HTTP. `/healthz` and `/metrics` listen on `127.0.0.1:9101`; metrics
+cover sessions, datagrams, slow-consumer kicks, messages, and SQLite lock time.
+`SS_WORKER_THREADS=N` (N > 1) swaps the one-thread runtime for N workers. Ctrl-C
 and SIGTERM notice clients, close them, and checkpoint SQLite. `check-config`
 rejects an unknown key. `backup` tars the database and attachments.
 

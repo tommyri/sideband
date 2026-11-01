@@ -256,6 +256,7 @@ impl Server {
                 return reject(&connection, &mut stream, &envelope).await;
             }
         };
+        crate::observe::record_session();
         let mut subscription = self.bus.subscribe();
         let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
         let (kicks, kick_rx) = mpsc::channel(1);
@@ -560,6 +561,7 @@ async fn write_outbound(
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => return Err(Error::Control(error)),
                     Err(_) => {
+                        crate::observe::record_slow_disconnect();
                         notify_and_close(
                             &mut sender,
                             &quic,

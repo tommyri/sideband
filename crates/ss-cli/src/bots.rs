@@ -1,5 +1,6 @@
-//! Synthetic senders for load tests. Each bot joins the same channel and loops
-//! a one-second Opus buffer with fresh sequence numbers.
+//! Synthetic senders for the spike server. Each bot joins the same channel and
+//! loops a one-second Opus buffer with fresh sequence numbers. `ss-cli load`
+//! reuses the pre-encoded buffer for authenticated synthetic users.
 
 use std::{sync::Arc, time::Duration};
 
@@ -93,13 +94,18 @@ async fn run_bot(
     Ok(())
 }
 
-struct Preroll {
-    payloads: Vec<Vec<u8>>,
-    frame: Duration,
-    step: u32,
+/// One second of a 440 Hz tone, encoded once and shared by every bot.
+pub(crate) struct Preroll {
+    /// Opus packets, one per encoder frame.
+    pub(crate) payloads: Vec<Vec<u8>>,
+    /// Encoder frame length.
+    pub(crate) frame: Duration,
+    /// Timestamp step per frame at 48 kHz.
+    pub(crate) step: u32,
 }
 
-fn preroll(profile: VoiceProfile) -> Result<Preroll, GraphError> {
+/// Encode the shared tone for `profile`.
+pub(crate) fn preroll(profile: VoiceProfile) -> Result<Preroll, GraphError> {
     let params = profile.encoder_params();
     let mut encoder = Encoder::new(profile)?;
     let channels = usize::from(params.channels);

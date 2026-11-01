@@ -1,4 +1,5 @@
-//! `ss-cli connect` joins a voice channel on the spike server.
+//! `ss-cli connect` joins a voice channel on the spike server. `ss-cli load`
+//! drives synthetic users against an authenticated server.
 
 use std::{
     io::{self, IsTerminal, Write},
@@ -8,7 +9,10 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use ss_cli::{CallError, Gate, Impairment, Options, channel_from_arg, run};
+use ss_cli::{
+    Behavior, CallError, Gate, Impairment, LoadOptions, Options, Target, channel_from_arg, run,
+    run_load,
+};
 use ss_core::VoiceProfile;
 use ss_net::{
     pins::{JsonPinStore, PinStore, ServerId},
@@ -26,6 +30,69 @@ struct Args {
 enum Command {
     /// Join a voice channel and run the audio graph.
     Connect(ConnectArgs),
+    /// Drive synthetic users against `ss-server run` for load and soak tests.
+    Load(LoadArgs),
+}
+
+#[derive(clap::Args)]
+struct LoadArgs {
+    /// `host:port` of the authenticated QUIC listener.
+    address: String,
+    /// Synthetic users.
+    #[arg(long, default_value_t = 25)]
+    bots: u32,
+    /// Voice channels the bots spread over, `load-1` … `load-M`.
+    #[arg(long, default_value_t = 3)]
+    channels: u32,
+    /// Fraction of time each bot talks, 0 to 1.
+    #[arg(long, default_value_t = 0.3)]
+    duty: f64,
+    /// Mean talk-burst length in seconds.
+    #[arg(long, default_value_t = 3.0)]
+    burst: f64,
+    /// Text messages per bot per minute. 0 sends none.
+    #[arg(long, default_value_t = 1.0)]
+    text_rate: f64,
+    /// Mean seconds in voice before a bot leaves and rejoins. 0 disables churn.
+    #[arg(long, default_value_t = 0)]
+    churn: u64,
+    /// Mean seconds out of voice after a churn leave.
+    #[arg(long, default_value_t = 5)]
+    away: u64,
+    /// Every N seconds all bots disconnect and reconnect at once. 0 disables.
+    #[arg(long, default_value_t = 0)]
+    storm_every: u64,
+    /// Measured run length in seconds, after accounts and channels exist.
+    #[arg(long, default_value_t = 60)]
+    duration: u64,
+    /// Seconds between report lines.
+    #[arg(long, default_value_t = 10)]
+    interval: u64,
+    /// Milliseconds between bot starts.
+    #[arg(long, default_value_t = 50)]
+    ramp_ms: u64,
+    /// Account and token file, reused across runs.
+    #[arg(long, default_value = "ss-load-state.txt")]
+    state: PathBuf,
+    /// Invite for bots without an account. The owner invite on a fresh server
+    /// lets the first bot create the channels and a shared invite.
+    #[arg(long)]
+    invite: Option<String>,
+    /// Username prefix.
+    #[arg(long, default_value = "load")]
+    prefix: String,
+    /// Encoder profile of the pre-encoded frames.
+    #[arg(long, default_value = "voice")]
+    profile: String,
+    /// Per-interval client-side CSV.
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// TOFU pin file.
+    #[arg(long, default_value = "socialspeak-pins.json")]
+    pin_file: PathBuf,
+    /// Accept an unpinned certificate without a prompt.
+    #[arg(long)]
+    accept_pin: bool,
 }
 
 #[derive(clap::Args)]
@@ -73,7 +140,6 @@ struct ConnectArgs {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let Command::Connect(connect) = args.command;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -82,7 +148,79 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(connect_command(connect))
+    match args.command {
+        Command::Connect(connect) => runtime.block_on(connect_command(connect)),
+        Command::Load(load) => runtime.block_on(load_command(load)),
+    }
+}
+
+async fn load_command(args: LoadArgs) -> anyhow::Result<()> {
+    let (host, port) = split_host_port(&args.address)?;
+    let profile = args
+        .profile
+        .parse::<VoiceProfile>()
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let burst = Duration::try_from_secs_f64(args.burst)
+        .map_err(|_| anyhow::anyhow!("--burst must be a positive number of seconds"))?;
+    let pins = Arc::new(JsonPinStore::open(&args.pin_file)?);
+    trust_server(&host, port, &pins, args.accept_pin).await?;
+    let seconds = |value: u64| (value > 0).then(|| Duration::from_secs(value));
+    let options = LoadOptions {
+        target: Target { host, port, pins },
+        bots: args.bots,
+        channels: args.channels,
+        behavior: Behavior {
+            duty: args.duty,
+            burst,
+            text_per_minute: args.text_rate,
+            churn: seconds(args.churn),
+            away: Duration::from_secs(args.away),
+        },
+        storm_every: seconds(args.storm_every),
+        duration: Duration::from_secs(args.duration),
+        interval: Duration::from_secs(args.interval.max(1)),
+        ramp: Duration::from_millis(args.ramp_ms),
+        state: args.state,
+        invite: args.invite,
+        prefix: args.prefix,
+        profile,
+        csv: args.csv,
+        print: true,
+    };
+    let summary = run_load(options).await?;
+    println!("{summary}");
+    if summary.forced > 0 {
+        anyhow::bail!(
+            "{} sessions were closed by the server or the path",
+            summary.forced
+        );
+    }
+    Ok(())
+}
+
+/// Pins the server on first use when `--accept-pin` is set.
+async fn trust_server(
+    host: &str,
+    port: u16,
+    pins: &Arc<JsonPinStore>,
+    accept_pin: bool,
+) -> anyhow::Result<()> {
+    let store: Arc<dyn PinStore> = pins.clone();
+    match ss_net::client::connect(host, port, store).await {
+        Ok(connection) => {
+            connection.close(0, b"pin check");
+            Ok(())
+        }
+        Err(ss_net::Error::Untrusted { fingerprint }) if accept_pin => {
+            pins.set(&ServerId::new(host, port)?, fingerprint)?;
+            eprintln!("pinned {fingerprint}");
+            Ok(())
+        }
+        Err(ss_net::Error::Untrusted { fingerprint }) => anyhow::bail!(
+            "untrusted server certificate {fingerprint}; rerun with --accept-pin to store it"
+        ),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn connect_command(args: ConnectArgs) -> anyhow::Result<()> {
