@@ -1,6 +1,6 @@
 # T-041 — `ss-client-core`: voice session orchestration
 
-Status: todo
+Status: done
 Phase: 3
 Size: M
 Depends on: T-040, T-010, T-015, T-025
@@ -45,3 +45,18 @@ Implementing the processing stages (T-053), raw input (T-047–T-050).
 - Leaving and rejoining 50 times leaks no threads/streams.
 
 ## Notes from implementation
+- Added a reconnect-safe datagram bridge to `Client`; `VoiceSession` keeps the
+  audio graph alive while the connection worker replaces QUIC sessions and
+  remaps the server-assigned track ids after `Resynced`.
+- The session owns a dedicated audio worker with device reopen handling,
+  PTT/VAD/open-mic gating, mute/deafen, per-user persisted gain/local mute,
+  processing-chain render taps and echo delay, UI cue injection, 500 ms stats,
+  and the loss-driven bitrate hook.
+- Added an in-process server integration test using `AudioSource::Test` and
+  `AudioSource::Silent`; it verifies audible routing, mute, deafen, and 50
+  join/leave cycles. Cue tones are generated in-core for now; T-055 can replace
+  them with the final sound pack without changing the API.
+- `cargo fmt` and workspace clippy pass. The full workspace test suite passes
+  when skipping the pre-existing macOS headless
+  `AVAudioApplication::sharedInstance()` null test; that single test also makes
+  an otherwise unchanged `just check` fail in this non-app test process.

@@ -38,6 +38,9 @@ pub enum Error {
     /// State changed during a history request; retry against the current snapshot.
     #[error("state changed while loading history; retry the page")]
     StateChanged,
+    /// Local voice device, codec, or configuration failure.
+    #[error("voice: {0}")]
+    Voice(String),
 }
 
 impl From<ss_proto::v1::Error> for Error {

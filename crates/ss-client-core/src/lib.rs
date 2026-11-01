@@ -38,9 +38,14 @@ pub mod events;
 mod history;
 pub mod state;
 pub mod storage;
+pub mod voice;
 pub use connection::{Client, ClientSet, Credentials, ServerAddr};
 pub use error::Error;
 pub use events::{ClientEvent, ConnectionState};
 /// Protocol command and entity types used at the client boundary.
 pub use ss_proto::v1;
 pub use state::{State, StateStore};
+pub use voice::{
+    AudioConfig, AudioSource, Cue, SpeakerStats, TalkGate, VoiceDeviceState, VoiceSession,
+    VoiceStats,
+};

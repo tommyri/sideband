@@ -30,8 +30,10 @@ bearer, without redirects or environment proxies. A concurrent state change
 returns `StateChanged` for retry. Caches retain 200 live messages per channel
 plus requested history pages. Reconnect or lost visibility clears the cache.
 
-Audio orchestration belongs to T-041. The existing CLI spike is still the
-T-017 harness; hosts can adopt this API without reimplementing protocol/state.
+`VoiceSession` owns capture, processing, Opus, jitter buffers, mixing, and the
+client media bridge. Hosts select PTT, VAD, or open mic and receive 500 ms
+stats plus actionable device events. Test tone/silence sources need no audio
+hardware. `leave().await` releases every stream and worker.
 
 May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`, Quinn stream handles.
 Must not depend on `ss-server`, `ss-cli`, SQL, or windowing toolkits.

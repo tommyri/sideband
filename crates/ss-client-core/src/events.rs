@@ -4,6 +4,8 @@ use ss_core::Id;
 use ss_proto::v1;
 use std::time::Duration;
 
+use crate::voice::{VoiceDeviceState, VoiceStats};
+
 /// Lifecycle of one server connection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConnectionState {
@@ -40,6 +42,10 @@ pub enum ClientEvent {
     },
     /// Voice memberships or tracks changed.
     VoiceChanged,
+    /// Voice diagnostics, refreshed every 500 ms while joined.
+    VoiceStats(VoiceStats),
+    /// A device condition needs UI attention.
+    VoiceDevice(VoiceDeviceState),
     /// Profiles, roles, or presence changed.
     MembersChanged,
     /// Own read cursors changed.

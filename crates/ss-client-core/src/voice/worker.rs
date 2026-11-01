@@ -1,0 +1,546 @@
+//! Dedicated audio worker. Device callbacks remain inside `ss-audio`.
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
+
+use parking_lot::{Mutex, RwLock};
+use rtrb::{Consumer, Producer};
+use ss_audio::{
+    device::{
+        self, CaptureStream, DeviceEvent, DeviceManager, Direction, GraphConfig, PlaybackStream,
+    },
+    mixer::StereoFrame,
+    processing::{Chain, EchoPath},
+    vad::Vad,
+};
+use ss_core::{Id, VoiceProfile};
+
+use crate::{
+    ClientEvent,
+    connection::{IncomingMedia, MediaLink},
+};
+
+use super::{
+    AudioConfig, AudioSource, Cue, TalkGate, VoiceDeviceState,
+    graph::{GraphSnapshot, TrackSpec, VoiceGraph},
+};
+
+pub(super) enum Update {
+    Tracks { own: u32, remote: Vec<TrackSpec> },
+    User { user: Id, gain: f32, muted: bool },
+    Cue(Cue),
+    Bitrate(u32),
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct WorkerStats {
+    pub graph: GraphSnapshot,
+    pub underruns: u64,
+    pub overruns: u64,
+    pub processing_latency: Duration,
+    pub processing_over_budget: u64,
+}
+
+#[derive(Debug)]
+pub(super) struct PttState {
+    held: bool,
+    released: Option<Instant>,
+}
+
+impl PttState {
+    fn open(&self, now: Instant, delay: Duration) -> bool {
+        self.held
+            || self
+                .released
+                .is_some_and(|released| now.saturating_duration_since(released) < delay)
+    }
+}
+
+pub(super) struct Shared {
+    pub stats: RwLock<WorkerStats>,
+    pub ptt: Mutex<PttState>,
+    pub muted: AtomicBool,
+    pub deaf: AtomicBool,
+}
+
+pub(super) struct WorkerHandle {
+    pub updates: SyncSender<Update>,
+    pub incoming: SyncSender<IncomingMedia>,
+    pub shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl WorkerHandle {
+    pub fn set_ptt(&self, pressed: bool) {
+        let mut state = self.shared.ptt.lock();
+        if pressed {
+            state.held = true;
+            state.released = None;
+        } else if state.held {
+            state.held = false;
+            state.released = Some(Instant::now());
+        }
+    }
+
+    pub async fn shutdown(mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        }
+    }
+}
+
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+pub(super) async fn start(
+    profile: VoiceProfile,
+    bitrate: u32,
+    config: AudioConfig,
+    media: MediaLink,
+    events: tokio::sync::broadcast::Sender<ClientEvent>,
+) -> Result<WorkerHandle, String> {
+    let (updates, update_rx) = mpsc::sync_channel(256);
+    let (incoming, incoming_rx) = mpsc::sync_channel(1024);
+    let shared = Arc::new(Shared {
+        stats: RwLock::new(WorkerStats::default()),
+        ptt: Mutex::new(PttState {
+            held: false,
+            released: None,
+        }),
+        muted: AtomicBool::new(config.start_muted),
+        deaf: AtomicBool::new(config.start_deafened),
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let thread_shared = Arc::clone(&shared);
+    let thread_stop = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name("ss-client-voice".to_owned())
+        .spawn(move || {
+            let result = Runtime::new(
+                profile,
+                bitrate,
+                config,
+                media,
+                events,
+                update_rx,
+                incoming_rx,
+                thread_shared,
+                thread_stop,
+            );
+            match result {
+                Ok(mut runtime) => {
+                    let _ = ready_tx.send(Ok(()));
+                    runtime.run();
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    match ready_rx.await {
+        Ok(Ok(())) => Ok(WorkerHandle {
+            updates,
+            incoming,
+            shared,
+            stop,
+            thread: Some(thread),
+        }),
+        Ok(Err(error)) => {
+            let _ = thread.join();
+            Err(error)
+        }
+        Err(_) => Err("voice worker stopped during startup".to_owned()),
+    }
+}
+
+struct Devices {
+    manager: DeviceManager,
+    capture: Option<(CaptureStream, Consumer<f32>)>,
+    playback: Option<(PlaybackStream, Producer<f32>)>,
+}
+
+struct Runtime {
+    graph: VoiceGraph,
+    config: AudioConfig,
+    media: MediaLink,
+    events: tokio::sync::broadcast::Sender<ClientEvent>,
+    updates: Receiver<Update>,
+    incoming: Receiver<IncomingMedia>,
+    shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    devices: Option<Devices>,
+    chain: Chain,
+    vad: Option<Vad>,
+    epoch: Instant,
+    capture: Vec<f32>,
+    render_tap: Vec<StereoFrame>,
+    test_sample: usize,
+}
+
+impl Runtime {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        profile: VoiceProfile,
+        bitrate: u32,
+        config: AudioConfig,
+        media: MediaLink,
+        events: tokio::sync::broadcast::Sender<ClientEvent>,
+        updates: Receiver<Update>,
+        incoming: Receiver<IncomingMedia>,
+        shared: Arc<Shared>,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let graph = VoiceGraph::new(profile, bitrate).map_err(|error| error.to_string())?;
+        let channels = u16::try_from(graph.channels()).map_err(|error| error.to_string())?;
+        let chain = Chain::new(config.processing, channels).map_err(|error| error.to_string())?;
+        let vad = match config.gate {
+            TalkGate::VoiceActivation(mut vad) => {
+                vad.channels = u8::try_from(graph.channels()).map_err(|error| error.to_string())?;
+                Some(Vad::new(vad).map_err(|error| error.to_string())?)
+            }
+            TalkGate::PushToTalk | TalkGate::OpenMic => None,
+        };
+        let devices = if config.source == AudioSource::Device {
+            let manager = DeviceManager::new();
+            let capture_config = graph_config(graph.channels());
+            let capture = match manager.open_capture(config.input_device.as_ref(), capture_config) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    send_device_error(&events, &error);
+                    return Err(error.to_string());
+                }
+            };
+            let playback =
+                match manager.open_playback(config.output_device.as_ref(), GraphConfig::STEREO) {
+                    Ok(playback) => playback,
+                    Err(error) => {
+                        send_device_error(&events, &error);
+                        return Err(error.to_string());
+                    }
+                };
+            Some(Devices {
+                manager,
+                capture: Some(capture),
+                playback: Some(playback),
+            })
+        } else {
+            None
+        };
+        let quantum = graph.quantum();
+        Ok(Self {
+            graph,
+            config,
+            media,
+            events,
+            updates,
+            incoming,
+            shared,
+            stop,
+            devices,
+            chain,
+            vad,
+            epoch: Instant::now(),
+            capture: vec![0.0; quantum],
+            render_tap: Vec::with_capacity(8),
+            test_sample: 0,
+        })
+    }
+
+    fn run(&mut self) {
+        let mut next = Instant::now();
+        while !self.stop.load(Ordering::Acquire) {
+            self.drain_updates();
+            self.drain_incoming();
+            self.device_events();
+            let now = Instant::now();
+            let captured = match self.config.source {
+                AudioSource::Device => self.pull_capture(),
+                AudioSource::Test if now >= next => {
+                    self.test_tone();
+                    true
+                }
+                AudioSource::Silent if now >= next => {
+                    self.capture.fill(0.0);
+                    true
+                }
+                AudioSource::Test | AudioSource::Silent => false,
+            };
+            if captured {
+                self.capture_once(now);
+            }
+            if now >= next {
+                self.render_once();
+                next += Duration::from_millis(10);
+                if next + Duration::from_millis(30) < now {
+                    next = now;
+                }
+            } else if !captured {
+                thread::sleep(Duration::from_millis(1));
+            }
+            for packet in self.graph.pop_outgoing() {
+                self.media.send(packet);
+            }
+        }
+    }
+
+    fn drain_updates(&mut self) {
+        while let Ok(update) = self.updates.try_recv() {
+            match update {
+                Update::Tracks { own, remote } => {
+                    self.graph.set_track_id(own);
+                    self.graph.sync_tracks(&remote, self.epoch.elapsed());
+                }
+                Update::User { user, gain, muted } => self.graph.set_user(user, gain, muted),
+                Update::Cue(cue) => self.graph.play_cue(cue),
+                Update::Bitrate(bitrate) => {
+                    if let Err(error) = self.graph.set_bitrate(bitrate) {
+                        tracing::warn!(%error, bitrate, "encoder adaptation was rejected");
+                    }
+                }
+            }
+        }
+    }
+
+    fn drain_incoming(&mut self) {
+        while let Ok(packet) = self.incoming.try_recv() {
+            let arrival = packet
+                .at
+                .checked_duration_since(self.epoch)
+                .unwrap_or_default();
+            self.graph.push_datagram(&packet.bytes, arrival);
+        }
+    }
+
+    fn capture_once(&mut self, now: Instant) {
+        let path = self.echo_path();
+        self.chain.set_echo_delay(path.delay());
+        if let Err(error) = self.chain.process(&mut self.capture, &self.render_tap) {
+            tracing::warn!(%error, "capture processing frame was rejected");
+        }
+        self.render_tap.clear();
+        let blocked =
+            self.shared.muted.load(Ordering::Relaxed) || self.shared.deaf.load(Ordering::Relaxed);
+        match self.config.gate {
+            TalkGate::PushToTalk => {
+                let gate = !blocked && self.shared.ptt.lock().open(now, self.config.release_delay);
+                let _ = self.graph.push_capture(&self.capture, gate);
+            }
+            TalkGate::OpenMic => {
+                let _ = self.graph.push_capture(&self.capture, !blocked);
+            }
+            TalkGate::VoiceActivation(_) => self.capture_vad(blocked),
+        }
+    }
+
+    fn capture_vad(&mut self, blocked: bool) {
+        let Some(vad) = self.vad.as_mut() else { return };
+        if blocked {
+            let _ = vad.force_close();
+            let _ = self.graph.push_capture(&self.capture, false);
+            return;
+        }
+        let Ok(output) = vad.process(&self.capture) else {
+            return;
+        };
+        let close = matches!(output.event, Some(ss_audio::vad::GateEvent::Close));
+        for frame in output.audio() {
+            let _ = self.graph.push_capture(frame, true);
+        }
+        if close {
+            self.capture.fill(0.0);
+            let _ = self.graph.push_capture(&self.capture, false);
+        }
+    }
+
+    fn render_once(&mut self) {
+        let deaf = self.shared.deaf.load(Ordering::Relaxed);
+        let mixed = self.graph.render(self.epoch.elapsed(), deaf);
+        self.render_tap.push(mixed);
+        if let Some(devices) = &mut self.devices
+            && let Some((_, producer)) = &mut devices.playback
+        {
+            let _ = push_playback(producer, &mixed);
+        }
+        let (underruns, overruns) = self.counters();
+        *self.shared.stats.write() = WorkerStats {
+            graph: self.graph.snapshot(),
+            underruns,
+            overruns,
+            processing_latency: self.chain.monitor().latency(),
+            processing_over_budget: self.chain.monitor().over_budget(),
+        };
+    }
+
+    fn pull_capture(&mut self) -> bool {
+        let Some(devices) = &mut self.devices else {
+            return false;
+        };
+        let Some((_, consumer)) = &mut devices.capture else {
+            return false;
+        };
+        if consumer.slots() < self.capture.len() {
+            return false;
+        }
+        let Ok(chunk) = consumer.read_chunk(self.capture.len()) else {
+            return false;
+        };
+        let (first, second) = chunk.as_slices();
+        self.capture[..first.len()].copy_from_slice(first);
+        self.capture[first.len()..].copy_from_slice(second);
+        chunk.commit_all();
+        true
+    }
+
+    fn test_tone(&mut self) {
+        let channels = self.graph.channels();
+        for index in 0..self.capture.len() / channels {
+            #[allow(clippy::cast_precision_loss)]
+            let phase =
+                (self.test_sample + index) as f32 * 440.0 * std::f32::consts::TAU / 48_000.0;
+            for channel in 0..channels {
+                self.capture[index * channels + channel] = phase.sin() * 0.25;
+            }
+        }
+        self.test_sample += self.capture.len() / channels;
+    }
+
+    fn echo_path(&self) -> EchoPath {
+        let capture_device = self
+            .devices
+            .as_ref()
+            .and_then(|devices| devices.capture.as_ref())
+            .and_then(|(stream, _)| stream.capture_delay())
+            .unwrap_or_default();
+        let playback_device = self
+            .devices
+            .as_ref()
+            .and_then(|devices| devices.playback.as_ref())
+            .and_then(|(stream, _)| stream.playback_delay())
+            .unwrap_or_default();
+        EchoPath {
+            playback_queue: Duration::from_millis(10),
+            playback_device,
+            capture_device,
+            capture_queue: Duration::ZERO,
+        }
+    }
+
+    fn counters(&self) -> (u64, u64) {
+        let Some(devices) = &self.devices else {
+            return (0, 0);
+        };
+        let underruns = devices
+            .playback
+            .as_ref()
+            .map_or(0, |(stream, _)| stream.counters().underruns());
+        let overruns = devices
+            .capture
+            .as_ref()
+            .map_or(0, |(stream, _)| stream.counters().overruns());
+        (underruns, overruns)
+    }
+
+    fn device_events(&mut self) {
+        let event_tx = self.events.clone();
+        let Some(devices) = &mut self.devices else {
+            return;
+        };
+        let mut reopen_capture = false;
+        let mut reopen_playback = false;
+        for event in devices.manager.poll() {
+            if let DeviceEvent::SilentInput { access, .. } = &event {
+                let _ = self
+                    .events
+                    .send(ClientEvent::VoiceDevice(VoiceDeviceState::SilentInput {
+                        permission_denied: *access == device::MicrophoneAccess::Denied,
+                    }));
+            }
+            if let DeviceEvent::LowQualityInput { sample_rate, .. } = &event {
+                let _ = self.events.send(ClientEvent::VoiceDevice(
+                    VoiceDeviceState::LowQualityInput {
+                        sample_rate: *sample_rate,
+                    },
+                ));
+            }
+            if let Some((stream, _)) = &devices.capture {
+                reopen_capture |= event.requires_reopen(
+                    Direction::Capture,
+                    stream.device_id(),
+                    self.config.input_device.is_none(),
+                );
+            }
+            if let Some((stream, _)) = &devices.playback {
+                reopen_playback |= event.requires_reopen(
+                    Direction::Playback,
+                    stream.device_id(),
+                    self.config.output_device.is_none(),
+                );
+            }
+        }
+        if reopen_capture {
+            devices.capture = None;
+            match devices.manager.open_capture(
+                self.config.input_device.as_ref(),
+                graph_config(self.graph.channels()),
+            ) {
+                Ok(stream) => devices.capture = Some(stream),
+                Err(error) => send_device_error(&event_tx, &error),
+            }
+        }
+        if reopen_playback {
+            devices.playback = None;
+            match devices
+                .manager
+                .open_playback(self.config.output_device.as_ref(), GraphConfig::STEREO)
+            {
+                Ok(stream) => devices.playback = Some(stream),
+                Err(error) => send_device_error(&event_tx, &error),
+            }
+        }
+    }
+}
+
+fn send_device_error(events: &tokio::sync::broadcast::Sender<ClientEvent>, error: &device::Error) {
+    let state = if matches!(error, device::Error::PermissionDenied) {
+        VoiceDeviceState::PermissionDenied
+    } else {
+        VoiceDeviceState::Unavailable(error.to_string())
+    };
+    let _ = events.send(ClientEvent::VoiceDevice(state));
+}
+
+fn graph_config(channels: usize) -> GraphConfig {
+    if channels == 2 {
+        GraphConfig::STEREO
+    } else {
+        GraphConfig::MONO
+    }
+}
+
+fn push_playback(producer: &mut Producer<f32>, frame: &StereoFrame) -> bool {
+    if producer.slots() < frame.len() {
+        return false;
+    }
+    let Ok(mut chunk) = producer.write_chunk(frame.len()) else {
+        return false;
+    };
+    let (first, second) = chunk.as_mut_slices();
+    first.copy_from_slice(&frame[..first.len()]);
+    second.copy_from_slice(&frame[first.len()..]);
+    chunk.commit_all();
+    true
+}

@@ -2,6 +2,7 @@
 
 use crate::{Error, ServerAddr};
 use parking_lot::Mutex;
+use ss_core::Id;
 use ss_net::pins::ServerId;
 use std::collections::BTreeMap;
 
@@ -17,6 +18,22 @@ pub trait Storage: Send + Sync + 'static {
     fn last_server(&self) -> Result<Option<ServerAddr>, Error>;
     /// Save the last successfully authenticated server.
     fn save_last_server(&self, server: &ServerAddr) -> Result<(), Error>;
+    /// Saved linear playback gain for one remote user.
+    fn user_volume(&self, _server: &ServerId, _user: Id) -> Result<Option<f32>, Error> {
+        Ok(None)
+    }
+    /// Save linear playback gain for one remote user.
+    fn save_user_volume(&self, _server: &ServerId, _user: Id, _gain: f32) -> Result<(), Error> {
+        Ok(())
+    }
+    /// Whether one remote user is muted only on this client.
+    fn user_muted(&self, _server: &ServerId, _user: Id) -> Result<bool, Error> {
+        Ok(false)
+    }
+    /// Save this client's local mute for one remote user.
+    fn save_user_muted(&self, _server: &ServerId, _user: Id, _muted: bool) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// Ephemeral storage for tests or callers that do not want saved sessions.
@@ -24,6 +41,8 @@ pub trait Storage: Send + Sync + 'static {
 pub struct MemoryStorage {
     sessions: Mutex<BTreeMap<ServerId, String>>,
     last: Mutex<Option<ServerAddr>>,
+    volumes: Mutex<BTreeMap<(ServerId, Id), f32>>,
+    muted: Mutex<BTreeMap<(ServerId, Id), bool>>,
 }
 
 impl Storage for MemoryStorage {
@@ -41,6 +60,25 @@ impl Storage for MemoryStorage {
     }
     fn save_last_server(&self, server: &ServerAddr) -> Result<(), Error> {
         *self.last.lock() = Some(server.clone());
+        Ok(())
+    }
+    fn user_volume(&self, server: &ServerId, user: Id) -> Result<Option<f32>, Error> {
+        Ok(self.volumes.lock().get(&(server.clone(), user)).copied())
+    }
+    fn save_user_volume(&self, server: &ServerId, user: Id, gain: f32) -> Result<(), Error> {
+        self.volumes.lock().insert((server.clone(), user), gain);
+        Ok(())
+    }
+    fn user_muted(&self, server: &ServerId, user: Id) -> Result<bool, Error> {
+        Ok(self
+            .muted
+            .lock()
+            .get(&(server.clone(), user))
+            .copied()
+            .unwrap_or(false))
+    }
+    fn save_user_muted(&self, server: &ServerId, user: Id, muted: bool) -> Result<(), Error> {
+        self.muted.lock().insert((server.clone(), user), muted);
         Ok(())
     }
 }

@@ -1,6 +1,7 @@
 //! Real QUIC client/server integration; no audio devices or external network.
 use ss_client_core::{
-    Client, ClientEvent, ConnectionState, Credentials, Error, ServerAddr, State,
+    AudioConfig, AudioSource, Client, ClientEvent, ConnectionState, Credentials, Error, ServerAddr,
+    State, TalkGate, VoiceSession,
     storage::{MemoryStorage, Storage},
     v1,
 };
@@ -258,6 +259,80 @@ async fn snapshot_commands_events_persisted_session_and_drop() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn voice_session_routes_test_tone_and_releases_workers() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let voice = named(&owner.state().read(), "General", v1::ChannelKind::Voice);
+    let sender = VoiceSession::start(
+        &owner,
+        voice,
+        AudioConfig {
+            source: AudioSource::Test,
+            gate: TalkGate::OpenMic,
+            ..AudioConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let receiver = VoiceSession::start(
+        &guest,
+        voice,
+        AudioConfig {
+            source: AudioSource::Silent,
+            ..AudioConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    timeout(WAIT, async {
+        loop {
+            if receiver.stats().output_rms > 0.01 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    sender.set_self_mute(true).await.unwrap();
+    timeout(WAIT, async {
+        loop {
+            let stats = receiver.stats();
+            if stats.output_rms < 0.001 && stats.speakers.iter().all(|speaker| !speaker.speaking) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sender.set_self_mute(false).await.unwrap();
+    receiver.set_self_deaf(true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(receiver.stats().output_rms < 0.001);
+    sender.leave().await.unwrap();
+    receiver.leave().await.unwrap();
+
+    for _ in 0..50 {
+        let session = VoiceSession::start(
+            &owner,
+            voice,
+            AudioConfig {
+                source: AudioSource::Silent,
+                ..AudioConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        session.leave().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@ use crate::{
     ClientEvent, ConnectionState, Error, StateStore,
     storage::{MemoryStorage, Storage},
 };
+use bytes::Bytes;
 use parking_lot::RwLock;
 use ss_net::{
     control::{ClientControl, Reply},
@@ -75,6 +76,49 @@ pub(crate) struct Command {
     pub reply: oneshot::Sender<Result<v1::Ack, Error>>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct IncomingMedia {
+    pub bytes: Bytes,
+    pub at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TransportStats {
+    pub rtt: Duration,
+    pub lost_packets: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct MediaLink {
+    outgoing: broadcast::Sender<Bytes>,
+    incoming: broadcast::Sender<IncomingMedia>,
+    stats: Arc<RwLock<TransportStats>>,
+}
+
+impl MediaLink {
+    fn new() -> Self {
+        let (outgoing, _) = broadcast::channel(256);
+        let (incoming, _) = broadcast::channel(512);
+        Self {
+            outgoing,
+            incoming,
+            stats: Arc::new(RwLock::new(TransportStats::default())),
+        }
+    }
+
+    pub fn send(&self, packet: Bytes) {
+        let _ = self.outgoing.send(packet);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<IncomingMedia> {
+        self.incoming.subscribe()
+    }
+
+    pub fn stats(&self) -> TransportStats {
+        *self.stats.read()
+    }
+}
+
 /// One independently owned client. Drop aborts its worker, which drops the
 /// control router and closes QUIC. No worker retains an Arc back to Client.
 pub struct Client {
@@ -84,6 +128,8 @@ pub struct Client {
     pub(crate) auth: Arc<RwLock<Option<String>>>,
     pub(crate) address: ServerAddr,
     pub(crate) pins: Arc<dyn PinStore>,
+    pub(crate) storage: Arc<dyn Storage>,
+    pub(crate) media: MediaLink,
     worker: JoinHandle<()>,
 }
 
@@ -132,16 +178,18 @@ impl Client {
         let auth = Arc::new(RwLock::new(Some(welcome.resume_token)));
         let (events, _) = broadcast::channel(256);
         let (commands, command_rx) = mpsc::channel(64);
+        let media = MediaLink::new();
         let runner = Runner {
             address: address.clone(),
             pins: pins.clone(),
-            storage,
+            storage: storage.clone(),
             store: store.clone(),
             events: events.clone(),
             auth: auth.clone(),
             desired_voice: None,
             typing: HashMap::new(),
             pending: VecDeque::new(),
+            media: media.clone(),
         };
         let worker = tokio::spawn(runner.run(live, command_rx));
         Ok(Self {
@@ -151,6 +199,8 @@ impl Client {
             auth,
             address,
             pins,
+            storage,
+            media,
             worker,
         })
     }
@@ -322,6 +372,7 @@ struct Runner {
     desired_voice: Option<v1::JoinVoice>,
     typing: HashMap<Vec<u8>, Instant>,
     pending: VecDeque<Command>,
+    media: MediaLink,
 }
 impl Runner {
     fn status(&self, state: ConnectionState) {
@@ -431,6 +482,9 @@ impl Runner {
         let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_tick = Instant::now();
+        let mut outgoing = self.media.outgoing.subscribe();
+        let mut stats = tokio::time::interval(Duration::from_millis(500));
+        stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
@@ -468,6 +522,27 @@ impl Runner {
                     let _ = command.reply.send(result);
                     if stop { return Err(Error::Protocol("command ended the session")); }
                     if retry { return Err(Error::Disconnected); }
+                }
+                packet = live.connection.read_datagram() => {
+                    let packet = packet.map_err(|_| Error::Disconnected)?;
+                    let _ = self.media.incoming.send(IncomingMedia {
+                        bytes: packet,
+                        at: std::time::Instant::now(),
+                    });
+                }
+                packet = outgoing.recv() => {
+                    match packet {
+                        Ok(packet) => { let _ = live.connection.send_datagram(packet); }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                    }
+                }
+                _ = stats.tick() => {
+                    let current = live.connection.stats();
+                    *self.media.stats.write() = TransportStats {
+                        rtt: current.rtt,
+                        lost_packets: current.lost_packets,
+                    };
                 }
             }
         }
