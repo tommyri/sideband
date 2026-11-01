@@ -54,6 +54,8 @@ tower.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+ss-client-core.workspace = true
+tokio-rustls.workspace = true
 allocation-counter.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true

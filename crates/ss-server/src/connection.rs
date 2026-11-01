@@ -517,6 +517,16 @@ async fn read_inbound(
     mut last_request: u32,
     welcome: v1::ServerEnvelope,
 ) -> Result<(), Error> {
+    let mut known_channels = std::collections::BTreeMap::new();
+    if let Some(server_envelope::Msg::Welcome(value)) = &welcome.msg
+        && let Some(snapshot) = &value.snapshot
+    {
+        for channel in snapshot.channels.iter().chain(&snapshot.direct_messages) {
+            if let Ok(id) = id_from_bytes(&channel.id) {
+                known_channels.insert(id, channel.clone());
+            }
+        }
+    }
     outbound
         .send(welcome)
         .await
@@ -550,12 +560,15 @@ async fn read_inbound(
                     },
                     Ok(()) => replies(server, context, &envelope).await,
                 };
+                let refresh = answer.events.iter().any(refreshes_channels);
                 for frame in answer.frames {
+                    if frame.msg.as_ref().is_some_and(channel_event) { continue; }
                     outbound
                         .send(frame)
                         .await
                         .map_err(|_| Error::Control(ControlError::Closed))?;
                 }
+                if refresh { sync_channels(server, context, &mut known_channels, &outbound).await?; }
                 for event in answer.events {
                     if let server_envelope::Msg::ReadStateUpdated(_) = &event {
                         for conn in server.registry.connection_ids(context.user_id) {
@@ -577,7 +590,12 @@ async fn read_inbound(
             }
             event = subscription.recv() => {
                 match event {
-                    Ok(event) => deliver(server, context, &event),
+                    Ok(event) => {
+                        if event.origin != Some(context.conn_id) && refreshes_channels(&event.msg) {
+                            sync_channels(server, context, &mut known_channels, &outbound).await?;
+                        }
+                        if !channel_event(&event.msg) { deliver(server, context, &event); }
+                    },
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         server.registry.kick_slow(context.conn_id);
                         break;
@@ -587,6 +605,73 @@ async fn read_inbound(
             }
         }
     }
+    Ok(())
+}
+
+fn channel_event(event: &server_envelope::Msg) -> bool {
+    matches!(
+        event,
+        server_envelope::Msg::ChannelCreated(_)
+            | server_envelope::Msg::ChannelUpdated(_)
+            | server_envelope::Msg::ChannelDeleted(_)
+    )
+}
+fn refreshes_channels(event: &server_envelope::Msg) -> bool {
+    channel_event(event)
+        || matches!(
+            event,
+            server_envelope::Msg::RoleCreated(_)
+                | server_envelope::Msg::RoleUpdated(_)
+                | server_envelope::Msg::RoleDeleted(_)
+                | server_envelope::Msg::MemberRolesUpdated(_)
+        )
+}
+async fn sync_channels(
+    server: &Server,
+    context: &AuthedContext,
+    known: &mut std::collections::BTreeMap<Id, v1::Channel>,
+    outbound: &mpsc::Sender<v1::ServerEnvelope>,
+) -> Result<(), Error> {
+    let current = snapshot::channel_view(&server.perms, context.user_id)
+        .await
+        .map_err(|error| {
+            tracing::debug!(%error, "channel view failed");
+            Error::Protocol
+        })?;
+    for (id, old) in known.iter() {
+        if !current.contains_key(id) {
+            outbound
+                .send(v1::ServerEnvelope {
+                    request_id: 0,
+                    msg: Some(server_envelope::Msg::ChannelDeleted(v1::ChannelDeleted {
+                        channel: Some(old.clone()),
+                    })),
+                })
+                .await
+                .map_err(|_| Error::Control(ControlError::Closed))?;
+        }
+    }
+    for (id, channel) in &current {
+        let msg = match known.get(id) {
+            None => server_envelope::Msg::ChannelCreated(v1::ChannelCreated {
+                channel: Some(channel.clone()),
+            }),
+            Some(old) if old != channel => {
+                server_envelope::Msg::ChannelUpdated(v1::ChannelUpdated {
+                    channel: Some(channel.clone()),
+                })
+            }
+            _ => continue,
+        };
+        outbound
+            .send(v1::ServerEnvelope {
+                request_id: 0,
+                msg: Some(msg),
+            })
+            .await
+            .map_err(|_| Error::Control(ControlError::Closed))?;
+    }
+    *known = current;
     Ok(())
 }
 

@@ -1,16 +1,32 @@
 # ss-client-core
 
-The client without a user interface. It owns the QUIC connection, applies
-server events to an in-memory state store, and runs the voice session
-(devices, encoder, jitter buffers, mixer) while a voice channel is joined.
+Headless, UI-independent connections and live server state. Hosts supply a
+Tokio runtime, certificate `PinStore`, and optionally a session `Storage`.
 
-`ss-cli` and the Tauri shell both call into this crate. Neither of them
-reimplements protocol or audio logic.
+`Client::connect` authenticates and applies Welcome before returning.
+`connect_with_storage` also saves the session token and last server; the
+host decides whether those live in a keychain, file, or memory. Unknown or
+changed certificates return an actionable error; only the host can approve.
 
-## May depend on
+Subscribe to `ClientEvent`, then read `client.state()`. Notifications describe
+already-applied changes. On broadcast lag, read the state again. Do not hold
+a state read guard across await. `channel_tree()` supplies stable tree order;
+`permissions(channel)` returns server-resolved bits or None for older peers.
 
-`ss-core`, `ss-net`, `ss-audio`, `ss-input`.
+Typed commands return resources or errors. During reconnect commands fail;
+mutations are never replayed. A timeout may mean the server already acted.
+Session resume backs off from 1 to 30 seconds with jitter, replaces the full
+snapshot, and rejoins requested voice membership. Kick/ban and trust/auth
+failures stop retries. Drop closes the connection; `close().await` also waits
+for the owning worker to stop. `ClientSet` owns independent server clients.
 
-## Must not depend on
+`load_older` fetches HTTPS history with the QUIC certificate pin and session
+bearer, without redirects or environment proxies. A concurrent state change
+returns `StateChanged` for retry. Caches retain 200 live messages per channel
+plus requested history pages. Reconnect or lost visibility clears the cache.
 
-`ss-server`, `ss-cli`. No SQL and no windowing toolkit.
+Audio orchestration belongs to T-041. The existing CLI spike is still the
+T-017 harness; hosts can adopt this API without reimplementing protocol/state.
+
+May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`.
+Must not depend on `ss-server`, `ss-cli`, SQL, or windowing toolkits.

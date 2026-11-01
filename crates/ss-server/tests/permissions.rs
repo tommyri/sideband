@@ -740,7 +740,10 @@ async fn override_edits_show_up_on_the_next_check() {
         )
         .await
         .unwrap();
-    assert_eq!(reply.events, Vec::new());
+    assert!(
+        matches!(reply.events.as_slice(), [server_envelope::Msg::ChannelUpdated(event)]
+        if event.channel.as_ref().is_some_and(|channel| channel.id == id_to_bytes(world.text)))
+    );
     assert!(matches!(reply.ack, ack::Result::Empty(_)));
     assert!(
         world

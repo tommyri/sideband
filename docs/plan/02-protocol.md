@@ -109,6 +109,15 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `Kicked` / `Banned` | `reason`, `expires_at?` | sent then connection closed |
 | `ServerNotice` | `text` | shutdown warnings etc. |
 
+`Channel.effective_permissions` (optional uint64, tag 12) contains permissions
+resolved for the receiving user, including channel overrides. An absent field
+means unknown, not an empty permission set. Welcome and channel events include
+it. After role, grant, override, or channel changes, the server diffs each
+session's visible channel view: `ChannelCreated` grants visibility,
+`ChannelUpdated` refreshes metadata/permissions, and `ChannelDeleted` also
+means visibility was revoked. Clients discard that channel's cached content.
+Shared command acknowledgements may omit personalized permission bits.
+
 ### Limits
 
 Quotas and input limits are listed in [`docs/security.md`](../security.md)
@@ -185,7 +194,7 @@ in `TrackAdded.codec` (e.g. `avc1.64001f` + `description`).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/v1/server` | Public: name, version, cert fingerprint, registration mode |
-| GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page, newest first |
+| GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order |
 | GET | `/api/v1/channels/{id}/messages/around/{message_id}` | Jump to message |
 | GET | `/api/v1/channels/{id}/search?q=` | Phase 4 |
 | POST | `/api/v1/attachments` | multipart upload → `{attachment_id, url, mime, size, width?, height?}` |
@@ -194,6 +203,12 @@ in `TrackAdded.codec` (e.g. `avc1.64001f` + `description`).
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
 | GET | `/api/v1/audit-log?before=&limit=` | admins |
 | GET | `/metrics` | internal listener only |
+
+History JSON uses camelCase fields, base64 bytes, decimal strings for 64-bit
+integers, and named protocol enums. Pages contain at most 100 messages (the
+client requests 50). The client sends the Welcome token as the HTTPS bearer
+and verifies the same leaf certificate pin as QUIC. No redirects are followed.
+The deployed HTTP listener sits behind the configured TLS reverse proxy.
 
 Every public response carries `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a

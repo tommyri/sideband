@@ -13,5 +13,16 @@ ss-core.workspace = true
 ss-input.workspace = true
 ss-net.workspace = true
 
+ss-proto.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+
 [lints]
 workspace = true

@@ -52,7 +52,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-040](T-040-client-core-connection-state.md) | Client core: connection + state store | M | T-004, T-021, T-023, T-024, T-026 | todo |
+| [T-040](T-040-client-core-connection-state.md) | Client core: connection + state store | M | T-004, T-021, T-023, T-024, T-026 | done |
 | [T-041](T-041-client-core-voice-session.md) | Client core: voice session | M | T-040, T-010, T-015, T-025 | todo |
 | [T-042](T-042-tauri-app-scaffold.md) | Tauri app scaffold and bridge | M | T-040 | todo |
 | [T-043](T-043-onboarding-ui.md) | Onboarding UI | M | T-042 | todo |

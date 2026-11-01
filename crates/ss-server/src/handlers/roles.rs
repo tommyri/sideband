@@ -373,9 +373,18 @@ impl Roles {
             self.perms.reload().await?;
         }
         tracing::info!(%actor, %channel_id, %role_id, "channel override set");
+        let mut conn = self.perms.pool().read().await?;
+        let channel = channels::get(&mut conn, channel_id)
+            .await?
+            .ok_or(Error::NotFound("channel not found"))?;
+        let wire = crate::snapshot::wire_channel(&channel, &[], None)?;
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
-            events: Vec::new(),
+            events: vec![ss_proto::v1::server_envelope::Msg::ChannelUpdated(
+                v1::ChannelUpdated {
+                    channel: Some(wire),
+                },
+            )],
         })
     }
 

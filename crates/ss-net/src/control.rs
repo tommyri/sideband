@@ -208,6 +208,10 @@ impl<M: Message + Default> ControlReceiver<M> {
 
 /// Successful command acknowledgement or an application-level error reply.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "wire Ack embeds resources; keep the public reply API allocation-free"
+)]
 pub enum Reply {
     /// Server accepted the command.
     Ack(v1::Ack),
