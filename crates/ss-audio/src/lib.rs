@@ -7,6 +7,7 @@ pub mod codec;
 pub mod device;
 pub mod jitter;
 pub mod mixer;
+pub mod processing;
 pub mod receive;
 pub mod resample;
 

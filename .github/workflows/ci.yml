@@ -37,6 +37,12 @@ jobs:
         run: cargo clippy -p ss-audio --all-targets --features dred -- -D warnings
       - name: Opus frame budget
         run: cargo bench -p ss-audio --bench codec
+      - name: Optional processing chain (AEC, RNNoise, AGC)
+        run: cargo test -p ss-audio --all-features
+      - name: Optional processing chain lints
+        run: cargo clippy -p ss-audio --all-targets --all-features -- -D warnings
+      - name: Processing frame budget
+        run: cargo bench -p ss-audio --all-features --bench processing
       - name: Dependency graph
         if: runner.os == 'Linux'
         run: just check-deps

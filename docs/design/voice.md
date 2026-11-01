@@ -120,25 +120,40 @@ the level drops.
 ## Processing chain
 
 Every stage is off unless the user enables it. With all of them off, the
-samples that reach the encoder are the samples that left the resampler.
+samples that reach the encoder are the samples that left the resampler:
+`ss_audio::processing::Chain` returns without reading or writing the frame.
 
 Order when enabled: echo cancellation, then noise suppression, then
-automatic gain. The echo canceller needs a reference from the mix, taken
-before the playback ring, delayed by the measured device latency.
+automatic gain. The chain runs on the capture worker, never in the device
+callback, one 10 ms frame at a time. The echo canceller needs a reference
+from the mix: the playback worker copies each mixer frame into a lock-free
+render tap before the playback ring, and the capture worker hands the frames
+that arrived to the canceller. Its delay hint is the playback queue plus the
+measured playback and capture device delays plus the capture queue.
 
 | Stage | Implementation | Added latency | When to use it |
 |---|---|---|---|
-| Echo cancellation | `sonora` AEC3 | A few milliseconds plus the filter | Speakers, or a microphone that hears the room |
-| Noise suppression | RNNoise (10 ms frames) or DeepFilterNet3 (10 ms frames, low-latency model) | See the model | Fans, mechanical keyboards |
-| Automatic gain | `sonora` AGC2 | Small | A microphone whose level wanders |
+| Echo cancellation | `sonora` AEC3 (feature `aec`), with its high-pass filter | 4.96 ms (4 ms block framing, band split) | Speakers, or a microphone that hears the room |
+| Noise suppression | RNNoise via `nnnoiseless` (feature `rnnoise`) | 10 ms (one overlap-add frame) | Fans, mechanical keyboards. The recommended suppressor. |
+| Noise suppression | `sonora` WebRTC suppressor (feature `aec`) | 6.96 ms | No model; loses slightly more speech than RNNoise |
+| Automatic gain | `sonora` AGC2 adaptive digital gain and limiter (feature `aec`) | 0 | A microphone whose level wanders |
 | macOS alternative | `AUVoiceIO` | Apple's voice-processing I/O unit | One switch. It replaces the three stages above and follows the system's mic mode (Standard, Voice Isolation, Wide Spectrum). |
 
-GTCRN (ICASSP 2024) is the strongest small noise model we looked at, and it
-is not in the first chain. It needs an integration we have not done. It is
-listed in the backlog.
+`sonora` runs at its full 48 kHz internal rate so nothing above 16 kHz is
+dropped. Each stage is its own instance, so it can be measured alone; the
+settings UI reads each stage's added latency and CPU per frame from the
+chain's monitor. AEC3 and AGC2 allocate inside `sonora` every frame, which
+the capture worker tolerates and a device callback would not.
+
+DeepFilterNet3 (feature `deepfilter`) is reserved and not built. The
+crates.io `deep_filter` release has no inference, the inference crate is
+only published from git, and the low-latency model is 36 MB against a 10 MB
+budget. GTCRN (ICASSP 2024) is the strongest small noise model we looked at
+and needs an integration we have not done. Both are in the backlog.
 
 Each enabled stage must finish well under the frame duration. T-053 budgets
-3 ms for the chain per 10 ms frame, and under 1.5 ms per stage.
+3 ms for the chain per 10 ms frame, and under 1.5 ms per stage;
+`cargo bench -p ss-audio --all-features --bench processing` enforces both.
 
 ## Devices
 
@@ -203,8 +218,9 @@ TeamSpeak, the profile table changes.
 | Network | one way | one way |
 
 Adding the rows gives about 80 ms plus the one-way network time, before any
-processing the user turned on. A noise suppressor adds its own look-ahead on
-top, which is why it stays off by default.
+processing the user turned on. The processing chain adds its own delay on
+top: about 5 ms for echo cancellation and 10 ms for RNNoise (7 ms for the
+WebRTC suppressor), which is one reason it stays off by default.
 
 ## Server
 
