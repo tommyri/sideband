@@ -82,6 +82,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `SetChannelOverride` | `channel_id`, `role_id`, `allow(u64)`, `deny(u64)` | Table exists in MVP; UI may come later |
 | `UpdateProfile` | `display_name`, `avatar_attachment_id` | |
 | `SetPresence` | `status`, `activity` | Online, idle, or do-not-disturb. Offline is the last disconnect |
+| `StartStream` / `StopStream` | `kind` (VIDEO/SCREEN), `codec` / — | One published video track per connection; requires voice membership and STREAM |
 | `SubscribeTrack` / `UnsubscribeTrack` | `track_id` | Video (phase 5); audio is auto-subscribed |
 | `RequestKeyframe` | `track_id` | Video (phase 5) |
 | `SetPreferredQuality` | `track_id`, `max_height`, `max_fps` | Video (phase 5) |
@@ -91,7 +92,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | Message | Fields | Purpose |
 |---|---|---|
 | `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id |
-| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook }` | `Webhook.token` is only on `CreateWebhook` |
+| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId }` | `Webhook.token` is only on `CreateWebhook` |
 | `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
@@ -107,6 +108,8 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `MemberRolesUpdated` | `user_id`, `role_ids[]` | |
 | `InviteCreated` / `InviteRevoked` | `Invite` | admins only |
 | `Kicked` / `Banned` | `reason`, `expires_at?` | sent then connection closed |
+| `RequestKeyframe` | `track_id` | Private relay to publisher, at most once per 500 ms per track |
+| `SubscriberHint` | `track_id`, `max_height`, `max_fps`, `viewer_count` | Private aggregate to publisher; server never transcodes |
 | `ServerNotice` | `text` | shutdown warnings etc. |
 
 `Channel.effective_permissions` (optional uint64, tag 12) contains permissions
@@ -188,6 +191,44 @@ it hasn't finished. The server forwards each stream only to connections that
 sent `SubscribeTrack` for that `track_id` and resets streams to a subscriber
 whose send queue exceeds a budget (drop-oldest). Codec parameters are carried
 in `TrackAdded.codec` (e.g. `avc1.64001f` + `description`).
+
+T-070 makes this path available after authenticated Hello (`video-streams`
+feature in Welcome). `StartStream` appends client envelope tag 39 and returns
+`Ack.track_id` (tag 10); `StopStream` is tag 40. Private server events append
+`RequestKeyframe` tag 30 and `SubscriberHint` tag 31. Existing tags are unchanged.
+
+Frame `len` is the encoded payload length, excluding the nine-byte frame prefix,
+range 1..=4 MiB. Timestamp is on the shared 48 kHz clock. Frame flag bit 0 means
+keyframe; other bits are reserved. The first frame in a group must be a keyframe.
+The byte-level client rejects invalid/truncated framing; the server treats the
+body as opaque and bounds the whole group to 32 MiB instead of parsing a codec.
+Sequence/group ids wrap. Senders use common-header flags zero for video.
+
+Publication requires VIEW_CHANNEL + STREAM on the joined voice channel.
+Codec name is 1–128 UTF-8 bytes, description at most 64 KiB; video sample_rate
+and channels are zero. Audio and video share the monotonically allocated track
+id space. A subscriber must be another member of that same voice channel with
+VIEW_CHANNEL. At most 16 video subscriptions per connection. Self-deaf and
+microphone mute govern audio, independently of video subscriptions.
+
+Each publisher and each subscription retain at most two groups. A newer group
+cancels the oldest; each viewer's worker additionally has an eight-chunk queue
+(16 KiB chunks). Queue overflow resets that viewer's group without waiting or
+stalling other viewers. A finished outgoing group remains cancellable until
+QUIC acknowledges it. Reset/stop application code is 0x70. Unsubscribe, leave,
+switch, disconnect, channel deletion, or permission revocation cancel affected
+streams. A subscriber starts with the next group and may request a keyframe;
+there is no GOP replay buffer. StopStream is idempotent cleanup, including after
+permission loss.
+
+The server accepts at most four incoming group tasks per connection, allows
+five seconds for a header/idle read and thirty seconds total per group. Senders
+should open a new group at each keyframe and reset superseded unfinished groups.
+`SetPreferredQuality` requires a subscription; height 0..=4320 and fps 0..=240.
+Zero means unspecified. Hints use the highest requested value per dimension,
+or zero when any viewer leaves it unspecified, and include the viewer count.
+Removing the last viewer reports count zero. These are adaptation hints to the
+publisher, not promises that the server filters or re-encodes frames.
 
 ## 6. REST (HTTPS, `Authorization: Bearer <session_token>`)
 

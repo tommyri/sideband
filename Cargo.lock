@@ -4311,6 +4311,7 @@ dependencies = [
  "bytes",
  "getrandom 0.2.17",
  "parking_lot",
+ "quinn",
  "reqwest",
  "serde",
  "serde_json",

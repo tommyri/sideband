@@ -4,6 +4,8 @@
 //! live here. The desktop shell and `ss-cli` are both thin wrappers over
 //! this crate.
 
+pub mod media;
+
 /// Package name. Dependents reference this so the crate graph stays linked.
 pub const NAME: &str = "ss-client-core";
 

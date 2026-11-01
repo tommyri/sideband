@@ -23,8 +23,9 @@ Send Hello first; only then does the router send idle Pings every 15 seconds.
 Dropping it closes the connection. Reconnect policy belongs above us.
 
 Datagram parsing borrows the payload. Delivery is unreliable and unordered;
-clients use the sequence number. `StreamHeader` and raw QUIC uni-stream
-access reserve the video path. Audio payloads remain capped at 1150 bytes.
+clients use the sequence number. `media::stream` provides bounded video GOP
+readers/writers, cancellation-safe frame reads, and reset-on-drop writers.
+Audio payloads remain capped at 1150 bytes. Video framing is in protocol §5.
 
 Endpoints advertise an 8192-byte UDP receive ceiling. Path-MTU discovery
 starts at 1200 bytes and grows only after successful probes, respecting peer

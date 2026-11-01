@@ -66,6 +66,11 @@ fn sample(server: &Server) {
     );
     metrics::gauge!("socialspeak_connections").set(as_f64(server.registry().connection_count()));
     metrics::gauge!("socialspeak_voice_members").set(as_f64(server.voice_members()));
+    let video = server.stream_stats();
+    metrics::gauge!("socialspeak_video_tracks").set(as_f64(video.active));
+    metrics::counter!("socialspeak_video_bytes_forwarded_total").absolute(video.bytes_forwarded);
+    metrics::counter!("socialspeak_video_resets_total").absolute(video.resets);
+    metrics::counter!("socialspeak_video_rejected_total").absolute(video.rejected);
     let stats = server.media_stats();
     metrics::counter!("socialspeak_datagrams_forwarded_total").absolute(stats.forwarded);
     metrics::counter!("socialspeak_datagrams_dropped_total").absolute(stats.dropped);

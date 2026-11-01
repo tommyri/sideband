@@ -96,7 +96,7 @@ impl Server {
     ) -> Result<Self, crate::db::Error> {
         let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await?);
         let registry = Arc::new(ConnectionRegistry::new(registry::SLOW_CONSUMER_AFTER));
-        let (voice, media) = Voice::open(Arc::clone(&perms));
+        let (voice, media) = Voice::open(Arc::clone(&perms), Arc::clone(&registry));
         let (stop, _) = watch::channel(false);
         let files = storage::Store::open_with_policy(Arc::clone(&pool), policy).await?;
         let bus = EventBus::new();
@@ -143,6 +143,11 @@ impl Server {
     /// Opaque-media counters for the authenticated router.
     pub fn media_stats(&self) -> media::Stats {
         self.media.stats()
+    }
+
+    /// Video publication and relay counters.
+    pub fn stream_stats(&self) -> media::streams::Stats {
+        self.voice.streams().stats()
     }
 
     /// Members currently sitting in a voice channel.
@@ -419,6 +424,8 @@ impl Server {
         let media_conn = pump.quic.clone();
         let forwarder = Arc::clone(&self.media);
         let media_conn_id = context.conn_id;
+        let video_conn = pump.quic.clone();
+        let video = self.voice.streams();
         let write = write_outbound(
             sender,
             pump.outgoing,
@@ -450,6 +457,7 @@ impl Server {
             result = read => result,
             result = write => result,
             result = datagrams => result,
+            result = video.run(media_conn_id, video_conn) => Err(Error::Connection(result)),
         }
     }
 }
@@ -481,6 +489,7 @@ fn welcome_envelope(
                     "channels".into(),
                     "presence".into(),
                     "voice".into(),
+                    "video-streams".into(),
                     "messages".into(),
                     "webhooks".into(),
                     "dms".into(),
@@ -803,8 +812,8 @@ async fn replies(
     };
     match result {
         Ok(reply) => {
-            server.voice.refresh_speak();
             let mut events = reply.events;
+            events.extend(server.voice.refresh_speak());
             let removed = deleted_channels(&events);
             for channel in removed {
                 events.extend(server.voice.evacuate(channel));

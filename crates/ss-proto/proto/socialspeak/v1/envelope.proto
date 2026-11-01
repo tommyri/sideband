@@ -63,6 +63,8 @@ message ClientEnvelope {
     AddDmMembers add_dm_members = 36;
     CreateWebhook create_webhook = 37;
     DeleteWebhook delete_webhook = 38;
+    StartStream start_stream = 39;
+    StopStream stop_stream = 40;
   }
 }
 
@@ -100,6 +102,8 @@ message ServerEnvelope {
     Kicked kicked = 27;
     Banned banned = 28;
     ServerNotice server_notice = 29;
+    RequestKeyframe request_keyframe = 30;
+    SubscriberHint subscriber_hint = 31;
   }
 }
 
@@ -125,6 +129,8 @@ message Ack {
     User user = 8;
     // `CreateWebhook` created this webhook. The token is only here.
     Webhook webhook = 9;
+    // StartStream assigned this video/screen track.
+    uint32 track_id = 10;
   }
 }
 

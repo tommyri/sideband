@@ -137,7 +137,7 @@ message RequestKeyframe {
   uint32 track_id = 1;
 }
 
-// Cap the quality the server forwards for a video track.
+// Preferred quality for adaptation by the publisher; the server never transcodes.
 message SetPreferredQuality {
   // Video or screen track id.
   uint32 track_id = 1;
@@ -145,4 +145,19 @@ message SetPreferredQuality {
   uint32 max_height = 2;
   // Maximum frames per second.
   uint32 max_fps = 3;
+}
+
+// Publish one screen/video track in the current voice channel.
+message StartStream {
+  TrackKind kind = 1;
+  Codec codec = 2;
+}
+// End this connection's screen/video track (idempotent).
+message StopStream {}
+// Aggregate of active subscriptions; zero limits mean no preference.
+message SubscriberHint {
+  uint32 track_id = 1;
+  uint32 max_height = 2;
+  uint32 max_fps = 3;
+  uint32 viewer_count = 4;
 }

@@ -25,16 +25,29 @@ pub(crate) struct Outcome {
 pub struct Voice {
     perms: Arc<PermissionService>,
     rooms: Arc<Mutex<Rooms>>,
+    streams: Arc<crate::media::streams::Streams>,
 }
 
 impl Voice {
-    pub(crate) fn open(perms: Arc<PermissionService>) -> (Arc<Self>, Arc<Forwarder>) {
-        let rooms = Arc::new(Mutex::new(Rooms::new()));
+    pub(crate) fn open(
+        perms: Arc<PermissionService>,
+        registry: Arc<crate::registry::ConnectionRegistry>,
+    ) -> (Arc<Self>, Arc<Forwarder>) {
+        let rooms = Arc::new(Mutex::new(Rooms::new(registry)));
+        let streams = Arc::new(crate::media::streams::Streams::new(
+            Arc::clone(&rooms),
+            Arc::clone(&perms),
+        ));
         let voice = Arc::new(Self {
+            streams,
             perms,
             rooms: Arc::clone(&rooms),
         });
         (voice, Arc::new(Forwarder::new(rooms)))
+    }
+
+    pub(crate) fn streams(&self) -> Arc<crate::media::streams::Streams> {
+        Arc::clone(&self.streams)
     }
 
     /// Seats currently in a voice channel.
@@ -58,6 +71,9 @@ impl Voice {
         user: Id,
         msg: &v1::client_envelope::Msg,
     ) -> Option<Result<Outcome, Error>> {
+        if let Some(result) = self.streams.dispatch(conn, user, msg) {
+            return Some(result);
+        }
         match msg {
             v1::client_envelope::Msg::JoinVoice(command) => {
                 Some(self.join(conn, user, command).await)
@@ -73,11 +89,12 @@ impl Voice {
         }
     }
 
-    pub(crate) fn refresh_speak(&self) {
+    pub(crate) fn refresh_speak(&self) -> Vec<v1::server_envelope::Msg> {
         let perms = Arc::clone(&self.perms);
         self.rooms.lock().refresh_speak(move |user, channel| {
             perms.check(user, Some(channel), Permissions::SPEAK).is_ok()
         });
+        self.rooms.lock().video.refresh(&self.perms)
     }
 
     /// Drop every seat in a channel that is about to disappear.

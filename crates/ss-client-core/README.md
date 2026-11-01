@@ -20,6 +20,11 @@ snapshot, and rejoins requested voice membership. Kick/ban and trust/auth
 failures stop retries. Drop closes the connection; `close().await` also waits
 for the owning worker to stop. `ClientSet` owns independent server clients.
 
+`media::VideoTrackSender` opens byte-level GOP writers after StartStream.
+One `VideoTrackReceiver` accepts all incoming video groups and exposes their
+track ids for demux. Subscribe through control first; reset/drop obsolete GOPs.
+No capture, codec, or rendering is part of these APIs.
+
 `load_older` fetches HTTPS history with the QUIC certificate pin and session
 bearer, without redirects or environment proxies. A concurrent state change
 returns `StateChanged` for retry. Caches retain 200 live messages per channel
@@ -28,5 +33,5 @@ plus requested history pages. Reconnect or lost visibility clears the cache.
 Audio orchestration belongs to T-041. The existing CLI spike is still the
 T-017 harness; hosts can adopt this API without reimplementing protocol/state.
 
-May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`.
+May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`, Quinn stream handles.
 Must not depend on `ss-server`, `ss-cli`, SQL, or windowing toolkits.

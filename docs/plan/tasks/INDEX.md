@@ -92,7 +92,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-070](T-070-video-track-transport.md) | Server: video tracks, subscriptions, keyframe relay | M | T-025, T-004 | todo |
+| [T-070](T-070-video-track-transport.md) | Server: video tracks, subscriptions, keyframe relay | M | T-025, T-004 | done |
 | [T-071](T-071-screen-capture-encode.md) | Client: capture + hardware encode | L | T-070, T-041 | todo |
 | [T-072](T-072-stream-viewer.md) | Client: viewer (decode + wgpu window) | M | T-070, T-071 | todo |
 | [T-073](T-073-screen-share-ui.md) | Screen share UI | S | T-071, T-072, T-044 | todo |

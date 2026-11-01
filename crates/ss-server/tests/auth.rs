@@ -338,7 +338,7 @@ async fn usernames_and_passwords_follow_the_rules() {
 }
 
 #[tokio::test]
-async fn authenticated_hello_answers_ping_and_rejects_other_commands() {
+async fn authenticated_hello_answers_ping_and_requires_voice_for_video() {
     let quic = Quic::new().await;
     let (connection, mut stream) = quic.connect().await;
     let rejected = command(
@@ -384,15 +384,15 @@ async fn authenticated_hello_answers_ping_and_rejects_other_commands() {
     };
     assert_eq!(pong.sent_at, 42);
 
-    let unsupported = command(
+    let video_denied = command(
         &mut stream,
         3,
         Msg::SubscribeTrack(v1::SubscribeTrack::default()),
     )
     .await;
-    assert_eq!(error_code(&unsupported), i32::from(v1::ErrorCode::Invalid));
-    match unsupported.msg.unwrap() {
-        Event::Error(error) => assert_eq!(error.message, "unsupported command"),
+    assert_eq!(error_code(&video_denied), i32::from(v1::ErrorCode::Invalid));
+    match video_denied.msg.unwrap() {
+        Event::Error(error) => assert_eq!(error.message, "join voice before using video"),
         other => panic!("expected an error, got {other:?}"),
     }
 
