@@ -4071,6 +4071,8 @@ dependencies = [
  "allocation-counter",
  "cpal",
  "criterion",
+ "objc2",
+ "objc2-avf-audio",
  "opusic-c",
  "proptest",
  "rtrb",

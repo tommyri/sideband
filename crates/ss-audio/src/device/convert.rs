@@ -42,6 +42,20 @@ impl Framer {
     }
 }
 
+/// Record whether a capture buffer holds anything but digital zero.
+///
+/// Returns `true` once a sample differs from the format's equilibrium. The
+/// callback stops calling this after the first `true`, so a live stream pays
+/// for one scan.
+pub(crate) fn note_signal<T: Sample>(input: &[T], counters: &Counters) -> bool {
+    if input.iter().any(|sample| *sample != T::EQUILIBRIUM) {
+        counters.signal.store(true, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
 /// Convert one callback buffer and push interleaved f32 samples immediately.
 ///
 /// Used when a worker, not the callback, has to resample before framing.
@@ -211,7 +225,7 @@ mod tests {
 
     use rtrb::RingBuffer;
 
-    use super::{Framer, pull_playback, push_capture};
+    use super::{Framer, note_signal, pull_playback, push_capture};
     use crate::device::Counters;
 
     #[test]
@@ -232,6 +246,23 @@ mod tests {
         for sample in frame {
             assert!((sample - expected).abs() < 1e-4, "{sample} vs {expected}");
         }
+    }
+
+    #[test]
+    fn digital_silence_is_not_a_signal() {
+        let counters = Counters::default();
+        let zeros = [0.0f32; 480];
+        let unsigned_silence = [u16::MAX / 2 + 1; 480];
+        let allocations = allocation_counter::measure(|| {
+            assert!(!note_signal(&zeros, &counters));
+            assert!(!note_signal(&unsigned_silence, &counters));
+        });
+        assert_eq!(allocations.count_total, 0);
+        assert!(!counters.has_signal());
+        let mut noise = zeros;
+        noise[300] = 1.0e-7;
+        assert!(note_signal(&noise, &counters));
+        assert!(counters.has_signal());
     }
 
     #[test]
