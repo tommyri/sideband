@@ -120,6 +120,8 @@ session's visible channel view: `ChannelCreated` grants visibility,
 `ChannelUpdated` refreshes metadata/permissions, and `ChannelDeleted` also
 means visibility was revoked. Clients discard that channel's cached content.
 Shared command acknowledgements may omit personalized permission bits.
+`TrackAdded` and `VoiceStateUpdated` reach only sessions that may view the
+named channel; `TrackRemoved` carries only the opaque track id.
 
 ### Limits
 

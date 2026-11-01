@@ -423,6 +423,15 @@ impl State {
             },
             Msg::ServerNotice(event) => E::Notice(event.text),
             Msg::Error(error) => E::ServerError(error),
+            Msg::RequestKeyframe(event) => E::KeyframeRequested {
+                track: event.track_id,
+            },
+            Msg::SubscriberHint(event) => E::SubscriberHint {
+                track: event.track_id,
+                max_height: event.max_height,
+                max_fps: event.max_fps,
+                viewer_count: event.viewer_count,
+            },
             Msg::Welcome(_) | Msg::Ack(_) | Msg::Pong(_) => {
                 return Err(Error::Protocol("unsolicited response"));
             }

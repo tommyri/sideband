@@ -257,6 +257,12 @@ fn event_channel(event: &server_envelope::Msg) -> Option<Id> {
             message.message.as_ref().map(|message| &message.channel_id)
         }
         server_envelope::Msg::TypingStarted(message) => Some(&message.channel_id),
+        // Track and voice-state announcements name their channel too, so a
+        // member who cannot view a voice channel never learns who is in it or
+        // what they publish. `TrackRemoved` carries only an opaque track id and
+        // is harmless to a session that never saw the matching `TrackAdded`.
+        server_envelope::Msg::TrackAdded(message) => Some(&message.channel_id),
+        server_envelope::Msg::VoiceStateUpdated(message) => message.channel_id.as_ref(),
         _ => None,
     }?;
     id_from_bytes(bytes).ok()

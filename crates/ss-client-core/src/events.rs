@@ -64,6 +64,22 @@ pub enum ClientEvent {
         /// Server-supplied reason.
         reason: String,
     },
+    /// A viewer asked this publisher for a keyframe on a video track.
+    KeyframeRequested {
+        /// Published track id.
+        track: u32,
+    },
+    /// Aggregate viewer preferences for a video track this client publishes.
+    SubscriberHint {
+        /// Published track id.
+        track: u32,
+        /// Highest requested height; zero means uncapped.
+        max_height: u32,
+        /// Highest requested frame rate; zero means uncapped.
+        max_fps: u32,
+        /// Current number of viewers.
+        viewer_count: u32,
+    },
     /// An unsolicited server error.
     ServerError(v1::Error),
 }

@@ -71,10 +71,9 @@ const fn open(reason: &'static str) -> Policy {
 enum Command {
     /// Answered before or outside handler dispatch.
     Transport(&'static str),
-    /// Dispatched in the listed files, each with its own policy.
+    /// Dispatched in the listed files, each with its own policy. A dispatch
+    /// arm in any other file fails until it is classified here.
     Handled(&'static [(&'static str, Policy)]),
-    /// No handler yet. Adding a dispatch arm fails until it is classified.
-    Unhandled,
 }
 
 const CHANNEL_ADMIN: &[&str] = &["MANAGE_CHANNELS"];
@@ -317,11 +316,48 @@ const COMMANDS: &[(&str, Command)] = &[
             open("only changes the caller's own presence"),
         )]),
     ),
-    ("SubscribeTrack", Command::Unhandled),
-    ("UnsubscribeTrack", Command::Unhandled),
-    ("RequestKeyframe", Command::Unhandled),
-    ("SetPreferredQuality", Command::Unhandled),
+    (
+        "StartStream",
+        Command::Handled(&[(
+            "media/streams.rs",
+            perms_and(&["VIEW_CHANNEL", "STREAM"], &["seat("]),
+        )]),
+    ),
+    (
+        "StopStream",
+        Command::Handled(&[(
+            "media/streams.rs",
+            scoped(
+                &["owner == conn"],
+                "removes only the caller's own publication; stays idempotent after \
+                 permissions are lost",
+            ),
+        )]),
+    ),
+    (
+        "SubscribeTrack",
+        Command::Handled(&[("media/streams.rs", VIDEO_VIEWER)]),
+    ),
+    (
+        "UnsubscribeTrack",
+        Command::Handled(&[("media/streams.rs", VIDEO_VIEWER)]),
+    ),
+    (
+        "RequestKeyframe",
+        Command::Handled(&[("media/streams.rs", VIDEO_VIEWER)]),
+    ),
+    (
+        "SetPreferredQuality",
+        Command::Handled(&[("media/streams.rs", VIDEO_VIEWER)]),
+    ),
 ];
+
+/// Viewer-side video commands: a voice seat in the track's channel plus
+/// `VIEW_CHANNEL` there; a publisher cannot subscribe to itself.
+const VIDEO_VIEWER: Policy = perms_and(
+    &["VIEW_CHANNEL"],
+    &["seat(", "track.channel != channel", "track.owner == conn"],
+);
 
 /// Every HTTP route, by `(file, method, path)`.
 const ROUTES: &[(&str, &str, &str, Policy)] = &[
@@ -431,7 +467,6 @@ fn every_client_command_is_classified() {
                     );
                 }
             }
-            Command::Unhandled => {}
         }
     }
 }
@@ -456,7 +491,7 @@ fn every_dispatch_arm_reaches_its_checks() {
                 .iter()
                 .find(|(file, _)| *file == arm.file)
                 .map(|(_, policy)| *policy),
-            Command::Transport(_) | Command::Unhandled => None,
+            Command::Transport(_) => None,
         };
         let Some(policy) = policy else {
             failures.push(format!(
@@ -537,6 +572,35 @@ fn every_http_route_reaches_its_checks() {
         "authorization audit failed:\n  {}",
         failures.join("\n  ")
     );
+}
+
+#[test]
+fn no_file_hides_commands_behind_an_alias() {
+    let sources = Sources::load();
+    let hidden: Vec<_> = sources
+        .stripped
+        .iter()
+        .filter(|(_, source)| source.text.contains("client_envelope::Msg as"))
+        .map(|(file, _)| file.clone())
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "the audit looks for `Msg::`; these files alias the command enum: {hidden:?}"
+    );
+}
+
+#[test]
+fn the_scanner_follows_or_patterns() {
+    let text = strip(
+        "match msg { Msg::A(_) | Msg::B(_) => Some(self.handle(msg)), \
+         Msg::C(c) => c.id, _ => None }",
+    );
+    let arms: Vec<_> = arms_in("demo.rs", &text)
+        .iter()
+        .map(|arm| format!("{}->{}", arm.command, arm.handler))
+        .collect();
+    assert_eq!(arms, ["A->handle", "B->handle"]);
+    assert!(or_pattern_call("| Msg::B(_)) { return; } => self.x(").is_none());
 }
 
 #[test]
@@ -646,58 +710,11 @@ impl Sources {
 
     /// `Msg::Name(..) => ... self.method(` arms outside [`NOT_HANDLERS`].
     fn dispatch_arms(&self) -> Vec<Arm> {
-        let mut arms = Vec::new();
-        for (file, source) in &self.stripped {
-            if NOT_HANDLERS.iter().any(|(name, _)| name == file) {
-                continue;
-            }
-            let text = &source.text;
-            let mut from = 0;
-            while let Some(found) = text[from..].find("Msg::") {
-                let at = from + found;
-                from = at + 5;
-                if text[..at].ends_with("server_envelope::") {
-                    continue;
-                }
-                let name: String = text[at + 5..]
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                    .collect();
-                let after = &text[at + 5 + name.len()..];
-                if !after.starts_with('(') {
-                    continue;
-                }
-                let Some(close) = after.find(')') else {
-                    continue;
-                };
-                let rest = after[close + 1..].trim_start();
-                let handler = if let Some(arm) = rest.strip_prefix("=>") {
-                    // `Msg::X(command) => Some(self.handler(..))`
-                    let end = arm
-                        .find("Msg::")
-                        .into_iter()
-                        .chain(arm.find("_ =>"))
-                        .min()
-                        .unwrap_or(arm.len());
-                    first_self_call(&arm[..end])
-                } else if rest.starts_with('=') {
-                    // `let Msg::X(command) = msg else { return None };
-                    //  Some(self.handler(..))`
-                    let_else_call(rest)
-                } else {
-                    None
-                };
-                let Some(handler) = handler else {
-                    continue;
-                };
-                arms.push(Arm {
-                    file: file.clone(),
-                    command: name,
-                    handler,
-                });
-            }
-        }
-        arms
+        self.stripped
+            .iter()
+            .filter(|(file, _)| !NOT_HANDLERS.iter().any(|(name, _)| name == *file))
+            .flat_map(|(file, source)| arms_in(file, &source.text))
+            .collect()
     }
 
     /// `.route("path", method(handler))` calls. Read from the raw text
@@ -750,6 +767,79 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
                 .replace('\\', "/");
             out.insert(name, fs::read_to_string(&path).unwrap());
         }
+    }
+}
+
+/// `Msg::Name(..) => ... self.method(` arms in one stripped file. An
+/// or-pattern (`Msg::A(..) | Msg::B(..) => ...`) yields one arm per
+/// alternative, all with the arm's handler.
+fn arms_in(file: &str, text: &str) -> Vec<Arm> {
+    let mut arms = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("Msg::") {
+        let at = from + found;
+        from = at + 5;
+        if text[..at].ends_with("server_envelope::") {
+            continue;
+        }
+        let name: String = text[at + 5..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect();
+        let after = &text[at + 5 + name.len()..];
+        if !after.starts_with('(') {
+            continue;
+        }
+        let Some(close) = after.find(')') else {
+            continue;
+        };
+        let rest = after[close + 1..].trim_start();
+        let handler = if rest.starts_with("=>") || rest.starts_with('|') {
+            // `Msg::X(command) => Some(self.handler(..))`, possibly after
+            // further `| Msg::Y(..)` alternatives.
+            or_pattern_call(rest)
+        } else if rest.starts_with('=') {
+            // `let Msg::X(command) = msg else { return None };
+            //  Some(self.handler(..))`
+            let_else_call(rest)
+        } else {
+            None
+        };
+        let Some(handler) = handler else {
+            continue;
+        };
+        arms.push(Arm {
+            file: file.to_owned(),
+            command: name,
+            handler,
+        });
+    }
+    arms
+}
+
+/// The handler of a match arm, starting at its `=>` or at the `|` after one
+/// alternative of an or-pattern. Only further `Msg::Name(..)` alternatives may
+/// precede the `=>`; anything else is not a dispatch arm.
+fn or_pattern_call(rest: &str) -> Option<String> {
+    let mut text = rest;
+    loop {
+        text = text.trim_start();
+        if let Some(arm) = text.strip_prefix("=>") {
+            let end = arm
+                .find("Msg::")
+                .into_iter()
+                .chain(arm.find("_ =>"))
+                .min()
+                .unwrap_or(arm.len());
+            return first_self_call(&arm[..end]);
+        }
+        text = text.strip_prefix('|')?.trim_start().strip_prefix("Msg::")?;
+        let name_len = text
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .count();
+        text = text[name_len..].strip_prefix('(')?;
+        text = &text[text.find(')')? + 1..];
     }
 }
 

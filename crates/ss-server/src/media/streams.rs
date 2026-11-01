@@ -17,7 +17,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use v1::{client_envelope::Msg as Command, server_envelope::Msg as Event};
+use v1::{client_envelope::Msg, server_envelope::Msg as Event};
 
 const GROUP_BUDGET: usize = 2;
 const MAX_SUBSCRIPTIONS: usize = 16;
@@ -235,29 +235,26 @@ impl Streams {
         &self,
         conn: Id,
         user: Id,
-        command: &Command,
+        command: &Msg,
     ) -> Option<Result<Outcome, Error>> {
-        if !matches!(
-            command,
-            Command::StartStream(_)
-                | Command::StopStream(_)
-                | Command::SubscribeTrack(_)
-                | Command::UnsubscribeTrack(_)
-                | Command::SetPreferredQuality(_)
-                | Command::RequestKeyframe(_)
-        ) {
-            return None;
+        match command {
+            Msg::StartStream(_)
+            | Msg::StopStream(_)
+            | Msg::SubscribeTrack(_)
+            | Msg::UnsubscribeTrack(_)
+            | Msg::SetPreferredQuality(_)
+            | Msg::RequestKeyframe(_) => Some(self.command(conn, user, command)),
+            _ => None,
         }
-        Some(self.command(conn, user, command))
     }
-    fn command(&self, conn: Id, user: Id, command: &Command) -> Result<Outcome, Error> {
+    fn command(&self, conn: Id, user: Id, command: &Msg) -> Result<Outcome, Error> {
         let mut rooms = self.rooms.lock();
         let mut outcome = Outcome {
             ack: v1::ack::Result::Empty(v1::Empty {}),
             broadcast: Vec::new(),
             direct: Vec::new(),
         };
-        if matches!(command, Command::StopStream(_)) {
+        if matches!(command, Msg::StopStream(_)) {
             let id = rooms
                 .video
                 .tracks
@@ -276,14 +273,14 @@ impl Streams {
         if !allowed(&self.perms, user, channel, Permissions::VIEW_CHANNEL) {
             return Err(Error::Forbidden("missing view channel"));
         }
-        if let Command::StartStream(start) = command {
+        if let Msg::StartStream(start) = command {
             return start_track(&mut rooms, &self.perms, conn, user, channel, start);
         }
         let id = match command {
-            Command::SubscribeTrack(c) => c.track_id,
-            Command::UnsubscribeTrack(c) => c.track_id,
-            Command::SetPreferredQuality(c) => c.track_id,
-            Command::RequestKeyframe(c) => c.track_id,
+            Msg::SubscribeTrack(c) => c.track_id,
+            Msg::UnsubscribeTrack(c) => c.track_id,
+            Msg::SetPreferredQuality(c) => c.track_id,
+            Msg::RequestKeyframe(c) => c.track_id,
             _ => return Err(Error::Invalid("unsupported video command")),
         };
         let subscribed = rooms
@@ -307,7 +304,7 @@ impl Streams {
             return Err(Error::Forbidden("video belongs to another channel or self"));
         }
         match command {
-            Command::SubscribeTrack(_) => {
+            Msg::SubscribeTrack(_) => {
                 if let std::collections::hash_map::Entry::Vacant(entry) = track.viewers.entry(conn)
                 {
                     if subscribed >= MAX_SUBSCRIPTIONS {
@@ -323,13 +320,13 @@ impl Streams {
                     hint(&registry, track);
                 }
             }
-            Command::UnsubscribeTrack(_) => {
+            Msg::UnsubscribeTrack(_) => {
                 if let Some(sub) = track.viewers.remove(&conn) {
                     cancel_all(sub.groups);
                     hint(&registry, track);
                 }
             }
-            Command::SetPreferredQuality(quality) => {
+            Msg::SetPreferredQuality(quality) => {
                 if quality.max_height > 4320 || quality.max_fps > 240 {
                     return Err(Error::Invalid("video preference exceeds limit"));
                 }
@@ -341,7 +338,7 @@ impl Streams {
                 sub.fps = quality.max_fps;
                 hint(&registry, track);
             }
-            Command::RequestKeyframe(_) => request_keyframe(&registry, track, conn)?,
+            Msg::RequestKeyframe(_) => request_keyframe(&registry, track, conn)?,
             _ => {}
         }
         Ok(outcome)

@@ -110,7 +110,11 @@ handlers/moderation.rs: `Msg::SubscribeTrack` is dispatched to `force_subscribe`
 ```
 
 The file was then restored. A new proto command fails
-`every_client_command_is_classified` in the same way.
+`every_client_command_is_classified` in the same way. Merging T-070 proved
+it: the six video commands were unclassified, and their dispatch used an
+aliased `Msg` inside a `matches!`, which the scanner could not see. The audit
+now follows or-pattern arms and fails on any alias of the command enum;
+`media/streams.rs` dispatches through a plain `match`.
 
 **Findings fixed** (each has a test in `tests/hardening.rs`, `tests/auth.rs`,
 or a unit test):

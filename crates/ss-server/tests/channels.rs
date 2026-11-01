@@ -234,6 +234,20 @@ async fn a_hidden_channel_is_left_out_of_the_snapshot_and_events() {
         world.member,
         &server_envelope::Msg::RoleCreated(v1::RoleCreated::default())
     ));
+    let track = server_envelope::Msg::TrackAdded(v1::TrackAdded {
+        channel_id: id_to_bytes(secret),
+        ..v1::TrackAdded::default()
+    });
+    assert!(!snapshot::delivers(&world.perms, world.member, &track));
+    assert!(snapshot::delivers(&world.perms, world.admin, &track));
+    let voice = server_envelope::Msg::VoiceStateUpdated(v1::VoiceStateUpdated {
+        channel_id: Some(id_to_bytes(secret)),
+        ..v1::VoiceStateUpdated::default()
+    });
+    assert!(!snapshot::delivers(&world.perms, world.member, &voice));
+    assert!(snapshot::delivers(&world.perms, world.admin, &voice));
+    let left = server_envelope::Msg::VoiceStateUpdated(v1::VoiceStateUpdated::default());
+    assert!(snapshot::delivers(&world.perms, world.member, &left));
 }
 
 struct World {
