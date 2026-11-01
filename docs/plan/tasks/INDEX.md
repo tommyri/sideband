@@ -26,6 +26,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-016](T-016-minimal-forwarding-server.md) | Minimal forwarding server | S | T-004 | done |
 | [T-017](T-017-headless-cli-client.md) | Headless CLI client + latency measurement | M | T-010, T-014, T-015, T-016 | done |
 | [T-018](T-018-spike-evaluation.md) | Spike evaluation vs TS3, parameter lock | S | T-017 | todo |
+| [T-019](T-019-audio-macos-acceptance.md) | macOS audio manual acceptance, timestamp correction | S | T-013 | todo |
 
 ## Phase 2 — Server core
 
@@ -70,6 +71,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | todo |
 | [T-057](T-057-packaging-updater.md) | Packaging, signing, auto-update | M | T-042 | todo |
 | [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047–T-050, T-044, T-051 | todo |
+| [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
 
 ## Phase 4 — Hardening
 
@@ -81,6 +83,10 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032 | todo |
 | [T-064](T-064-documentation.md) | Documentation | S | T-034, T-057 | todo |
 | [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | todo |
+| [T-066](T-066-https-rest-listener.md) | Serve the public REST listener over TLS | M | T-033, T-061 | todo |
+| [T-067](T-067-security-acceptance.md) | Security acceptance: 1 h fuzz runs, doc review, licence policy | S | T-061 | todo |
+| [T-068](T-068-server-hardening-followups.md) | Server hardening follow-ups (datagram cap, hashed invites, …) | M | T-061 | todo |
+| [T-069](T-069-vps-load-validation.md) | Load validation on the VPS, UDP buffer tuning | S | T-062, T-034 | todo |
 
 ## Phase 5 — Screen share
 
@@ -128,6 +134,11 @@ flowchart TD
     T070 & T071 & T072 --> T074
     T040 & T041 --> T060
     T021 & T026 --> T080
+    T013 --> T019
+    T053 --> T059
+    T033 & T061 --> T066
+    T061 --> T067 & T068
+    T062 & T034 --> T069
 ```
 
 ## Parallelization waves
@@ -141,13 +152,13 @@ decide how many sub-agents to spawn.
 | 2 | T-002, T-003 |
 | 3 | T-004, T-010, T-014, T-020, T-047 |
 | 4 | T-016, T-015, T-011, T-012, T-013, T-021, T-022, T-048, T-049, T-050, T-052, T-053 |
-| 5 | T-017, T-023, T-024, T-032, T-054 |
+| 5 | T-017, T-019, T-023, T-024, T-032, T-054, T-059 |
 | 6 | T-018, T-025, T-026, T-033, T-034 |
 | 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-070 |
 | 8 | T-041, T-042, T-062 |
-| 9 | T-043, T-044, T-045, T-055, T-056, T-057, T-060, T-071 |
+| 9 | T-043, T-044, T-045, T-055, T-056, T-057, T-060, T-069, T-071 |
 | 10 | T-046, T-051, T-058, T-061, T-063, T-065, T-072 |
-| 11 | T-064, T-073, T-074, T-080 |
+| 11 | T-064, T-066, T-067, T-068, T-073, T-074, T-080 |
 
 Hard gate: do not start Phase 3 UI tasks (wave 9+) before T-018 has a "go".
 If T-018 changes voice parameters, only `ss-core` defaults and

@@ -4,11 +4,6 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 
 ## Voice
 - Time-stretching (WSOLA) in the jitter buffer for smoother adaptation.
-- GTCRN noise suppression once a clean Rust/ONNX streaming path is packaged.
-  It is the best quality-per-CPU candidate we have looked at (T-053).
-- DeepFilterNet3 noise suppression (`ss-audio/deepfilter`, reserved by T-053)
-  once a crates.io release exposes streaming inference and a low-latency
-  model fits the 10 MB budget.
 - Opus HD / 96 kHz "studio" channel profile (experimental extension).
 - Whisper/private talk to one user while in a channel (TeamSpeak-style).
 - Positional/3D audio for games (per-user pan).
@@ -16,10 +11,6 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 - Audio from the shared screen/app during streams.
 - Windows `uiAccess` manifest for PTT visibility into elevated games.
 - Bluetooth LE Audio / LC3 headset quality detection improvements.
-- macOS device clocks: correct `cpal`'s capture and playback timestamps by
-  `kAudioStreamPropertyLatency` (about 50 ms on the MacBook microphone and
-  14 ms on its speakers) and remove the double-counted buffer, after an
-  acoustic check. See `docs/plan/notes/audio-macos.md`.
 - macOS: `kAudioDevicePropertyVoiceActivityDetectionState` as a
   "muted but talking" hint (macOS 14 and newer). Not a T-052 gate source.
 
@@ -44,19 +35,3 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 ## Ops
 - Automated SQLite backups to S3-compatible storage.
 - Prometheus alert rules.
-- Request larger UDP socket buffers on the server endpoint (quinn-udp
-  `set_recv_buffer_size`/`set_send_buffer_size`). Today the socket keeps the
-  kernel default (208 KiB on Linux), so the `rmem_max` sysctl in
-  `deploy/README.md` only raises a ceiling nobody asks for. Do it if the
-  T-062 VPS runs show `RcvbufErrors` (see `docs/plan/notes/load-test.md`).
-- Load-test bot accounts: a server-side way to seed N accounts without the
-  five-per-minute login limit (100 bots take about 20 minutes to register
-  once; tokens are reused afterwards).
-
-## Security (from T-061, `docs/security.md` section 12)
-- Serve the public REST listener over TLS with the QUIC certificate (it is
-  plaintext today); keep ACME HTTP-01 on the port-80 redirect listener and
-  update `deploy/smoke.sh`.
-- Per-sender bitrate cap on voice datagrams before fan-out.
-- Store invite codes hashed, shown once like webhook tokens.
-- `Retry-After` for the daily upload byte quota.

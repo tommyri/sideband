@@ -13,7 +13,10 @@ Friends install a normal app and it updates itself.
 - Tauri bundler targets: macOS `.dmg` (universal or arm64+x64), Windows
   `.msi` + NSIS `.exe`, Linux `.AppImage` + `.deb` (+ Flatpak manifest in
   backlog). Icons, product metadata, `NSMicrophoneUsageDescription`,
-  `NSInputMonitoringUsageDescription`-style strings where applicable.
+  `NSInputMonitoringUsageDescription`-style strings where applicable. T-013:
+  the hardened-runtime build also needs the
+  `com.apple.security.device.audio-input` entitlement, and without the usage
+  string CoreAudio delivers silent zeros rather than an error.
 - Signing: macOS Developer ID + notarization (or documented ad-hoc path with
   Gatekeeper caveats for now); Windows signing via a cert if available,
   otherwise document SmartScreen behaviour. Stable macOS signing identity is

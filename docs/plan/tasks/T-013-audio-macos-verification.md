@@ -64,6 +64,6 @@ Full results: [`docs/plan/notes/audio-macos.md`](../notes/audio-macos.md).
   example now reopens on `Lost` and on `DefaultChanged` instead of exiting.
   The tests replay an AirPods connect and disconnect from inventory
   snapshots. `ss-cli` still reopens only on `Lost`, which is left to T-041.
-- Still manual: the acoustic round trip, AirPods connect and disconnect,
+- Still manual (tracked as T-019): the acoustic round trip, AirPods connect and disconnect,
   a USB interface (and a 44.1 kHz-only device), a stored "Don't Allow"
   in a real bundle, and the five-minute listen. The note lists the steps.

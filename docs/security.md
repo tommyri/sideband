@@ -291,14 +291,14 @@ updated `h2` past RUSTSEC-2026-0258.
 
 ## 12. Known gaps
 
-- Plaintext REST listener (section 8.1).
+- Plaintext REST listener (section 8.1). Tracked as T-066.
 - No per-sender bitrate cap on media datagrams: a member with `SPEAK` can
   send at line rate and the router fans it out to the channel. Quinn's
-  bounded send buffers drop the excess.
-- Invite codes are stored in plaintext (section 4).
+  bounded send buffers drop the excess. Tracked as T-068.
+- Invite codes are stored in plaintext (section 4). Tracked as T-068.
 - Quotas are per process and reset on restart; there is no persistent
-  lockout.
-- The upload byte quota answers `429` without `Retry-After`.
+  lockout. Decision tracked as T-068.
+- The upload byte quota answers `429` without `Retry-After`. Tracked as T-068.
 - Display names are not unique and are not compared against other members'
-  names (section 7).
-- Fuzz targets have not yet run the 1 h each that T-061 asks for.
+  names (section 7). Decision tracked as T-068.
+- Fuzz targets have not yet run the 1 h each that T-061 asks for. Tracked as T-067.

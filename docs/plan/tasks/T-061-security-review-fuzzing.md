@@ -42,8 +42,9 @@ External pentest.
 
 ## Notes from implementation
 
-Status stays `in-progress` until the maintainer finishes the two open
-acceptance items below.
+Merged with the acceptance items below still open; they are tracked as
+T-067 (fuzz hours, review, licence) and T-066 (TLS for REST). The known
+gaps in `docs/security.md` section 12 are T-068.
 
 **Still open (maintainer):**
 

@@ -28,8 +28,15 @@ connection's datagrams, and tears it down cleanly; the UI only flips switches.
 - Encoder adaptation hook: lower bitrate within profile range when loss > 8 %
   for 5 s; restore after 30 s clean.
 
+- From T-053: wire `ss_audio::processing::Chain` and the `render_tap` into
+  the capture worker (push each mixer frame before the playback ring; drain
+  on capture), feed `EchoPath` from measured device delays, and surface
+  `Monitor` stats in `VoiceStats`. From T-013: reopen capture on
+  `DeviceEvent::requires_reopen` (capture does not follow a new default on
+  macOS); handle `SilentInput` and `PermissionDenied` as UI states.
+
 ## Out of scope
-Processing chain (T-053), raw input (T-047–T-050).
+Implementing the processing stages (T-053), raw input (T-047–T-050).
 
 ## Acceptance criteria
 - Integration test with two in-process clients and the server: A sends a

@@ -112,7 +112,7 @@ best quality/CPU candidate once a Rust-friendly runtime path exists).
   (~11, 6 KB) allocate inside the dependency every frame. That is allowed on
   the capture worker but would not be in a device callback; worth an
   upstream issue.
-- Manual check still needed: speakers plus microphone with a real far end
+- Manual check still needed (with T-041; a real `deepfilter` backend is T-059): speakers plus microphone with a real far end
   once T-041 wires the tap, to confirm the device-delay hint and acoustic
   ERLE; listening tests of RNNoise vs the WebRTC suppressor on real speech.
 - Validation: `just check` passed (all workspace tests, one existing manual

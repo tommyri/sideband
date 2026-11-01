@@ -60,6 +60,6 @@ Horizontal scaling.
   length (25 users for 12 and 30 minutes, 100 users for 5 minutes, a
   100-user storm run, 2-minute full-duty stress runs). The 2-hour soak, the
   15-minute headroom run, and the storm on the VPS are still owed; the
-  acceptance criteria are not yet verified on the VPS. Results, the 100-user
+  acceptance criteria are not yet verified on the VPS (tracked as T-069). Results, the 100-user
   bottleneck (UDP send syscalls on the one runtime thread), and the VPS
   procedure are in `docs/plan/notes/load-test.md`.

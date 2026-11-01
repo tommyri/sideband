@@ -21,7 +21,8 @@ previews + lightbox. Create sub-task files if splitting.
   jump-to-message for reply links.
 - Rendering: markdown subset (bold/italic/strike/code/codeblock with
   highlighting/quotes/links/spoilers), `<@id>` mentions resolved to names with
-  highlight, `@everyone`, Unicode emoji shortcodes `:smile:` + picker, edited
+  highlight (parse ids case-insensitively with Crockford aliases, as the
+  server does; T-061 fuzzing showed bodies may spell them differently), `@everyone`, Unicode emoji shortcodes `:smile:` + picker, edited
   marker, deleted placeholder for own view only.
 - Composer: multi-line (Shift+Enter), markdown shortcuts, `@` mention
   autocomplete, `:` emoji autocomplete, reply bar, edit-last-with-Up, paste/
