@@ -35,6 +35,10 @@ jobs:
         run: cargo test -p ss-audio --features dred
       - name: Optional Opus DRED lints
         run: cargo clippy -p ss-audio --all-targets --features dred -- -D warnings
+      - name: Optional RNNoise VAD
+        run: cargo test -p ss-audio --features rnnoise
+      - name: Optional RNNoise VAD lints
+        run: cargo clippy -p ss-audio --all-targets --features rnnoise -- -D warnings
       - name: Opus frame budget
         run: cargo bench -p ss-audio --bench codec
       - name: Optional processing chain (AEC, RNNoise, AGC)

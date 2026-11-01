@@ -1,8 +1,8 @@
 # ss-audio
 
 The real-time voice path: device capture and playback, resampling, Opus
-encode and decode, the jitter buffer, the mixer, and the optional
-processing chain (echo cancellation, noise suppression, gain control).
+encode and decode, the jitter buffer, the mixer, voice activation, and the
+optional processing chain (echo cancellation, noise suppression, gain).
 
 Callbacks that run on the audio thread do not allocate, lock, log, or
 await. `unsafe` is confined to `platform` and the private `codec::native` bridge;
@@ -24,10 +24,13 @@ and capture that is only zeros (a denied macOS microphone looks like that).
 connects the mixer to the playback ring.
 `cargo test -p ss-audio --test sim -- --nocapture` reports network simulations.
 
-`processing::Chain` runs opt-in echo, noise, and gain stages on the capture
-worker, never a callback; with all off it touches no sample. Features `aec`
-(sonora) and `rnnoise`; `deepfilter` is reserved. `cargo bench -p ss-audio
---all-features --bench processing` checks 1.5 ms per stage, 3 ms per chain.
+`vad` gates 10 ms capture quanta with pre-roll, hangover, calibration, and a
+50 Hz meter; `rnnoise` adds speech probability without changing the audio.
+`processing::Chain` runs opt-in echo, noise, and gain stages. Both run on the
+capture worker, never a callback; with everything off no sample is touched.
+Features `aec` (sonora) and `rnnoise`; `deepfilter` is reserved (T-059).
+`cargo bench -p ss-audio --all-features --bench processing` checks 1.5 ms per
+stage and 3 ms per chain.
 
 ## May depend on
 
@@ -37,4 +40,3 @@ worker, never a callback; with all off it touches no sample. Features `aec`
 ## Must not depend on
 
 `ss-proto`, `ss-net`, `ss-input`, `ss-client-core`, `ss-server`, `ss-cli`.
-No knowledge of users, channels, or the network.
