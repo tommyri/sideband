@@ -24,13 +24,11 @@ and capture that is only zeros (a denied macOS microphone looks like that).
 connects the mixer to the playback ring.
 `cargo test -p ss-audio --test sim -- --nocapture` reports network simulations.
 
-`vad` gates 10 ms capture quanta with pre-roll, hangover, calibration, and a
-50 Hz meter; `rnnoise` adds speech probability without changing the audio.
-`processing::Chain` runs opt-in echo, noise, and gain stages. Both run on the
-capture worker, never a callback; with everything off no sample is touched.
-Features `aec` (sonora) and `rnnoise`; `deepfilter` is reserved (T-059).
-`cargo bench -p ss-audio --all-features --bench processing` checks 1.5 ms per
-stage and 3 ms per chain.
+`vad` gates 10 ms capture quanta (pre-roll, hangover, calibration, 50 Hz meter);
+`rnnoise` adds speech probability. `processing::Chain` runs opt-in echo, noise,
+and gain stages. Both run on the capture worker, never a callback; with all off
+no sample is touched. Features `aec`, `rnnoise`; `deepfilter` is reserved (T-059).
+`cargo bench -p ss-audio --all-features --bench processing` checks the budgets.
 
 ## May depend on
 
