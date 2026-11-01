@@ -508,6 +508,7 @@ fn server_msg_low(which: u32, sample: &Sample) -> server_envelope::Msg {
             message: sample.text.clone(),
             min_version: sample.flag.then_some(sample.pick),
             max_version: sample.flag.then_some(sample.extra),
+            retry_after_ms: sample.flag.then_some(sample.pick),
         }),
         4 => server_envelope::Msg::Pong(Pong {
             sent_at: sample.time,

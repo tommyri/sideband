@@ -6,8 +6,8 @@
 
 use ss_core::{ChannelKind, Id, Permissions, Timestamp, UserKind, VoiceProfile};
 
-/// A user account.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A user account. `Debug` redacts the password hash.
+#[derive(Clone, PartialEq, Eq)]
 pub struct User {
     /// Primary key.
     pub id: Id,
@@ -46,8 +46,8 @@ pub struct Session {
     pub expires_at: Option<Timestamp>,
 }
 
-/// An invite code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An invite code. `Debug` redacts the code.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Invite {
     /// Primary key.
     pub id: Id,
@@ -314,4 +314,37 @@ pub struct Setting {
     pub key: String,
     /// Setting value.
     pub value: String,
+}
+
+/// Stands in for a secret in `Debug` output.
+pub(crate) const REDACTED: &str = "<redacted>";
+
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("id", &self.id)
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field("password_hash", &REDACTED)
+            .field("avatar_attachment_id", &self.avatar_attachment_id)
+            .field("kind", &self.kind)
+            .field("created_at", &self.created_at)
+            .field("disabled_at", &self.disabled_at)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Invite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invite")
+            .field("id", &self.id)
+            .field("code", &REDACTED)
+            .field("created_by", &self.created_by)
+            .field("max_uses", &self.max_uses)
+            .field("uses", &self.uses)
+            .field("expires_at", &self.expires_at)
+            .field("revoked_at", &self.revoked_at)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }

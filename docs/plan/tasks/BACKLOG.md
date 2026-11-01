@@ -52,3 +52,11 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 - Load-test bot accounts: a server-side way to seed N accounts without the
   five-per-minute login limit (100 bots take about 20 minutes to register
   once; tokens are reused afterwards).
+
+## Security (from T-061, `docs/security.md` section 12)
+- Serve the public REST listener over TLS with the QUIC certificate (it is
+  plaintext today); keep ACME HTTP-01 on the port-80 redirect listener and
+  update `deploy/smoke.sh`.
+- Per-sender bitrate cap on voice datagrams before fan-out.
+- Store invite codes hashed, shown once like webhook tokens.
+- `Retry-After` for the daily upload byte quota.

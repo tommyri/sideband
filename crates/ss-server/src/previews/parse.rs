@@ -230,6 +230,16 @@ fn element(input: &str) -> Option<Tag<'_>> {
         {
             index = index.saturating_add(1);
         }
+        if index == key_at {
+            // Not an attribute name (`*`, `<`, a quote, non-ASCII). Skip one
+            // character so the scan always advances; fuzzing found a hang here.
+            let width = input
+                .get(index..)
+                .and_then(|tail| tail.chars().next())
+                .map_or(1, char::len_utf8);
+            index = index.saturating_add(width);
+            continue;
+        }
         let key = input.get(key_at..index)?.to_ascii_lowercase();
         while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
             index = index.saturating_add(1);
@@ -346,6 +356,24 @@ mod tests {
         assert_eq!(card.description.as_deref(), Some("A page"));
         assert_eq!(card.image.as_deref(), Some("https://example.com/cover.png"));
         assert_eq!(card.site_name.as_deref(), Some("Example"));
+    }
+
+    #[test]
+    fn stray_characters_inside_a_tag_do_not_stall_the_scan() {
+        let page = Url::parse("https://example.com/").unwrap();
+        // The first input is the fuzzer's minimized hang.
+        for body in [
+            "*<q\u{fffd}*9",
+            "<meta <",
+            "<meta \"content\"=x property=og:title content=Hi>",
+            "<meta =x property='og:title' content='Hi'>",
+            "<meta \u{e9}\u{e9} property=og:title content=Hi>",
+        ] {
+            let card = parse_html(body, &page);
+            assert!(card.title.is_none() || card.title.as_deref() == Some("Hi"));
+        }
+        let card = parse_html("<meta * property=og:title content=Hi>", &page);
+        assert_eq!(card.title.as_deref(), Some("Hi"));
     }
 
     #[test]

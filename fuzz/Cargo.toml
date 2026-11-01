@@ -13,12 +13,45 @@ members = ["."]
 
 [dependencies]
 libfuzzer-sys = "0.4"
+ss-core = { path = "../crates/ss-core" }
 ss-net = { path = "../crates/ss-net" }
+ss-proto = { path = "../crates/ss-proto" }
+ss-server = { path = "../crates/ss-server" }
 bytes = "1"
+prost = "0.14"
+tokio = { version = "1", features = ["rt"] }
 
 [[bin]]
 name = "media_headers"
 path = "fuzz_targets/media_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_frames"
+path = "fuzz_targets/control_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mentions"
+path = "fuzz_targets/mentions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "preview_html"
+path = "fuzz_targets/preview_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multipart_upload"
+path = "fuzz_targets/multipart_upload.rs"
 test = false
 doc = false
 bench = false

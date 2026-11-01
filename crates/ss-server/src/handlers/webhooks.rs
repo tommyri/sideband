@@ -4,9 +4,8 @@
 //! control command. The stored message has no author; clients show
 //! `webhook_name` with a bot tag.
 
-use std::{num::NonZeroU32, sync::Arc};
+use std::{sync::Arc, time::Duration};
 
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
 use serde_json::{Map, Value};
 use sqlx::Connection;
 use ss_core::{ChannelKind, Id, Permissions};
@@ -19,6 +18,7 @@ use crate::{
     auth,
     db::{self, NewAuditEntry, NewMessage, NewWebhook, audit_log, channels, messages, webhooks},
     events::EventBus,
+    limits::{KeyedLimiter, quota},
     perms::PermissionService,
     previews::{PreviewJob, PreviewQueue},
 };
@@ -29,12 +29,10 @@ const MAX_NAME: usize = 80;
 const MAX_CONTENT: usize = 2000;
 const POSTS_PER_MINUTE: u32 = 30;
 
-type WebhookLimiter = RateLimiter<Id, DefaultKeyedStateStore<Id>, DefaultClock>;
-
 /// Create, revoke, and execute incoming webhooks.
 pub struct Webhooks {
     perms: Arc<PermissionService>,
-    posts: WebhookLimiter,
+    posts: KeyedLimiter<Id>,
     bus: EventBus,
     previews: PreviewQueue,
 }
@@ -43,10 +41,9 @@ impl Webhooks {
     /// Thirty posts per minute for each webhook.
     #[must_use]
     pub fn new(perms: Arc<PermissionService>, previews: PreviewQueue, bus: EventBus) -> Self {
-        let quota = Quota::per_minute(NonZeroU32::new(POSTS_PER_MINUTE).expect("thirty"));
         Self {
             perms,
-            posts: RateLimiter::keyed(quota),
+            posts: KeyedLimiter::new(quota(POSTS_PER_MINUTE, Duration::from_secs(2))),
             bus,
             previews,
         }
@@ -78,9 +75,9 @@ impl Webhooks {
         let content = flatten(map)?;
         let webhook = self.open_webhook(id, token).await?;
         let name = display_name(map, &webhook.name)?;
-        if self.posts.check_key(&webhook.id).is_err() {
-            return Err(Error::RateLimited("webhook is posting too quickly"));
-        }
+        self.posts
+            .check(&webhook.id)
+            .map_err(|wait| Error::RateLimited("webhook is posting too quickly", wait))?;
         let mut conn = self.perms.pool().write().await;
         require_text(&mut conn, webhook.channel_id).await?;
         let stored = messages::insert(
@@ -275,19 +272,19 @@ fn display_name(map: &Map<String, Value>, fallback: &str) -> Result<String, Erro
     let Some(name) = text_of(map.get("username")) else {
         return Ok(fallback.to_owned());
     };
-    if name.chars().count() > MAX_NAME {
-        return Err(Error::Invalid("username must be at most 80 characters"));
-    }
-    Ok(name)
+    crate::text::name(&name, MAX_NAME).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("username must be at most 80 characters"),
+        crate::text::NameError::Hidden => Error::Invalid("username contains a hidden character"),
+    })
 }
 
 fn hook_name(name: &str) -> Result<String, Error> {
-    let name = name.trim();
-    if (1..=MAX_NAME).contains(&name.chars().count()) {
-        Ok(name.to_owned())
-    } else {
-        Err(Error::Invalid("webhook name must be 1 to 80 characters"))
-    }
+    crate::text::name(name, MAX_NAME).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("webhook name must be 1 to 80 characters"),
+        crate::text::NameError::Hidden => {
+            Error::Invalid("webhook name contains a hidden character")
+        }
+    })
 }
 
 async fn require_text(conn: &mut sqlx::SqliteConnection, id: Id) -> Result<(), Error> {

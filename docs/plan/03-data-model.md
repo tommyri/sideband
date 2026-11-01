@@ -83,7 +83,7 @@ phase 4 task.
 | 15 | `STREAM` | Share screen (phase 5) |
 | 16 | `CREATE_INVITES` | |
 | 17 | `VIEW_AUDIT_LOG` | |
-| 18 | `CHANGE_NICKNAME` | |
+| 18 | `CHANGE_NICKNAME` | Change own display name |
 
 Default `@everyone` role: `VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES |
 CONNECT | SPEAK | STREAM | CREATE_INVITES | CHANGE_NICKNAME`. Default `Admin`
@@ -106,6 +106,9 @@ role.
 
 Every command handler calls `perms.require(user, channel?, Permissions::X)`.
 A table-driven test in `ss-server/tests/permissions.rs` covers every command.
+`ss-server/tests/authorization_audit.rs` scans the handler source and fails
+when a command or HTTP route is unclassified or its handler stops reaching
+its permission check (see `docs/security.md` section 5).
 
 ## Ids and ordering
 

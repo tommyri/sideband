@@ -23,6 +23,7 @@ use ss_core::{ChannelKind, Id, Permissions};
 use crate::{
     auth::Auth,
     db::{self, attachments, channels, messages, settings, users},
+    limits::{KeyedLimiter, UPLOAD_BURST, UPLOAD_PERIOD, quota},
     perms::{AccessError, PermissionService},
     storage::{SaveError, Saved, Store},
 };
@@ -36,6 +37,8 @@ pub struct FilesState {
     pub perms: Arc<PermissionService>,
     /// Blobs, quotas, and signed URLs.
     pub files: Store,
+    /// Uploads per account, ahead of the daily byte quota.
+    uploads: Arc<KeyedLimiter<Id>>,
 }
 
 /// Upload and download routes. Mount them on the public HTTPS listener.
@@ -48,7 +51,12 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> R
             get(download),
         )
         .layer(DefaultBodyLimit::max(limit))
-        .with_state(FilesState { auth, perms, files })
+        .with_state(FilesState {
+            auth,
+            perms,
+            files,
+            uploads: Arc::new(KeyedLimiter::new(quota(UPLOAD_BURST, UPLOAD_PERIOD))),
+        })
 }
 
 #[derive(Deserialize)]
@@ -62,6 +70,7 @@ async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<Value>, HttpError> {
     let user = caller(&state.auth, &headers).await?;
+    state.uploads.check(&user).map_err(HttpError::RateLimited)?;
     let (channel_text, filename, bytes) =
         read_upload(&mut multipart, state.files.max_bytes()).await?;
     let channel_id = parse_id(channel_text.trim())?;
@@ -247,12 +256,14 @@ async fn serve(
         .header(header::CONTENT_TYPE, &file.mime)
         .header(header::ETAG, etag)
         .header(header::CONTENT_DISPOSITION, disposition)
-        .header("x-content-type-options", "nosniff")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_SECURITY_POLICY, super::hardening::CSP)
+        .header(header::CACHE_CONTROL, "private, no-cache")
         .body(Body::from(bytes))
         .map_err(|_| HttpError::Internal)
 }
 
-async fn read_upload(
+pub(crate) async fn read_upload(
     multipart: &mut Multipart,
     max_bytes: u64,
 ) -> Result<(String, String, Vec<u8>), HttpError> {
@@ -429,7 +440,7 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-enum HttpError {
+pub(crate) enum HttpError {
     Unauthorized,
     NotFound,
     Forbidden(&'static str),
@@ -437,12 +448,13 @@ enum HttpError {
     Payload(&'static str),
     Unsupported(&'static str),
     Quota(&'static str),
+    RateLimited(std::time::Duration),
     Internal,
 }
 
-impl IntoResponse for HttpError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
+impl HttpError {
+    fn parts(self) -> (StatusCode, &'static str) {
+        match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message),
@@ -450,8 +462,23 @@ impl IntoResponse for HttpError {
             Self::Payload(message) => (StatusCode::PAYLOAD_TOO_LARGE, message),
             Self::Unsupported(message) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, message),
             Self::Quota(message) => (StatusCode::TOO_MANY_REQUESTS, message),
+            Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate limited"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
-        };
+        }
+    }
+
+    /// Body text sent with the status.
+    pub(crate) fn message(self) -> &'static str {
+        self.parts().1
+    }
+}
+
+impl IntoResponse for HttpError {
+    fn into_response(self) -> Response {
+        if let Self::RateLimited(wait) = self {
+            return super::hardening::too_many_requests(wait);
+        }
+        let (status, message) = self.parts();
         (status, Json(json!({ "error": message }))).into_response()
     }
 }

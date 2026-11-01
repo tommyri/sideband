@@ -65,12 +65,12 @@ impl Channels {
     ) -> Result<CommandReply, Error> {
         self.require(actor)?;
         let kind = guild_kind(command.kind)?;
-        let name = channel_name(&command.name)?.to_owned();
+        let name = channel_name(&command.name)?;
         let parent = optional_id(command.parent_id.as_deref())?;
         if kind == ChannelKind::Category && parent.is_some() {
             return Err(Error::Invalid("categories cannot be nested"));
         }
-        let topic = stored_topic(command.topic.as_deref());
+        let topic = stored_topic(command.topic.as_deref())?;
         let voice = voice_columns(kind, command.voice.as_ref())?;
         let id = Id::generate();
         let channel = {
@@ -126,6 +126,7 @@ impl Channels {
         if let Some(name) = &command.name {
             channel_name(name)?;
         }
+        stored_topic(command.topic.as_deref())?;
         let channel = {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
@@ -135,12 +136,12 @@ impl Channels {
                 None => current.kind,
             };
             let name = match &command.name {
-                Some(name) => channel_name(name)?.to_owned(),
+                Some(name) => channel_name(name)?,
                 None => current.name.clone(),
             };
             let topic = match command.topic.as_deref() {
                 None => current.topic.clone(),
-                Some(topic) => stored_topic(Some(topic)),
+                Some(topic) => stored_topic(Some(topic))?,
             };
             let parent = match command.parent_id.as_deref() {
                 None => current.parent_id,
@@ -448,23 +449,23 @@ fn clamp_index(position: i32, len: usize) -> usize {
     usize::try_from(position).unwrap_or(len).min(len)
 }
 
-fn channel_name(name: &str) -> Result<&str, Error> {
-    let len = name.chars().count();
-    if (1..=64).contains(&len) {
-        Ok(name)
-    } else {
-        Err(Error::Invalid("channel name must be 1 to 64 characters"))
-    }
-}
-
-fn stored_topic(topic: Option<&str>) -> Option<String> {
-    topic.and_then(|topic| {
-        if topic.is_empty() {
-            None
-        } else {
-            Some(topic.to_owned())
+fn channel_name(name: &str) -> Result<String, Error> {
+    crate::text::name(name, 64).map_err(|error| match error {
+        crate::text::NameError::Length => Error::Invalid("channel name must be 1 to 64 characters"),
+        crate::text::NameError::Hidden => {
+            Error::Invalid("channel name contains a hidden character")
         }
     })
+}
+
+fn stored_topic(topic: Option<&str>) -> Result<Option<String>, Error> {
+    match topic {
+        None | Some("") => Ok(None),
+        Some(topic) if topic.chars().count() > crate::text::MAX_TOPIC => {
+            Err(Error::Invalid("topic must be at most 1024 characters"))
+        }
+        Some(topic) => Ok(Some(topic.to_owned())),
+    }
 }
 
 fn guild_kind(value: i32) -> Result<ChannelKind, Error> {

@@ -37,9 +37,33 @@ impl ServerEnvelope {
                 message: message.into(),
                 min_version: None,
                 max_version: None,
+                retry_after_ms: None,
             })),
         }
     }
+
+    /// Builds a `RATE_LIMITED` [`Error`] that says when to retry.
+    ///
+    /// `retry_after` is rounded up to whole milliseconds and saturates at
+    /// `u32::MAX`, so a client never retries early.
+    #[must_use]
+    pub fn rate_limited(
+        request_id: u32,
+        message: impl Into<String>,
+        retry_after: std::time::Duration,
+    ) -> Self {
+        let mut envelope = Self::error(request_id, ErrorCode::RateLimited, message);
+        if let Some(server_envelope::Msg::Error(error)) = envelope.msg.as_mut() {
+            error.retry_after_ms = Some(retry_after_ms(retry_after));
+        }
+        envelope
+    }
+}
+
+fn retry_after_ms(wait: std::time::Duration) -> u32 {
+    let micros = wait.as_micros();
+    let millis = micros.div_ceil(1000);
+    u32::try_from(millis).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -69,5 +93,26 @@ mod tests {
         assert_eq!(error.message, "missing channel");
         assert_eq!(error.min_version, None);
         assert_eq!(error.max_version, None);
+        assert_eq!(error.retry_after_ms, None);
+    }
+
+    #[test]
+    fn rate_limited_rounds_the_wait_up_to_whole_milliseconds() {
+        use std::time::Duration;
+        for (wait, expected) in [
+            (Duration::ZERO, 0),
+            (Duration::from_micros(1), 1),
+            (Duration::from_millis(1500), 1500),
+            (Duration::from_micros(1_500_001), 1501),
+            (Duration::from_secs(u64::MAX), u32::MAX),
+        ] {
+            let envelope = ServerEnvelope::rate_limited(4, "slow down", wait);
+            let Some(server_envelope::Msg::Error(error)) = envelope.msg else {
+                panic!("expected error");
+            };
+            assert_eq!(error.code, i32::from(ErrorCode::RateLimited));
+            assert_eq!(error.request_id, 4);
+            assert_eq!(error.retry_after_ms, Some(expected), "{wait:?}");
+        }
     }
 }

@@ -11,6 +11,9 @@ mod guard;
 mod parse;
 mod worker;
 
+pub(crate) use extract::preview_urls;
+pub(crate) use parse::{merge_oembed, parse_html};
+
 use std::sync::Arc;
 
 use ss_core::Id;

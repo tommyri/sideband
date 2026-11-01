@@ -174,6 +174,11 @@ impl Voice {
             .map_err(|_| Error::Forbidden("missing mute members"))?;
         let user = id_from_bytes(&command.user_id)
             .map_err(|_| Error::Invalid("user id must be 16 bytes"))?;
+        // Same hierarchy rule as kick, ban, and move: a moderator cannot
+        // silence someone whose highest role is at or above their own.
+        if !self.perms.can_act_on(actor, user) {
+            return Err(Error::Forbidden("cannot act on that member"));
+        }
         let mut conn = self.perms.pool().read().await?;
         if users::get(&mut conn, user).await?.is_none() {
             return Err(Error::NotFound("unknown user"));

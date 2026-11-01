@@ -13,6 +13,7 @@ use crate::{
     handlers::{
         Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles, Webhooks,
     },
+    limits::{self, KeyedLimiter, PeerSessions, quota},
     media::{self, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
@@ -30,7 +31,7 @@ use ss_proto::{
     v1::{self, client_envelope::Msg, server_envelope},
     validate::{id_from_bytes, id_to_bytes},
 };
-use std::{sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::{
     sync::{broadcast, mpsc, watch},
     task::JoinSet,
@@ -72,6 +73,9 @@ pub struct Server {
     bus: EventBus,
     files: storage::Store,
     stop: watch::Sender<bool>,
+    hellos: KeyedLimiter<IpAddr>,
+    commands: KeyedLimiter<Id>,
+    peers: PeerSessions,
 }
 
 struct Answer {
@@ -124,7 +128,16 @@ impl Server {
             registry,
             bus,
             stop,
+            hellos: KeyedLimiter::new(quota(limits::HELLO_BURST, limits::HELLO_PERIOD)),
+            commands: KeyedLimiter::new(quota(limits::COMMAND_BURST, limits::COMMAND_PERIOD)),
+            peers: PeerSessions::default(),
         })
+    }
+
+    /// Caps concurrent sessions, pending handshakes included, per address.
+    /// The default is [`limits::SESSIONS_PER_IP`]. Live sessions stay open.
+    pub fn limit_sessions_per_ip(&self, max: usize) {
+        self.peers.set_max(max);
     }
 
     /// Opaque-media counters for the authenticated router.
@@ -194,12 +207,24 @@ impl Server {
                 }
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
+                    // A spoofed source address must not take a session or
+                    // per-address slot. A stateless Retry costs the server
+                    // nothing; only a peer that echoes it gets counted.
+                    if !incoming.remote_address_validated() {
+                        incoming.retry_or_refuse();
+                        continue;
+                    }
                     if tasks.len() >= MAX_CONNECTIONS {
                         incoming.refuse();
                         continue;
                     }
+                    let Some(slot) = self.peers.acquire(incoming.remote_address().ip()) else {
+                        incoming.refuse();
+                        continue;
+                    };
                     let server = Arc::clone(&self);
                     tasks.spawn(async move {
+                        let _slot = slot;
                         let result = async {
                             let connection = timeout(OPEN_TIMEOUT, incoming.accept())
                                 .await
@@ -233,7 +258,7 @@ impl Server {
             .await
             .map_err(|_| Error::Timeout)??;
         let request_id = envelope.request_id;
-        let Some(Msg::Hello(hello)) = envelope.msg else {
+        let Some(Msg::Hello(mut hello)) = envelope.msg else {
             return reject(&connection, &mut stream, &hello_failure(request_id)).await;
         };
         if request_id == 0 {
@@ -247,14 +272,9 @@ impl Server {
             )
             .await;
         }
-        let authed = match self.auth.hello(&hello, peer).await {
+        let authed = match self.authenticate(&mut hello, peer, request_id).await {
             Ok(authed) => authed,
-            Err(error) => {
-                tracing::debug!(%error, "hello rejected");
-                let envelope =
-                    v1::ServerEnvelope::error(request_id, error.code(), error.wire_message());
-                return reject(&connection, &mut stream, &envelope).await;
-            }
+            Err(envelope) => return reject(&connection, &mut stream, &envelope).await,
         };
         crate::observe::record_session();
         let mut subscription = self.bus.subscribe();
@@ -318,6 +338,35 @@ impl Server {
         drop(voice_guard);
         drop(unregister);
         result
+    }
+
+    /// Spends the per-address Hello quota, checks the credentials, and wipes
+    /// them from `hello`. `Err` is the frame to send before closing.
+    async fn authenticate(
+        &self,
+        hello: &mut v1::Hello,
+        peer: IpAddr,
+        request_id: u32,
+    ) -> Result<auth::Authenticated, Box<v1::ServerEnvelope>> {
+        if let Err(wait) = self.hellos.check(&limits::peer_key(peer)) {
+            scrub(hello);
+            return Err(Box::new(v1::ServerEnvelope::rate_limited(
+                request_id,
+                "too many connection attempts",
+                wait,
+            )));
+        }
+        let outcome = self.auth.hello(hello, peer).await;
+        scrub(hello);
+        outcome.map_err(|error| {
+            tracing::debug!(%error, "hello rejected");
+            Box::new(error_envelope(
+                request_id,
+                error.code(),
+                error.wire_message(),
+                error.retry_after(),
+            ))
+        })
     }
 
     async fn prepare_welcome(
@@ -480,10 +529,27 @@ async fn read_inbound(
                     return Err(Error::Protocol);
                 }
                 last_request = envelope.request_id;
-                if matches!(envelope.msg, Some(Msg::Ping(_))) {
+                let ping = matches!(envelope.msg, Some(Msg::Ping(_)));
+                if ping {
                     server.registry.record_rtt(context.conn_id);
                 }
-                let answer = replies(server, context, &envelope).await;
+                // Ping is exempt, and costs nothing, so keepalive never fails.
+                let limited = if ping {
+                    Ok(())
+                } else {
+                    server.commands.check(&context.user_id)
+                };
+                let answer = match limited {
+                    Err(wait) => Answer {
+                        frames: vec![v1::ServerEnvelope::rate_limited(
+                            envelope.request_id,
+                            "too many commands",
+                            wait,
+                        )],
+                        events: Vec::new(),
+                    },
+                    Ok(()) => replies(server, context, &envelope).await,
+                };
                 for frame in answer.frames {
                     outbound
                         .send(frame)
@@ -670,10 +736,11 @@ async fn replies(
         Err(error) => {
             tracing::debug!(%error, "command rejected");
             Answer {
-                frames: vec![v1::ServerEnvelope::error(
+                frames: vec![error_envelope(
                     request_id,
                     error.code(),
                     error.wire_message(),
+                    error.retry_after(),
                 )],
                 events: Vec::new(),
             }
@@ -699,10 +766,11 @@ fn voice_answer(request_id: u32, result: Result<voice::Outcome, crate::handlers:
         Err(error) => {
             tracing::debug!(%error, "voice command rejected");
             Answer {
-                frames: vec![v1::ServerEnvelope::error(
+                frames: vec![error_envelope(
                     request_id,
                     error.code(),
                     error.wire_message(),
+                    error.retry_after(),
                 )],
                 events: Vec::new(),
             }
@@ -721,6 +789,36 @@ fn deleted_channels(events: &[server_envelope::Msg]) -> Vec<Id> {
             id_from_bytes(&channel.id).ok()
         })
         .collect()
+}
+
+/// `Error` for `code`, carrying `retry_after_ms` when the failure is a quota.
+fn error_envelope(
+    request_id: u32,
+    code: v1::ErrorCode,
+    message: String,
+    retry_after: Option<Duration>,
+) -> v1::ServerEnvelope {
+    match retry_after {
+        Some(wait) => v1::ServerEnvelope::rate_limited(request_id, message, wait),
+        None => v1::ServerEnvelope::error(request_id, code, message),
+    }
+}
+
+/// Overwrites the credentials in a `Hello` once they have been checked, so
+/// the password and token bytes do not linger in freed memory.
+fn scrub(hello: &mut v1::Hello) {
+    use zeroize::Zeroize;
+    match hello.auth.as_mut() {
+        Some(v1::hello::Auth::Login(login)) => login.password.zeroize(),
+        Some(v1::hello::Auth::Register(register)) => {
+            register.password.zeroize();
+            register.invite_code.zeroize();
+        }
+        Some(v1::hello::Auth::SessionToken(token) | v1::hello::Auth::ResumeToken(token)) => {
+            token.zeroize();
+        }
+        None => {}
+    }
 }
 
 fn unsupported(request_id: u32) -> v1::ServerEnvelope {

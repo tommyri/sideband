@@ -14,8 +14,11 @@ pub mod config;
 pub mod connection;
 pub mod db;
 pub mod events;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod handlers;
 pub mod http;
+pub mod limits;
 pub mod media;
 pub mod observe;
 pub mod perms;
@@ -24,6 +27,7 @@ pub mod registry;
 pub mod serve;
 pub mod snapshot;
 pub mod storage;
+pub mod text;
 pub mod tls;
 pub mod voice;
 

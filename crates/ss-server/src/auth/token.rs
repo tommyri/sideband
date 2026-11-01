@@ -5,6 +5,7 @@
 //! a person can type it.
 
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use super::Error;
 
@@ -12,21 +13,27 @@ const SESSION_BYTES: usize = 32;
 const OWNER_CODE_BYTES: usize = 16;
 
 /// Plaintext bearer token and the digest stored in `sessions.token_hash`.
+/// The plaintext is wiped when this is dropped.
 pub(crate) struct Issued {
-    pub token: String,
+    pub token: Zeroizing<String>,
     pub hash: String,
 }
 
 /// A new session token.
 pub(crate) fn issue() -> Result<Issued, Error> {
-    let token = encode(&random_bytes::<SESSION_BYTES>()?);
+    let mut bytes = random_bytes::<SESSION_BYTES>()?;
+    let token = Zeroizing::new(encode(&bytes));
+    bytes.zeroize();
     let hash = hash(&token);
     Ok(Issued { token, hash })
 }
 
 /// A new owner invite code.
 pub(crate) fn owner_code() -> Result<String, Error> {
-    Ok(encode(&random_bytes::<OWNER_CODE_BYTES>()?))
+    let mut bytes = random_bytes::<OWNER_CODE_BYTES>()?;
+    let code = encode(&bytes);
+    bytes.zeroize();
+    Ok(code)
 }
 
 /// Hex SHA-256 of a bearer token.
@@ -66,7 +73,7 @@ mod tests {
         assert_eq!(issued.token.len(), 43);
         assert_eq!(issued.hash.len(), 64);
         assert_eq!(issued.hash, hash(&issued.token));
-        assert_ne!(issued.hash, issued.token);
+        assert_ne!(issued.hash, *issued.token);
         assert!(!issued.token.contains('='));
     }
 

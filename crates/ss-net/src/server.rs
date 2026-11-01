@@ -34,8 +34,24 @@ impl Incoming {
     }
 
     /// Peer socket address, available before completing the handshake.
+    /// Spoofable until [`Self::remote_address_validated`] is true.
     pub fn remote_address(&self) -> SocketAddr {
         self.inner.remote_address()
+    }
+
+    /// Whether the peer has proved it receives packets at
+    /// [`Self::remote_address`], by echoing a Retry token.
+    pub fn remote_address_validated(&self) -> bool {
+        self.inner.remote_address_validated()
+    }
+
+    /// Answers with a stateless QUIC Retry. A real client reconnects with the
+    /// token and arrives validated; a spoofed source never does. When a Retry
+    /// is not allowed (the peer already carried a token) it is refused.
+    pub fn retry_or_refuse(self) {
+        if let Err(error) = self.inner.retry() {
+            error.into_incoming().refuse();
+        }
     }
 }
 
