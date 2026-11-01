@@ -17,7 +17,9 @@ use crate::{
 /// Callback for each transmit edge.
 ///
 /// The mock runs it on the thread that injected the event. Operating-system
-/// backends will run it on their input thread. Keep it short and do not
+/// backends run it on their input thread. Send controls from another thread;
+/// synchronous controls called from the macOS handler return ReentrantControl.
+/// Keep it short and do not
 /// panic. Shared state captured by the closure needs its own synchronization;
 /// the callback is [`Send`] and [`Sync`] so it can cross that thread.
 pub type Handler = Box<dyn Fn(PttEvent) + Send + Sync + 'static>;
@@ -137,6 +139,12 @@ impl Handle {
         Self { ops }
     }
 
+    /// Check for a runtime failure, such as revoked Input Monitoring or secure
+    /// input. The app should poll this and recheck capabilities on focus.
+    pub fn status(&self) -> Result<(), Error> {
+        self.ops.status()
+    }
+
     /// Replace the chords the listener watches.
     ///
     /// A chord that is no longer held starts the release delay. A newly
@@ -200,9 +208,8 @@ impl fmt::Debug for Handle {
 
 /// Platform input listener.
 ///
-/// [`crate::Backend::detect`] boxes one. The mock is the only implementation
-/// in this crate; Windows, macOS, and Linux backends implement the same trait
-/// later. Do not override [`Self::capture_next`]: the default refuses to
+/// [`crate::Backend::detect`] boxes one. The mock and native backends share
+/// this contract. Do not override [`Self::capture_next`]: the default refuses to
 /// observe keys when the compositor owns the binding.
 pub trait Listener: Send + Sync {
     /// What this backend can bind, and what the UI should explain.
@@ -263,6 +270,9 @@ pub trait Listener: Send + Sync {
 }
 
 pub(crate) trait ListenerControl: Send + Sync {
+    fn status(&self) -> Result<(), Error> {
+        Ok(())
+    }
     fn update_bindings(&self, bindings: &[Binding]) -> Result<(), Error>;
     fn set_release_delay(&self, delay: Duration) -> Result<(), Error>;
     fn force_release(&self) -> Result<(), Error>;

@@ -5,10 +5,10 @@
 //! portal, or opt-in evdev). Hotkey registration is not used, because it
 //! swallows the key and cannot bind mouse buttons.
 //!
-//! [`Backend::detect`] returns [`MockListener`] until those backends land.
-//! They are not cargo features, so this crate builds on Windows, macOS, and
-//! Linux with the mock alone. Backends report [`InputEvent`] edges.
-//! [`PttStateMachine`] turns those edges into [`PttEvent`]s.
+//! [`Backend::detect`] selects the native listener on macOS and the mock on
+//! Windows/Linux until their backends land. No platform feature flags are
+//! required. Backends report [`InputEvent`] edges; [`PttStateMachine`] turns
+//! them into [`PttEvent`]s.
 //!
 //! `unsafe` is allowed in this crate. The platform backends are FFI
 //! (Win32 hooks, `CGEventTap`, X11, evdev). Every `unsafe` block needs a
@@ -21,6 +21,8 @@ mod backend;
 mod binding;
 mod error;
 mod listener;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod mock;
 mod state;
 

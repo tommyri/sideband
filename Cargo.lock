@@ -2717,6 +2717,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-graphics"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
+dependencies = [
+ "bitflags",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-core-services"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4319,6 +4329,9 @@ dependencies = [
 name = "ss-input"
 version = "0.1.0"
 dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "rtrb",
  "serde",
  "serde_json",
  "ss-core",

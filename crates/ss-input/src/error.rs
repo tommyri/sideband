@@ -63,6 +63,18 @@ pub enum Error {
         settings_url: Option<String>,
     },
 
+    /// The platform could not create or maintain its input source.
+    #[error("input listener unavailable: {0}")]
+    Unavailable(String),
+
+    /// Secure input intentionally suspends global keyboard observation.
+    #[error("secure input is active; restart push-to-talk after leaving the secure field")]
+    SecureInput,
+
+    /// Synchronous controls cannot be called from the listener's own handler.
+    #[error("send input controls from outside the input callback")]
+    ReentrantControl,
+
     /// A panic while the listener lock was held poisoned that lock.
     #[error("input listener lock was poisoned")]
     LockPoisoned,

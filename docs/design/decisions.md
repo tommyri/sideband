@@ -139,8 +139,9 @@ push-to-talk while gaming.
 `ss-input` owns a binding and the press/release state machine. A binding is
 a USB HID key code or a mouse button (`Left`, `Right`, `Middle`, `Mouse4`,
 `Mouse5`) plus optional modifiers. Either side of a modifier counts.
-`Backend::detect` returns `MockListener` until T-048–T-050 replace that
-body. Those backends are not cargo features.
+`Backend::detect` selects a listen-only macOS event tap (T-049); Windows
+and Linux keep `MockListener` until T-048 and T-050. Those backends are not
+cargo features. The macOS listener never registers or consumes a shortcut.
 
 The machine, merged into `main` with T-047:
 

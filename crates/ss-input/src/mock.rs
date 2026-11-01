@@ -22,8 +22,8 @@ type Callback = Arc<dyn Fn(PttEvent) + Send + Sync>;
 
 /// Listener that feeds [`PttStateMachine`] from injected edges.
 ///
-/// [`crate::Backend::detect`] returns this until the Windows, macOS, and Linux
-/// backends exist. Those backends are not cargo features.
+/// [`crate::Backend::detect`] returns this on Windows and Linux until their
+/// backends exist. It remains available explicitly for tests on every OS.
 #[derive(Clone)]
 pub struct MockListener {
     inner: Arc<MockInner>,
