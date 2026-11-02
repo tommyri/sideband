@@ -13,6 +13,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json.workspace = true
 
 [dependencies]
 bytes.workspace = true

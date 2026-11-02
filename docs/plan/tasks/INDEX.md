@@ -78,7 +78,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | todo |
 | [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | todo |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
-| [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | todo |
+| [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | in-progress |
 | [T-076](T-076-guided-voice-testing.md) | Guided voice tests and local evidence bundles | M | T-075, T-043, T-044, T-051, T-058 | todo |
 
 ## Phase 4 — Hardening

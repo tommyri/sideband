@@ -29,6 +29,10 @@ dev-desktop:
 build-desktop:
     cd apps/desktop && pnpm tauri build
 
+# Labelled packages plus build identity/checksums; pass --debug for local checks.
+build-test-desktop *args:
+    node scripts/build-test-desktop.mjs {{args}}
+
 check-desktop:
     cd apps/desktop && CI=true pnpm check
     cargo test -p socialspeak-desktop

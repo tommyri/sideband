@@ -30,6 +30,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "shortDescription": "Self-hosted voice and text chat",
+    "category": "SocialNetworking",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": "Entitlements.plist"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libpipewire-0.3-0", "libasound2"]
+      }
+    }
   }
 }

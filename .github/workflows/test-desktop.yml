@@ -1,0 +1,76 @@
+name: Desktop test builds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: test package (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Frontend dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Packaging script tests
+        run: node --test scripts/build-test-desktop.test.mjs
+      - name: Desktop tests
+        run: cargo test --locked -p socialspeak-desktop
+      - name: Frontend checks
+        working-directory: apps/desktop
+        run: pnpm check
+      - name: Create labelled test packages
+        id: packages
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: node scripts/build-test-desktop.mjs --target ${{ matrix.target }}
+      - name: Validate macOS bundle
+        if: runner.os == 'macOS'
+        run: |
+          bundle_root=target
+          if ! rustc -vV | grep -qx 'host: ${{ matrix.target }}'; then
+            bundle_root="target/${{ matrix.target }}"
+          fi
+          app_bundle="$bundle_root/release/bundle/macos/SocialSpeak.app"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app_bundle/Contents/Info.plist"
+          codesign -d --entitlements :- "$app_bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: socialspeak-test-${{ matrix.target }}-${{ github.sha }}
+          path: ${{ steps.packages.outputs.artifact_directory }}
+          if-no-files-found: error
+          retention-days: 30

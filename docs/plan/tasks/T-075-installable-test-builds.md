@@ -1,6 +1,6 @@
 # T-075 — Installable test builds and build identity
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-042
@@ -42,3 +42,33 @@ Production signing/notarization, updater feeds, public release publishing
   acceptance is explicit, not inferred from build success.
 
 ## Notes from implementation
+- Added `node scripts/build-test-desktop.mjs` / `just build-test-desktop`
+  and a manually dispatched Windows x64, macOS arm64 and Linux x64 workflow.
+  It uploads workflow artifacts only; it never publishes releases.
+- Packages include a build-info JSON, installation instructions and SHA-256
+  checksums. The same identity is compiled into the native Build → About
+  this test build dialog and tray menu: version, channel, full commit,
+  target, profile, source origin and dirty-tree marker. Ordinary developer
+  builds explicitly report unknown commit provenance.
+- Added desktop ICO/ICNS variants using the Tauri icon converter and the
+  existing icon, macOS 13 minimum, microphone usage text, audio-input
+  entitlement, ad-hoc test signing, and explicit Linux PipeWire/ALSA package
+  dependencies. No production signing/notarization credentials are needed.
+- Local Apple Silicon validation: debug app ZIP and DMG generated successfully;
+  all artifact checksums passed. The app bundle passed strict codesign
+  verification, contains the microphone text and audio-input entitlement,
+  and links only system frameworks/libraries. Launched the bundle and
+  verified the exact build identity in its native About dialog.
+- Frontend type/lint/format/component checks, packaging-script provenance/
+  argument tests and dependency graph checks passed. Workflow YAML parsed.
+- Full macOS workspace `just check` passed (formatting, strict Clippy and
+  automated tests); hardware/manual tests retain their explicit ignores.
+  The generated DMG also passed `hdiutil verify`.
+- Remaining acceptance: execute hosted release-profile matrix jobs once a
+  GitHub remote is configured, then record fresh Windows/Linux installation
+  and macOS downloaded-artifact/Gatekeeper results. Linux test packages use
+  Ubuntu 24.04 as their runtime baseline; older-distribution portability and
+  AppImage runtime dependencies require validation, not an assumed pass.
+- The local artifact is a debug testing scaffold, not performance evidence
+  or a completed voice-testing app. T-043 is the next implementation priority.
+  See `docs/testing-app.md` for building, installation and current limitations.

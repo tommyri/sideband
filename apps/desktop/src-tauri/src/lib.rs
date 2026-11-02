@@ -1,3 +1,4 @@
+mod build_identity;
 mod commands;
 mod state;
 mod types;
@@ -6,7 +7,7 @@ use state::AppState;
 use std::sync::atomic::Ordering;
 use tauri::{
     Manager, WindowEvent,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
 };
 
@@ -31,9 +32,17 @@ pub fn run() {
             commands::load_history,
         ])
         .setup(|app| {
+            let about = PredefinedMenuItem::about(
+                app,
+                Some("About this test build"),
+                Some(build_identity::about()),
+            )?;
+            let app_menu = Menu::default(app.handle())?;
+            app_menu.append(&Submenu::with_items(app, "Build", true, &[&about])?)?;
+            app.set_menu(app_menu)?;
             let show = MenuItem::with_id(app, "show", "Show SocialSpeak", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &about, &quit])?;
             let mut tray =
                 TrayIconBuilder::new()
                     .menu(&menu)
