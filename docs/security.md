@@ -25,7 +25,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 ## 2. Trust boundaries
 
 ```
- internet ──UDP 443 (QUIC, TLS 1.3)──► ss-server ◄──TCP bind_http (REST)── internet
+ internet ──UDP 443 (QUIC, TLS 1.3)──► ss-server ◄──TCP bind_http (HTTPS)── internet
                                           │
                                           ├── SQLite + data dir  (trusted, operator-owned)
                                           ├──► link-preview fetches to the internet (untrusted responses)
@@ -35,7 +35,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Boundary | Who is on the other side | What they can do before any check | Main controls |
 |---|---|---|---|
 | Internet → QUIC | Anyone | Complete a handshake, send one `Hello` | Stateless Retry before any slot, 256 sessions total, 32 per validated address, 10 s handshake and Hello deadlines, Hello and password quotas, 1 MiB frames |
-| Internet → HTTP | Anyone | Send requests; `GET /api/v1/server` and webhook posts need no bearer | Per-address quota, header and request deadlines, body caps, strict headers |
+| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same live certificate and pin as QUIC, handshake deadline, per-address quota, header and request deadlines, body caps, strict headers |
 | Members → server | Authenticated accounts | Every control command and REST call | `PermissionService::check` per command, role hierarchy, per-account quotas, input limits |
 | Moderators and admins → server | Accounts with management bits | Kick, ban, mute, move, roles, channels, webhooks, invites | Bits plus strict hierarchy (`can_act_on`); only `ADMINISTRATOR` grants `ADMINISTRATOR`; audit log |
 | Server → previewed sites | Arbitrary web servers | Return any bytes to the preview fetcher | SSRF address filter after DNS, pinned socket address, 3 redirects re-checked, 5 s, 1 MiB, fuzzed parser |
@@ -66,7 +66,7 @@ It does not protect against:
   which is itself unauthenticated, so only an out-of-band channel counts);
 - users who click through a changed-fingerprint prompt;
 - a compromised server host or a stolen `tls/identity.json`: the pin matches;
-- the plaintext REST listener (section 8.1): TOFU covers QUIC only.
+- an attacker who controls the out-of-band fingerprint channel.
 
 ## 4. Authentication and secrets
 
@@ -217,7 +217,8 @@ where impersonation matters.
   timeout. rustls uses the **ring** provider everywhere (QUIC, ACME, preview
   fetches); `deny.toml` bans `aws-lc-rs`, `aws-lc-sys`, OpenSSL, and
   `native-tls`.
-- HTTP accept loop (`http::hardening::serve`): 10 s to send each HTTP/1
+- HTTPS accept loop (`http::hardening::serve_tls`): 10 s to complete the TLS
+  handshake, then 10 s to send each HTTP/1
   request head, at most 1024 open connections and 64 per address (IPv4, or
   IPv6 /64). A connection that moves no bytes for 60 s, or reaches 10 min of
   age, gets a graceful shutdown (HTTP/1 finishes its request, HTTP/2 sends
@@ -239,14 +240,15 @@ where impersonation matters.
   unless allow-listed, `Content-Disposition: attachment` except images and
   video, and the CSP `sandbox` keeps an opened HTML or SVG file inert.
 
-### 8.1 Open issue: the REST listener is plaintext
+### 8.1 REST transport
 
-`bind_http` serves plain HTTP (T-032/T-033 kept it that way). Bearer tokens,
-history, and attachments cross it unencrypted, and HSTS is meaningless
-without TLS. Until the listener serves TLS with the QUIC certificate (a
-change that touches ACME HTTP-01 and the deployment smoke test), deploy it
-behind a TLS-terminating reverse proxy or on a private network. Tracked in
-`docs/plan/tasks/BACKLOG.md`.
+`bind_http` accepts TLS only and uses the same hot-reloaded certificate
+resolver as QUIC. Clients verify the same leaf fingerprint for history and
+attachment requests and do not follow redirects. Plain HTTP on that port is
+closed during the TLS handshake. The internal `127.0.0.1:9101` health and
+metrics listener remains plain HTTP and must stay private. ACME HTTP-01 uses a
+separate TCP 80 listener for challenges and redirects all other paths to the
+configured HTTPS port.
 
 ## 9. Link previews (SSRF)
 
@@ -291,7 +293,6 @@ updated `h2` past RUSTSEC-2026-0258.
 
 ## 12. Known gaps
 
-- Plaintext REST listener (section 8.1). Tracked as T-066.
 - No per-sender bitrate cap on media datagrams: a member with `SPEAK` can
   send at line rate and the router fans it out to the channel. Quinn's
   bounded send buffers drop the excess. Tracked as T-068.

@@ -40,7 +40,7 @@ acme_email = ""
 acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
 # http-01 or tls-alpn-01.
 challenge = "http-01"
-# Bind TCP 80 as well: serve the HTTP-01 challenge and redirect every other path.
+# Compatibility setting. HTTP-01 now always binds TCP 80 and redirects other paths.
 http_redirect = false
 
 [limits]
@@ -92,7 +92,7 @@ pub enum TlsMode {
 /// How an ACME server proves control of `public_host`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AcmeChallenge {
-    /// `/.well-known/acme-challenge/` on the public HTTP listener.
+    /// `/.well-known/acme-challenge/` on a dedicated TCP 80 listener.
     #[default]
     #[serde(rename = "http-01")]
     Http01,

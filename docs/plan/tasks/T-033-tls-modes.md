@@ -50,6 +50,8 @@ Client UI for cert changes (T-043).
   the QUIC certificate. The public REST listener stays plaintext, as in
   T-032. Pebble is not in CI. Until the first order completes, the printed
   fingerprint is empty and new QUIC handshakes fail.
+- T-066 later made the REST listener HTTPS, shared this live resolver with
+  it, and moved HTTP-01 to an always-on TCP 80 challenge/redirect listener.
 - `GET /api/v1/server` is public and reads the live fingerprint plus
   `registration_mode` from SQLite.
 - Client trust was already implemented: a WebPKI chain is accepted and

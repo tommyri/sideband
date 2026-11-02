@@ -44,6 +44,24 @@ if [[ "$ready" -ne 1 ]]; then
   exit 1
 fi
 
+https=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -kfsS "https://127.0.0.1:${quic_port}/api/v1/server" >/dev/null; then
+    https=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$https" -ne 1 ]]; then
+  docker logs socialspeak-smoke >&2 || true
+  echo "public HTTPS did not return server info" >&2
+  exit 1
+fi
+if curl -fsS "http://127.0.0.1:${quic_port}/api/v1/server" >/dev/null 2>&1; then
+  echo "public listener accepted plaintext HTTP" >&2
+  exit 1
+fi
+
 docker run -d --name socialspeak-spike \
   --user 65532:65532 \
   -p "127.0.0.1:${spike_port}:4433/udp" \
@@ -83,13 +101,9 @@ if ! grep -q "joined channel" "$log"; then
   echo "ss-cli did not join" >&2
   exit 1
 fi
-# The first attempt is untrusted, so each bot logs "bot exited" and then
-# joins after --accept-pin stores the fingerprint. Success is the later join.
-if ! grep -q "joined voice name=smoke-bot-1" "$log"; then
-  echo "bot 1 did not join" >&2
-  exit 1
-fi
-if ! grep -q "joined voice name=smoke-bot-2" "$log"; then
-  echo "bot 2 did not join" >&2
+# The live speaker count is the stable observable; bot task log strings are
+# intentionally not part of the CLI output contract.
+if ! grep -q "speakers=2" "$log"; then
+  echo "the two bots did not become audible" >&2
   exit 1
 fi

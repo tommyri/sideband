@@ -54,6 +54,9 @@ sudo ufw allow 443/udp
 sudo ufw allow 443/tcp
 ```
 
+ACME with `challenge = "http-01"` also needs TCP 80. Other TLS modes do
+not open it.
+
 Leave `9101` on loopback. `/healthz` and `/metrics` are not public.
 
 ```sh
@@ -76,24 +79,29 @@ sudo sysctl --system
 
 ## TLS
 
-`self-signed` is the default. Clients pin the fingerprint printed by
-`run` and `fingerprint`. `ss-server tls rotate` replaces
-`tls/identity.json`. A running server loads the new leaf without
-closing the UDP socket, and connected clients re-prompt.
+`bind_http` is an HTTPS listener. It serves the same live certificate as
+QUIC, so the fingerprint printed by `run` and `fingerprint` pins both
+transports. The internal health and metrics listener stays plain HTTP on
+loopback.
+
+`self-signed` is the default. `ss-server tls rotate` replaces
+`tls/identity.json`. A running server loads the new leaf without closing
+the QUIC or HTTPS socket, and clients re-prompt on their next handshake.
 
 `files` uses `cert_path` and `key_path` (PEM, leaf first). Replacing
-either file reloads the certificate. Existing handshakes stay up.
+either file reloads the certificate for new QUIC and HTTPS handshakes.
+Existing handshakes stay up.
 Relative paths are inside the data directory.
 
 `acme` orders a certificate for `public_host`. Set `acme_email`.
-`challenge = "http-01"` serves `/.well-known/acme-challenge/` on the
-public HTTP port. Let's Encrypt calls that path on TCP 80, so either
-set `bind_http` to port 80 or set `http_redirect = true` (a second
-listener on TCP 80, then 308 to `https://<public_host>`).
+`challenge = "http-01"` always opens TCP 80 for
+`/.well-known/acme-challenge/` and redirects every other request to the
+HTTPS `bind_http` port. Do not set `bind_http` itself to port 80. The
+legacy `http_redirect` setting remains accepted for old config files but
+is no longer needed.
 `challenge = "tls-alpn-01"` also accepts TCP on the QUIC port for
 `acme-tls/1`. QUIC still needs UDP. The cache is `tls/acme/`. The
-issued leaf is the QUIC certificate. The public REST listener stays
-plaintext on `bind_http`.
+issued leaf is used by both QUIC and HTTPS.
 
 ## Backup and restore
 
@@ -153,7 +161,8 @@ interchangeable.
 
 ## Smoke test
 
-`deploy/smoke.sh` builds the image, waits for `/healthz`, then runs
+`deploy/smoke.sh` builds the image, waits for `/healthz`, verifies the
+public endpoint answers HTTPS and refuses plaintext HTTP, then runs
 `ss-cli connect --bots 2` against a second container started from the
 same image with no subcommand. That entrypoint is the unauthenticated
 voice spike. `ss-cli` still speaks that spike; it does not log into

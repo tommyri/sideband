@@ -1,6 +1,6 @@
 # T-066 — Serve the public REST listener over TLS
 
-Status: todo
+Status: done
 Phase: 4
 Size: M
 Depends on: T-033, T-061
@@ -38,3 +38,20 @@ HTTP/3 for REST; serving the web UI.
   listener without a restart.
 
 ## Notes from implementation
+
+- The hardened public accept loop now performs bounded rustls handshakes and
+  then applies the existing connection caps, peer quotas, HTTP deadlines, and
+  idle/age shutdown behavior. The internal health/metrics listener remains
+  plain HTTP.
+- HTTPS and QUIC share the live `ResolvesServerCert`. Self-signed rotation and
+  file/ACME reloads therefore affect new handshakes on both sockets without a
+  restart. The listener advertises HTTP/2 and HTTP/1.1 with ALPN.
+- Client history already constructed an HTTPS-only `reqwest` client with the
+  approved QUIC pin, disabled proxies, and no redirects. The Tauri bridge calls
+  that client-core path rather than exposing direct webview networking.
+- ACME HTTP-01 now always binds TCP 80 for challenges and redirects every other
+  request to the configured HTTPS port. `bind_http = :80` is rejected for that
+  mode; the legacy `http_redirect` key remains accepted for existing configs.
+- Integration coverage proves plaintext refusal, bearer-authenticated pinned
+  HTTPS, wrong/rotated pin rejection, and hot rotation without rebinding. The
+  Docker smoke test verifies HTTPS before running the voice clients.

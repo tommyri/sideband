@@ -35,9 +35,10 @@ use hyper_util::{
 use serde_json::json;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::Semaphore,
 };
+use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
 use crate::limits::{HTTP_BURST, HTTP_PERIOD, KeyedLimiter, PeerSessions, quota};
@@ -133,7 +134,25 @@ pub fn has_content_type(headers: &HeaderMap, wanted: &str) -> bool {
 /// [`ServeLimits`]. The peer address is available to handlers as
 /// `ConnectInfo<SocketAddr>`.
 pub async fn serve(listener: TcpListener, app: Router, stop: impl Future<Output = ()>) {
-    serve_with(listener, app, stop, ServeLimits::default()).await;
+    serve_with_acceptor(listener, app, stop, ServeLimits::default(), None).await;
+}
+
+/// HTTPS variant of [`serve`]. TLS handshakes use the supplied live rustls
+/// resolver and are subject to the same connection and header deadlines.
+pub async fn serve_tls(
+    listener: TcpListener,
+    app: Router,
+    config: Arc<rustls::ServerConfig>,
+    stop: impl Future<Output = ()>,
+) {
+    serve_with_acceptor(
+        listener,
+        app,
+        stop,
+        ServeLimits::default(),
+        Some(TlsAcceptor::from(config)),
+    )
+    .await;
 }
 
 /// [`serve`] with explicit limits. Tests use short ones.
@@ -142,6 +161,16 @@ pub async fn serve_with(
     app: Router,
     stop: impl Future<Output = ()>,
     limits: ServeLimits,
+) {
+    serve_with_acceptor(listener, app, stop, limits, None).await;
+}
+
+async fn serve_with_acceptor(
+    listener: TcpListener,
+    app: Router,
+    stop: impl Future<Output = ()>,
+    limits: ServeLimits,
+    acceptor: Option<TlsAcceptor>,
 ) {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let peers = PeerSessions::default();
@@ -175,8 +204,17 @@ pub async fn serve_with(
             .clone()
             .layer(axum::Extension(ConnectInfo(peer)))
             .map_request(|request: Request<hyper::body::Incoming>| request.map(Body::new));
+        let acceptor = acceptor.clone();
         connections.spawn(async move {
-            drive(stream, service, limits).await;
+            if let Some(acceptor) = acceptor {
+                match tokio::time::timeout(limits.header_timeout, acceptor.accept(stream)).await {
+                    Ok(Ok(stream)) => drive(stream, service, limits).await,
+                    Ok(Err(error)) => tracing::debug!(%error, "tls handshake rejected"),
+                    Err(_) => tracing::debug!("tls handshake timed out"),
+                }
+            } else {
+                drive(stream, service, limits).await;
+            }
             drop(slot);
             drop(permit);
         });
@@ -192,8 +230,9 @@ pub async fn serve_with(
 /// Runs one connection until it ends, goes idle, or reaches its maximum age.
 /// Idle and aged connections get a graceful shutdown (HTTP/1 finishes the
 /// request in flight, HTTP/2 sends GOAWAY), then a hard close after a grace.
-async fn drive<S>(stream: TcpStream, service: S, limits: ServeLimits)
+async fn drive<I, S>(stream: I, service: S, limits: ServeLimits)
 where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     S: tower::Service<Request<hyper::body::Incoming>, Response = Response> + Clone + Send,
     S::Future: Send + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -271,12 +310,12 @@ impl Activity {
 }
 
 /// A TCP stream that records every read or write of at least one byte.
-struct Tracked {
-    inner: TcpStream,
+struct Tracked<I> {
+    inner: I,
     activity: Arc<Activity>,
 }
 
-impl AsyncRead for Tracked {
+impl<I: AsyncRead + Unpin> AsyncRead for Tracked<I> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -291,7 +330,7 @@ impl AsyncRead for Tracked {
     }
 }
 
-impl AsyncWrite for Tracked {
+impl<I: AsyncWrite + Unpin> AsyncWrite for Tracked<I> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

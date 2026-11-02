@@ -87,12 +87,13 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     let server = open_server(&pool, &config).await?;
     let identity = crate::tls::prepare(&config, &data_dir).await?;
     let fingerprint = identity.fingerprint_text();
+    let https = identity.https_config();
     println!("fingerprint: {fingerprint}");
     let endpoint = Endpoint::bind_resolver(config.server.bind_quic, identity.resolver())?;
     let public = TcpListener::bind(config.server.bind_http).await?;
     let internal = TcpListener::bind(config.internal.bind).await?;
     println!(
-        "listening quic={} http={} internal={}",
+        "listening quic={} https={} internal={}",
         endpoint.local_addr()?,
         public.local_addr()?,
         internal.local_addr()?
@@ -104,7 +105,7 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
     );
     let (stop_tx, stop_rx) = watch::channel(false);
     let quic = tokio::spawn(Arc::clone(&server).run(endpoint.clone()));
-    let site = tokio::spawn(listen(
+    let site = tokio::spawn(listen_tls(
         public,
         http::hardening::harden(
             server
@@ -115,6 +116,7 @@ pub async fn run(data_dir: PathBuf) -> Result<(), Error> {
                 ))
                 .merge(identity.challenge_routes()),
         ),
+        https,
         stop_rx.clone(),
     ));
     let redirect = match identity.redirect() {
@@ -157,6 +159,18 @@ async fn open_server(pool: &Arc<Pool>, config: &Config) -> Result<Arc<connection
 
 async fn listen(listener: TcpListener, app: axum::Router, mut stop: watch::Receiver<bool>) {
     http::hardening::serve(listener, app, async move {
+        let _ = stop.changed().await;
+    })
+    .await;
+}
+
+async fn listen_tls(
+    listener: TcpListener,
+    app: axum::Router,
+    config: Arc<rustls::ServerConfig>,
+    mut stop: watch::Receiver<bool>,
+) {
+    http::hardening::serve_tls(listener, app, config, async move {
         let _ = stop.changed().await;
     })
     .await;

@@ -65,6 +65,13 @@ impl Identity {
         Arc::clone(&self.quic)
     }
 
+    /// Rustls configuration for the public HTTPS listener. The resolver is
+    /// shared with QUIC, so certificate reloads affect new handshakes on both
+    /// transports without rebinding either socket.
+    pub fn https_config(&self) -> Arc<rustls::ServerConfig> {
+        https_config(self.resolver())
+    }
+
     /// Leaf offered to the next handshake.
     pub fn fingerprint(&self) -> Option<Fingerprint> {
         **self.fingerprint.load()
@@ -91,6 +98,17 @@ impl Identity {
     pub fn redirect(&self) -> Option<(SocketAddr, Router)> {
         self.redirect.clone()
     }
+}
+
+/// Builds the public-listener TLS configuration around a live certificate
+/// resolver. Transport tests use this to exercise reloads without starting a
+/// filesystem watcher.
+pub fn https_config(resolver: Arc<dyn ResolvesServerCert>) -> Arc<rustls::ServerConfig> {
+    let mut config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(resolver);
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Arc::new(config)
 }
 
 impl Drop for Identity {
@@ -224,7 +242,7 @@ async fn acme(config: &Config, data_dir: &Path, stop: &Arc<AtomicBool>) -> Resul
     let built = acme_config(config, cache.clone());
     let fingerprint = slot_with(cached_fingerprint(&cache));
     let mut loaded = match config.tls.challenge {
-        AcmeChallenge::Http01 => start_http01(built, config, cache.clone(), &fingerprint, stop),
+        AcmeChallenge::Http01 => start_http01(built, config, cache.clone(), &fingerprint, stop)?,
         AcmeChallenge::TlsAlpn01 => start_alpn(built, config.server.bind_quic).await?,
     };
     loaded.fingerprint = fingerprint;
@@ -253,6 +271,11 @@ fn validate_acme(config: &Config) -> Result<(), Error> {
     if !dns_name(&config.server.public_host) {
         return Err(Error::Invalid("public_host must be a DNS name for acme"));
     }
+    if config.tls.challenge == AcmeChallenge::Http01 && config.server.bind_http.port() == 80 {
+        return Err(Error::Invalid(
+            "bind_http must not use port 80 with the http-01 challenge",
+        ));
+    }
     Ok(())
 }
 
@@ -262,23 +285,21 @@ fn start_http01(
     cache: PathBuf,
     fingerprint: &FingerprintSlot,
     stop: &Arc<AtomicBool>,
-) -> Loaded {
+) -> Result<Loaded, Error> {
     let state = built.state();
     let resolver = state.resolver();
     drive_http01(state, cache, Arc::clone(fingerprint), Arc::clone(stop));
     let challenge = acme_router(Arc::clone(&resolver), None);
-    let redirect = redirect_addr(config).map(|addr| {
-        (
-            addr,
-            acme_router(Arc::clone(&resolver), Some(redirect_base(config))),
-        )
-    });
-    Loaded {
+    let redirect = Some((
+        http01_addr(config)?,
+        acme_router(Arc::clone(&resolver), Some(redirect_base(config))),
+    ));
+    Ok(Loaded {
         quic: resolver,
         fingerprint: Arc::clone(fingerprint),
         challenge,
         redirect,
-    }
+    })
 }
 
 async fn start_alpn(built: AcmeConfig<std::io::Error>, bind: SocketAddr) -> Result<Loaded, Error> {
@@ -448,13 +469,15 @@ fn redirect_base(config: &Config) -> String {
     }
 }
 
-fn redirect_addr(config: &Config) -> Option<SocketAddr> {
-    if !config.tls.http_redirect || config.server.bind_http.port() == 80 {
-        return None;
+fn http01_addr(config: &Config) -> Result<SocketAddr, Error> {
+    if config.server.bind_http.port() == 80 {
+        return Err(Error::Invalid(
+            "bind_http must not use port 80 with the http-01 challenge",
+        ));
     }
     let mut addr = config.server.bind_http;
     addr.set_port(80);
-    Some(addr)
+    Ok(addr)
 }
 
 fn acme_cache(data_dir: &Path) -> PathBuf {

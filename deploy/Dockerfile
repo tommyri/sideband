@@ -39,7 +39,7 @@ COPY --from=build --chown=65532:65532 /data /data
 
 VOLUME ["/data"]
 WORKDIR /data
-EXPOSE 443/udp 443/tcp 9101/tcp
+EXPOSE 80/tcp 443/udp 443/tcp 9101/tcp
 
 ENTRYPOINT ["/ss-server"]
 CMD ["run", "--data-dir", "/data"]

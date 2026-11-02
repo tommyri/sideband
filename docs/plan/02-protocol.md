@@ -251,7 +251,11 @@ History JSON uses camelCase fields, base64 bytes, decimal strings for 64-bit
 integers, and named protocol enums. Pages contain at most 100 messages (the
 client requests 50). The client sends the Welcome token as the HTTPS bearer
 and verifies the same leaf certificate pin as QUIC. No redirects are followed.
-The deployed HTTP listener sits behind the configured TLS reverse proxy.
+The public listener terminates TLS itself with the same hot-reloaded leaf
+certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
+the public port is refused; only the loopback health/metrics listener remains
+unencrypted. ACME HTTP-01 uses TCP 80 for challenges and redirects every other
+request to this HTTPS listener.
 
 Every public response carries `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a
