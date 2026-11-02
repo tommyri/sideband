@@ -1,0 +1,7 @@
+dist
+node_modules
+src/lib/generated
+src-tauri/target
+src-tauri/gen
+design/*.png
+src-tauri/icons/*.png

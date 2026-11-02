@@ -37,7 +37,8 @@ Capture/encode/decode (T-071/T-072), audio of the shared app (backlog).
   request reaches sender; unsubscribed client receives nothing.
 
 ## Notes from implementation
-- Implemented on `task/T-070-video-track-transport`; awaiting review and merge.
+- Implemented on `task/T-070-video-track-transport` and integrated into the
+  current task lineage.
 - Added StartStream/StopStream, Ack.track_id, private SubscriberHint and server
   RequestKeyframe events using new protobuf tags only. Welcome advertises
   `video-streams`. Updated protocol §3/§5 with framing, limits, and semantics.

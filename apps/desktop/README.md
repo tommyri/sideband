@@ -1,8 +1,19 @@
-# Desktop client
+# SocialSpeak desktop
 
-Placeholder. The Tauri 2 application is scaffolded in task T-042.
+The desktop client is a Tauri 2 shell around `ss-client-core`. React owns only
+presentation and local UI state; connections, certificates, session storage,
+HTTP, and protocol commands remain in Rust.
 
-It will live in this directory: `src-tauri/` for the Rust shell and `src/`
-for the React UI. The shell is a thin bridge over `ss-client-core`. Audio,
-the network connection, and push-to-talk stay in the Rust crates, not in the
-webview.
+## Development
+
+```sh
+pnpm install
+pnpm check
+pnpm tauri dev
+```
+
+From the repository root, `just dev-desktop`, `just build-desktop`, and
+`just check-desktop` provide the same workflows.
+
+The checked-in bridge types live in `src/lib/bindings.ts`. A Rust test verifies
+that they still match the exported Rust command and event types.

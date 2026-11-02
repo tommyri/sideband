@@ -31,7 +31,8 @@ Noise suppression itself (T-053).
 - Zero allocation per frame.
 
 ## Notes from implementation
-- Implemented on `task/T-052-voice-activation`; awaiting review and merge.
+- Implemented on `task/T-052-voice-activation` and integrated into the current
+  task lineage.
 - `vad::Vad` accepts exact 10 ms, 48 kHz normalized mono/stereo quanta on
   the capture worker. Energy uses the louder channel's RMS, avoiding stereo
   phase cancellation. One qualifying quantum opens the gate; default quiet

@@ -26,7 +26,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-016](T-016-minimal-forwarding-server.md) | Minimal forwarding server | S | T-004 | done |
 | [T-017](T-017-headless-cli-client.md) | Headless CLI client + latency measurement | M | T-010, T-014, T-015, T-016 | done |
 | [T-018](T-018-spike-evaluation.md) | Spike evaluation vs TS3, parameter lock | S | T-017 | todo |
-| [T-019](T-019-audio-macos-acceptance.md) | macOS audio manual acceptance, timestamp correction | S | T-013 | todo |
+| [T-019](T-019-audio-macos-acceptance.md) | macOS audio manual acceptance, timestamp correction | S | T-013, T-054 | todo |
 
 ## Phase 2 — Server core
 
@@ -54,14 +54,14 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 |---|---|---|---|---|
 | [T-040](T-040-client-core-connection-state.md) | Client core: connection + state store | M | T-004, T-021, T-023, T-024, T-026 | done |
 | [T-041](T-041-client-core-voice-session.md) | Client core: voice session | M | T-040, T-010, T-015, T-025 | done |
-| [T-042](T-042-tauri-app-scaffold.md) | Tauri app scaffold and bridge | M | T-040 | todo |
+| [T-042](T-042-tauri-app-scaffold.md) | Tauri app scaffold and bridge | M | T-040 | done |
 | [T-043](T-043-onboarding-ui.md) | Onboarding UI | M | T-042 | todo |
 | [T-044](T-044-channel-voice-ui.md) | Channel sidebar and voice UI | M | T-042, T-041 | todo |
 | [T-045](T-045-text-chat-ui.md) | Text chat UI | L | T-042, T-027, T-029 | todo |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045, T-028 | todo |
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | todo |
-| [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | done |
+| [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | in-progress |
 | [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | todo |
 | [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | todo |
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | done |

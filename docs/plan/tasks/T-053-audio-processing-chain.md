@@ -38,7 +38,8 @@ best quality/CPU candidate once a Rust-friendly runtime path exists).
   output.
 
 ## Notes from implementation
-- Implemented on `task/T-053-audio-processing-chain`; awaiting review and merge.
+- Implemented on `task/T-053-audio-processing-chain` and integrated into the
+  current task lineage.
 - `ss_audio::processing`: `Processor` trait (`process(capture, render)` on
   one interleaved 10 ms, 48 kHz frame, plus stage, backend, latency, echo
   delay hint, reset) and `Chain`, which builds AEC → NS → AGC from a

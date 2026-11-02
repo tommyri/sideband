@@ -1,6 +1,6 @@
 # T-049 — `ss-input` macOS backend (listen-only CGEventTap, Input Monitoring)
 
-Status: done
+Status: in-progress
 Phase: 3
 Size: S
 Depends on: T-047
@@ -39,9 +39,9 @@ just surface it).
   crash.
 
 ## Notes from implementation
-- Implemented on `task/T-049-input-macos`; remains in-progress pending manual
-  acceptance checks, review, and merge. No Accessibility permission or hotkey
-  registration is used. `Backend::detect` now selects `MacListener` on macOS;
+- Implemented and integrated from `task/T-049-input-macos`; remains in-progress
+  pending the manual acceptance checks below. No Accessibility permission or
+  hotkey registration is used. `Backend::detect` now selects `MacListener` on macOS;
   Windows/Linux retain the mock and the explicit mock remains usable everywhere.
 - The session/head-insert/listen-only event tap and its CF run loop live on a
   dedicated thread. The C callback copies event fields to a 256-entry ring and

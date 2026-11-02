@@ -1,0 +1,33 @@
+[package]
+name = "socialspeak-desktop"
+description = "SocialSpeak desktop shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "socialspeak_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ss-audio.workspace = true
+ss-client-core.workspace = true
+ss-core.workspace = true
+ss-net.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-store = "2"
+tauri-plugin-window-state = "2"
+tokio.workspace = true
+ts-rs = { version = "11", features = ["serde-compat"] }
+
+[dev-dependencies]
+tempfile.workspace = true

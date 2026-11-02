@@ -14,3 +14,5 @@ socialspeak-pins.json
 apps/desktop/node_modules
 apps/desktop/dist
 apps/desktop/.vite
+apps/desktop/src-tauri/gen
+.pnpm-store

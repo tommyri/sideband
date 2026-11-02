@@ -1,0 +1,20 @@
+// Rust owns these shapes. `cargo test -p socialspeak-desktop` regenerates and
+// verifies the files in ./generated through ts-rs export tests.
+
+export type { ApiError } from './generated/ApiError'
+export type { AppEvent } from './generated/AppEvent'
+export type { AppSnapshot } from './generated/AppSnapshot'
+export type { ApproveFingerprintInput } from './generated/ApproveFingerprintInput'
+export type { BridgeMessage } from './generated/BridgeMessage'
+export type { ClientEventPayload } from './generated/ClientEventPayload'
+export type { ConnectInput } from './generated/ConnectInput'
+export type { ConnectResult } from './generated/ConnectResult'
+export type { ConnectionStatus } from './generated/ConnectionStatus'
+export type { CreateChannelInput } from './generated/CreateChannelInput'
+export type { HistoryRequest } from './generated/HistoryRequest'
+export type { MicrophoneModePayload } from './generated/MicrophoneModePayload'
+export type { SendMessageInput } from './generated/SendMessageInput'
+export type { ServerSummary } from './generated/ServerSummary'
+export type { SpeakerStatsPayload } from './generated/SpeakerStatsPayload'
+export type { VoiceDevicePayload } from './generated/VoiceDevicePayload'
+export type { VoiceStatsPayload } from './generated/VoiceStatsPayload'

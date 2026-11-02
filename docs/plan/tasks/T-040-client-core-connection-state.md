@@ -42,8 +42,8 @@ Audio (T-041), UI.
 
 ## Notes from implementation
 
-Implemented on `task/T-040-client-core-connection-state`; awaiting review and
-merge. Status stays in-progress until merged. Nothing pushed.
+Implemented on `task/T-040-client-core-connection-state` and integrated into
+the current task lineage.
 
 - `Client::connect` returns after authenticated Welcome and snapshot application.
   `connect_with_storage` adds host-owned session/last-server persistence; the
