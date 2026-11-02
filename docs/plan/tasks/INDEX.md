@@ -62,7 +62,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | in-progress |
 | [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | in-progress |
-| [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | todo |
+| [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | in-progress |
 | [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | todo |
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | done |
 | [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | done |

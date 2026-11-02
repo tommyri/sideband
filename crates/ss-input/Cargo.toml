@@ -24,5 +24,17 @@ windows.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+x11rb.workspace = true
+evdev.workspace = true
+inotify.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus.workspace = true

@@ -2,11 +2,11 @@
 //!
 //! Decision D8: each operating system gets a raw global listener (Win32 Raw
 //! Input, a listen-only `CGEventTap`, X11 XInput2, the XDG GlobalShortcuts
-//! portal, or opt-in evdev). Hotkey registration is not used, because it
-//! swallows the key and cannot bind mouse buttons.
+//! portal, or opt-in evdev). Raw listeners pass input through; portal
+//! shortcuts follow compositor policy and cannot bind mouse buttons.
 //!
-//! [`Backend::detect`] selects the native listener on Windows and macOS, and
-//! the mock on Linux until its backend lands. No platform feature flags are
+//! [`Backend::detect`] selects the native listener on Windows, macOS, and Linux.
+//! Unsupported Linux sessions report unavailable. No platform feature flags are
 //! required. Backends report [`InputEvent`] edges; [`PttStateMachine`] turns
 //! them into [`PttEvent`]s.
 //!
@@ -20,6 +20,8 @@
 mod backend;
 mod binding;
 mod error;
+#[cfg(target_os = "linux")]
+pub mod linux;
 mod listener;
 #[cfg(target_os = "macos")]
 pub mod macos;

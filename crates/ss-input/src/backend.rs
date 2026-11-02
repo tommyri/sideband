@@ -1,13 +1,12 @@
 //! Runtime selection of the input backend.
 //!
-//! [`Backend::detect`] selects the native Windows or macOS listener and keeps
-//! the mock on Linux pending T-050. No platform cargo features.
+//! Native input selection on Windows, macOS, and Linux. No platform cargo features.
 
 use std::{fmt, time::Duration};
 
 use tracing::debug;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 use crate::mock::MockListener;
 
 use crate::{
@@ -28,23 +27,36 @@ impl Backend {
     /// Select the listener for this process.
     ///
     /// Windows uses Raw Input on a message-only window. macOS uses a
-    /// listen-only session event tap with Input Monitoring. Linux still uses
-    /// the mock pending T-050.
+    /// listen-only session event tap with Input Monitoring. Linux detects the
+    /// Wayland portal or X11. evdev requires explicit Linux options.
     /// Detection itself never prompts; start/capture request permission.
     ///
-    /// That is decision D8. Hotkey registration is intentionally not used:
-    /// it swallows the key and cannot bind mouse buttons. No backend cargo
-    /// feature is required to compile.
+    /// That is decision D8. Raw listeners never grab input. Wayland portal
+    /// shortcuts follow compositor policy, reported through capabilities.
+    /// No backend cargo feature is required to compile.
     #[must_use]
     pub fn detect() -> Self {
         #[cfg(target_os = "macos")]
         let listener: Box<dyn Listener> = Box::new(crate::macos::MacListener::new());
         #[cfg(target_os = "windows")]
         let listener: Box<dyn Listener> = Box::new(crate::windows::WinListener::new());
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let listener: Box<dyn Listener> = Box::new(MockListener::new(Caps::mock()));
+        #[cfg(target_os = "linux")]
+        let listener: Box<dyn Listener> = Box::new(crate::linux::LinuxListener::new(
+            crate::linux::Options::default(),
+        ));
         debug!(os = std::env::consts::OS, "selected input backend");
         Self { listener }
+    }
+
+    /// Detect Linux input with explicit preferences, including evdev opt-in.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn detect_linux(options: crate::linux::Options) -> Self {
+        Self {
+            listener: Box::new(crate::linux::LinuxListener::new(options)),
+        }
     }
 
     /// Capabilities of the selected listener.
@@ -92,19 +104,19 @@ impl fmt::Debug for Backend {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     use std::time::Duration;
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     use super::Backend;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     use crate::{
         binding::{Binding, Code},
         error::Error,
         listener::Caps,
     };
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     #[test]
     fn detect_reports_mock_limits_and_starts() {
         let backend = Backend::detect();

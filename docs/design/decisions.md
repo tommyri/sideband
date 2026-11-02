@@ -141,9 +141,11 @@ push-to-talk while gaming.
 `ss-input` owns a binding and the press/release state machine. A binding is
 a USB HID key code or a mouse button (`Left`, `Right`, `Middle`, `Mouse4`,
 `Mouse5`) plus optional modifiers. Either side of a modifier counts.
-`Backend::detect` selects Windows Raw Input (T-048) or a listen-only macOS
-event tap (T-049); Linux keeps `MockListener` until T-050. Those backends are
-not cargo features. Neither native listener registers or consumes a shortcut.
+`Backend::detect` selects Windows Raw Input (T-048), a listen-only macOS
+event tap (T-049), or Linux XInput2/GlobalShortcuts (T-050). Linux evdev
+requires explicit opt-in through `Backend::detect_linux`; unsupported
+sessions report unavailable. These backends are not cargo features. Raw
+listeners never consume input; portal shortcuts follow compositor policy.
 
 The machine, merged into `main` with T-047:
 

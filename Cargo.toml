@@ -20,6 +20,11 @@ rust-version = "1.99"
 version = "0.1.0"
 
 [workspace.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+x11rb = { version = "0.14", features = ["xinput", "xkb"] }
+evdev = "0.13"
+inotify = { version = "0.11", default-features = false }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 # macOS listen-only input taps and their dedicated Core Foundation run loop.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop", "CFDate", "CFString"] }

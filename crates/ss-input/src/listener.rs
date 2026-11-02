@@ -217,8 +217,9 @@ pub trait Listener: Send + Sync {
 
     /// Start reporting transmit edges to `handler`.
     ///
-    /// Bindings start empty. Call [`Handle::update_bindings`] before expecting
-    /// events.
+    /// Raw-listener bindings start empty. Call [`Handle::update_bindings`]
+    /// before expecting events. System-owned portal bindings are instead
+    /// configured by the compositor during start; inspect capabilities first.
     ///
     /// # Errors
     ///

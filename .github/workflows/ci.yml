@@ -44,6 +44,12 @@ jobs:
         run: just check-desktop
       - name: just check
         run: just check
+      - name: Linux input integration tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y dbus xvfb xdotool
+          dbus-run-session -- cargo test -p ss-input bind_activate_deactivate_session_loss_and_rebind -- --ignored --nocapture
+          xvfb-run -a cargo test -p ss-input x11_native_key_mouse_capture_and_stop -- --ignored --nocapture
       - name: Optional Opus DRED
         run: cargo test -p ss-audio --features dred
       - name: Optional Opus DRED lints
