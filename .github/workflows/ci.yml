@@ -60,6 +60,13 @@ jobs:
         run: cargo clippy -p ss-audio --all-targets --all-features -- -D warnings
       - name: Processing frame budget
         run: cargo bench -p ss-audio --all-features --bench processing
+      - name: Optional screen-share pipeline
+        run: cargo test -p ss-client-core --features screen-share
+      - name: Optional screen-share lints
+        run: cargo clippy -p ss-client-core --all-targets --features screen-share -- -D warnings
+      - name: Wayland PipeWire capture build
+        if: runner.os == 'Linux'
+        run: cargo clippy -p ss-video --all-targets --features pipewire -- -D warnings
       - name: Dependency graph
         if: runner.os == 'Linux'
         run: just check-deps

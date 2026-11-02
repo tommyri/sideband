@@ -23,7 +23,10 @@ for the owning worker to stop. `ClientSet` owns independent server clients.
 `media::VideoTrackSender` opens byte-level GOP writers after StartStream.
 One `VideoTrackReceiver` accepts all incoming video groups and exposes their
 track ids for demux. Subscribe through control first; reset/drop obsolete GOPs.
-No capture, codec, or rendering is part of these APIs.
+With the optional `screen-share` feature, `ScreenShareSession` combines native
+capture and H.264 encoding from `ss-video` with those GOP writers. The session
+owns keyframe-request handling and removes its server track when capture ends.
+Rendering remains outside this crate.
 
 `load_older` fetches HTTPS history with the QUIC certificate pin and session
 bearer, without redirects or environment proxies. A concurrent state change
@@ -35,5 +38,6 @@ client media bridge. Hosts select PTT, VAD, or open mic and receive 500 ms
 stats plus actionable device events. Test tone/silence sources need no audio
 hardware. `leave().await` releases every stream and worker.
 
-May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`, Quinn stream handles.
+May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`, optional
+`ss-video`, and Quinn stream handles.
 Must not depend on `ss-server`, `ss-cli`, SQL, or windowing toolkits.

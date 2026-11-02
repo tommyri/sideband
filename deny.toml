@@ -4,6 +4,17 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # gtk-rs 0.18 still uses this macro helper. The advisory is maintenance-only
+  # and has no patched release; remove when Tauri moves off the GTK 3 stack.
+  { id = "RUSTSEC-2024-0370", reason = "transitive GTK 3 macro dependency; unmaintained with no safe upgrade" },
+  # zbus 5 split these types into separate crates. zbus 6 merged them back;
+  # ashpd 0.13 and Tauri still require zbus 5. These are maintenance notices,
+  # not vulnerabilities. Remove together when both upstreams adopt zbus 6.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant was merged into zbus 6; current ashpd/Tauri require zbus 5" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names was merged into zbus 6; current ashpd/Tauri require zbus 5" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive was merged into zbus 6; current ashpd/Tauri require zbus 5" },
+]
 
 [licenses]
 version = 2
@@ -36,6 +47,29 @@ allow = ["CDLA-Permissive-2.0"]
 # not link it. Scoped to this crate only; maintainer sign-off noted in T-061.
 [[licenses.exceptions]]
 name = "audio_thread_priority"
+allow = ["MPL-2.0"]
+
+# Tauri's HTML/CSS parsing stack and directory helper use these MPL-2.0
+# crates unmodified. MPL is file-level copyleft; any changes to those crate
+# sources must remain MPL, but it does not apply to SocialSpeak's source.
+[[licenses.exceptions]]
+name = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "option-ext"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "selectors"
 allow = ["MPL-2.0"]
 
 [bans]

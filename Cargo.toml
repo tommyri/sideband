@@ -10,6 +10,7 @@ members = [
   "crates/ss-net",
   "crates/ss-proto",
   "crates/ss-server",
+  "crates/ss-video",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ ss-core = { path = "crates/ss-core", version = "0.1.0" }
 ss-input = { path = "crates/ss-input", version = "0.1.0" }
 ss-net = { path = "crates/ss-net", version = "0.1.0" }
 ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
+ss-video = { path = "crates/ss-video", version = "0.1.0" }
 
 allocation-counter = "0.8"
 # Optional RNNoise denoising and speech probability; no CLI, C API, or signal adapters.
@@ -75,6 +77,8 @@ metrics = "0.24"
 # The crate's HTTP listener and push gateway pull aws-lc. We render the
 # text ourselves, so those features stay off and the static build stays on ring.
 metrics-exporter-prometheus = { version = "0.17", default-features = false }
+moq-net = "=0.3.18"
+moq-video = { version = "=0.1.18", default-features = false }
 # Content sniffing for uploads. The client-supplied type is ignored.
 infer = "0.19"
 # Certificate file changes. The QUIC socket stays open across a reload.

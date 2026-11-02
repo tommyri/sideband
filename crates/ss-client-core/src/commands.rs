@@ -22,7 +22,7 @@ empty_commands! {
     revoke_invite: RevokeInvite, kick_user: KickUser, ban_user: BanUser, unban_user: UnbanUser,
     move_user: MoveUser, server_mute_user: ServerMuteUser, delete_role: DeleteRole,
     set_user_roles: SetUserRoles, set_channel_override: SetChannelOverride,
-    subscribe_track: SubscribeTrack, unsubscribe_track: UnsubscribeTrack,
+    subscribe_track: SubscribeTrack, unsubscribe_track: UnsubscribeTrack, stop_stream: StopStream,
     request_keyframe: RequestKeyframe, set_preferred_quality: SetPreferredQuality,
     set_presence: SetPresence, delete_webhook: DeleteWebhook,
 }
@@ -46,6 +46,14 @@ resource_commands! {
     create_webhook: CreateWebhook => Webhook, v1::Webhook,
 }
 impl Client {
+    /// Start publishing a video/screen stream and return its server track id.
+    pub async fn start_stream(&self, command: v1::StartStream) -> Result<u32, Error> {
+        match self.command(Msg::StartStream(command)).await?.result {
+            Some(ack::Result::TrackId(track)) if track != 0 => Ok(track),
+            _ => Err(Error::Protocol("expected video track id")),
+        }
+    }
+
     /// Send a text message and return its assigned ULID. Server events carry
     /// the stored message and nonce; no optimistic duplicate is inserted.
     pub async fn send_message(&self, command: v1::SendMessage) -> Result<Id, Error> {

@@ -93,6 +93,7 @@ pub(crate) struct MediaLink {
     outgoing: broadcast::Sender<Bytes>,
     incoming: broadcast::Sender<IncomingMedia>,
     stats: Arc<RwLock<TransportStats>>,
+    quic: Arc<RwLock<Option<quinn::Connection>>>,
 }
 
 impl MediaLink {
@@ -103,6 +104,7 @@ impl MediaLink {
             outgoing,
             incoming,
             stats: Arc::new(RwLock::new(TransportStats::default())),
+            quic: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -116,6 +118,15 @@ impl MediaLink {
 
     pub fn stats(&self) -> TransportStats {
         *self.stats.read()
+    }
+
+    #[cfg(feature = "screen-share")]
+    pub fn quic(&self) -> Option<quinn::Connection> {
+        self.quic.read().clone()
+    }
+
+    fn connected(&self, connection: Option<&ss_net::Connection>) {
+        *self.quic.write() = connection.map(|value| value.quic().clone());
     }
 }
 
@@ -387,12 +398,14 @@ impl Runner {
         Ok(removed)
     }
     async fn run(mut self, mut live: Live, mut commands: mpsc::Receiver<Command>) {
+        self.media.connected(Some(&live.connection));
         loop {
             let outcome = self.connected(&mut live, &mut commands).await;
             if outcome.as_ref().is_err_and(|error| !terminal(error)) {
                 live.connection
                     .close(RECONNECT_CLOSE_CODE, b"client reconnecting");
             }
+            self.media.connected(None);
             drop(live);
             match outcome {
                 Ok(()) => {
@@ -462,6 +475,7 @@ impl Runner {
                         self.typing.clear();
                         let _ = self.events.send(ClientEvent::Resynced);
                         self.status(ConnectionState::Connected);
+                        self.media.connected(Some(&next.connection));
                         live = next;
                         break;
                     }

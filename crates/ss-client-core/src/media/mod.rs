@@ -2,6 +2,10 @@
 //! control stream first; capture, decoding, and rendering belong above this API.
 use ss_net::media::{DatagramHeader, MAX_TRACK_ID, StreamHeader, stream};
 pub use stream::{Error, Frame, GroupReader, GroupWriter};
+#[cfg(feature = "screen-share")]
+mod sender;
+#[cfg(feature = "screen-share")]
+pub use sender::{ScreenShareError, ScreenShareSession};
 
 /// Opens GOP streams for a server-assigned video track.
 pub struct VideoTrackSender {
@@ -13,11 +17,15 @@ pub struct VideoTrackSender {
 impl VideoTrackSender {
     /// Bind to the track id returned by StartStream. No media is sent yet.
     pub fn new(connection: &ss_net::Connection, track: u32) -> Result<Self, Error> {
+        Self::from_quinn(connection.quic().clone(), track)
+    }
+
+    fn from_quinn(connection: quinn::Connection, track: u32) -> Result<Self, Error> {
         if track == 0 || track > MAX_TRACK_ID {
             return Err(ss_net::media::MediaError::TrackId.into());
         }
         Ok(Self {
-            connection: connection.quic().clone(),
+            connection,
             track,
             group: 0,
             seq: 0,

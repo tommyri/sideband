@@ -9,9 +9,11 @@ flowchart LR
         Core["ss-client-core<br/>connection, state, voice session"]
         Audio["ss-audio<br/>cpal → opus → datagrams<br/>jitter buffer → decode → mix"]
         Input["ss-input<br/>raw PTT listener"]
+        Video["ss-video<br/>native capture → H.264"]
         UI <-->|Tauri commands + events| Core
         Core --> Audio
         Input --> Core
+        Core --> Video
     end
     subgraph Server["ss-server (one binary on the VPS)"]
         QUIC["QUIC endpoint (quinn)<br/>control streams + media datagrams"]
@@ -43,6 +45,7 @@ socialspeak/
 │   ├── ss-net/                # quinn setup, TLS/TOFU, control stream codec, datagram header, track model
 │   ├── ss-audio/              # device I/O, resampling, opus wrapper, jitter buffer, mixer, processing chain
 │   ├── ss-input/              # global raw input listener (PTT) per OS
+│   ├── ss-video/              # native screen/window capture, scale, H.264 encode
 │   ├── ss-client-core/        # headless client: connection manager, state store, voice session, events
 │   ├── ss-cli/                # headless test client (spike, load tests, diagnostics)
 │   └── ss-server/             # the server binary
@@ -56,7 +59,8 @@ socialspeak/
 
 Dependency direction (no cycles): `ss-core` ← `ss-proto` ← `ss-net` ←
 `ss-client-core` ← (`ss-cli`, `apps/desktop`); `ss-audio` and `ss-input` depend
-only on `ss-core`; `ss-server` depends on `ss-core`, `ss-proto`, `ss-net`.
+only on `ss-core`; `ss-video` is transport-independent and optionally feeds
+`ss-client-core`; `ss-server` depends on `ss-core`, `ss-proto`, `ss-net`.
 
 ## Server runtime model
 
@@ -93,6 +97,9 @@ only on `ss-core`; `ss-server` depends on `ss-core`, `ss-proto`, `ss-net`.
   cache per channel, read states), `VoiceSession` (owns the audio graph while
   joined to a voice channel), and an outbound `broadcast` of `ClientEvent`s
   the UI subscribes to.
+- With its optional `screen-share` feature, `ss-client-core` owns a pull-driven
+  `ScreenShareSession`: `ss-video` captures/scales/encodes and the session maps
+  each IDR-led GOP onto the T-070 QUIC stream transport.
 - Tauri shell exposes a thin command surface (`connect`, `join_voice`,
   `send_message`, …) and forwards `ClientEvent`s as Tauri events. No business
   logic in `src-tauri` beyond marshalling.

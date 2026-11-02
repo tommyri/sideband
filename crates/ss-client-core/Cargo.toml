@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 macos-voiceio = ["ss-audio/macos-voiceio"]
+screen-share = ["dep:ss-video"]
 
 [dependencies]
 quinn.workspace = true
@@ -17,6 +18,7 @@ ss-audio.workspace = true
 ss-core.workspace = true
 ss-input.workspace = true
 ss-net.workspace = true
+ss-video = { workspace = true, optional = true }
 
 ss-proto.workspace = true
 bytes.workspace = true

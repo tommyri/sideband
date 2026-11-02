@@ -51,10 +51,12 @@ The voice and control transport is written in this repo. The moq.dev crates
 (`moq-lite`, `hang`, `moq-relay`) are not a dependency of the server or of
 the voice path.
 
-`moq-video` (or `pinray` plus the platform encoders, if `moq-video`'s encoder
-API cannot be used without its transport) is the intended capture and codec
-library for screen sharing. It is linked from the client, not from the
-server.
+`moq-video` 0.1.18 is the capture and codec library for screen sharing. Its
+capture, resize, conversion, and encoder APIs work independently of MoQ, so
+`ss-video` uses those APIs directly and hands Annex-B H.264 access units to
+SocialSpeak's own GOP transport. No MoQ catalog, relay, or subscription type
+is linked into the application protocol. `moq-video` is linked from the
+client, not from the server.
 
 The relay and publish/subscribe model in that project buys nothing for a
 single server, and the crates were at 0.12.x with breaking changes between

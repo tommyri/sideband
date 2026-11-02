@@ -1,6 +1,6 @@
 # T-071 — Client: screen/window capture and hardware H.264 encode
 
-Status: todo
+Status: in-progress
 Phase: 5
 Size: L
 Depends on: T-070, T-041
@@ -42,3 +42,23 @@ hardware exists is a cheap follow-up), camera.
 - Keyframe request produces an IDR within 100 ms.
 
 ## Notes from implementation
+- Added `ss-video` around `moq-video` 0.1.18 as a media library only. It uses
+  native source discovery/capture, resize/conversion, VideoToolbox on macOS,
+  Media Foundation on Windows, VAAPI/NVENC where enabled on Linux, and
+  OpenH264 as the portable fallback. No MoQ transport types are used.
+- Source picker metadata covers displays, windows, RGBA thumbnails, cursor
+  selection, explicit permission failures, and the Wayland system picker.
+  The upstream portal backend retains its restore token for the process.
+- `ScreenShareSession` integrates capture/encode with `StartStream`, one QUIC
+  stream per IDR-led GOP, keyframe requests, subscriber hints, source-close
+  cleanup, and reconnect termination. Encoder diagnostics expose backend,
+  frame/byte totals, measured fps/bitrate, and current/max encode time.
+- Unit tests cover preset selection, Annex-B IDR detection, 48 kHz timestamps,
+  thumbnails, and forced OpenH264 IDRs. Ignored hardware tests exercise
+  VideoToolbox keyframes and the 1080p30 encode-time budget when the current
+  Mac exposes a capable hardware session.
+- Remaining before `done`: run the interactive source picker and the manual
+  1080p30 CPU/latency acceptance matrix on macOS, Windows, Linux X11, and
+  Linux Wayland. This development Mac accepts a small VideoToolbox session
+  but rejects a 1920×1080 session (`VTCompressionSessionCreate -12908`), so it
+  cannot supply the macOS performance measurement.
