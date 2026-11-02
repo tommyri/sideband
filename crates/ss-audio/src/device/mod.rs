@@ -11,17 +11,57 @@
 //! still delivers only zeros is reported as [`DeviceEvent::SilentInput`].
 
 mod convert;
+#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+mod macos_voiceio;
 mod manager;
 mod select;
 mod stream;
 mod watch;
 
+#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+pub use macos_voiceio::{MutedSpeechActivity, VoiceProcessingConfig, VoiceProcessingStream};
 pub use manager::DeviceManager;
 pub use select::GraphConfig;
 pub use stream::{CaptureStream, Counters, PlaybackStream};
 pub use watch::{DeviceEvent, DeviceId, DeviceInfo, Direction, MicrophoneAccess};
 
 pub use crate::{mixer::SAMPLES_PER_CHANNEL, resample::GRAPH_RATE};
+
+/// A system microphone-processing mode selected by the user in Control Center.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MicrophoneMode {
+    /// Standard voice DSP.
+    Standard,
+    /// Minimal filtering while retaining echo cancellation.
+    WideSpectrum,
+    /// Speech enhancement with background-noise attenuation.
+    VoiceIsolation,
+    /// The OS does not expose a known mode on this machine.
+    Unknown,
+}
+
+/// The user's preferred microphone mode and the mode active on this route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MicrophoneModeStatus {
+    pub preferred: MicrophoneMode,
+    pub active: MicrophoneMode,
+}
+
+/// Read the Control Center microphone-mode state without changing it.
+#[must_use]
+pub fn microphone_mode_status() -> MicrophoneModeStatus {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::microphone_mode_status()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        MicrophoneModeStatus {
+            preferred: MicrophoneMode::Unknown,
+            active: MicrophoneMode::Unknown,
+        }
+    }
+}
 
 /// Failures while enumerating or opening a device.
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +90,10 @@ pub enum Error {
     /// The user or a device policy denied microphone access to this app.
     #[error("microphone access is denied for this app; allow it in the system privacy settings")]
     PermissionDenied,
+    /// Apple's VoiceProcessingIO unit could not be configured or started.
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    #[error("Apple voice processing audio error")]
+    VoiceProcessing(#[source] coreaudio::Error),
 }
 
 impl Error {

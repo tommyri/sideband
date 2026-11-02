@@ -27,6 +27,8 @@ use super::{
         Defaults, DeviceEvent, DeviceId, DeviceInfo, Direction, diff_devices, is_low_quality_input,
     },
 };
+#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+use super::{VoiceProcessingConfig, VoiceProcessingStream};
 
 /// How often the inventory thread compares the host's device list.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -179,6 +181,31 @@ impl DeviceManager {
         Ok((stream, producer))
     }
 
+    /// Open Apple's full-duplex VoiceProcessingIO backend on the system
+    /// default input and output devices.
+    ///
+    /// The capture consumer and playback producer use the same 48 kHz ring
+    /// contracts as [`Self::open_capture`] and [`Self::open_playback`]. A
+    /// single Audio Unit owns both directions so echo cancellation receives
+    /// the exact render reference. Custom device selection is intentionally
+    /// unavailable: VoiceProcessingIO follows the system defaults.
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    pub fn open_voice_processing(
+        &self,
+        capture: GraphConfig,
+        playback: GraphConfig,
+        config: VoiceProcessingConfig,
+    ) -> Result<(VoiceProcessingStream, Consumer<f32>, Producer<f32>), Error> {
+        if microphone_access() == MicrophoneAccess::Denied {
+            return Err(Error::PermissionDenied);
+        }
+        let streams = VoiceProcessingStream::open(capture, playback, config)?;
+        if microphone_access() == MicrophoneAccess::Denied {
+            return Err(Error::PermissionDenied);
+        }
+        Ok(streams)
+    }
+
     fn note_quality(&self, name: &str, stream: &CaptureStream) {
         if !is_low_quality_input(name, stream.device_rate()) {
             return;
@@ -269,11 +296,11 @@ fn find_device(id: &DeviceId) -> Result<cpal::Device, Error> {
 
 fn identity(device: &cpal::Device) -> Result<(DeviceId, String), Error> {
     let id = device.id().map_err(Error::Backend)?;
-    let name = device.description().map_or_else(
-        |_| device.to_string(),
-        |description| description.name().to_owned(),
-    );
-    Ok((DeviceId::new(id.to_string()), name))
+    let id = id.to_string();
+    let name = device
+        .description()
+        .map_or_else(|_| id.clone(), |description| description.name().to_owned());
+    Ok((DeviceId::new(id), name))
 }
 
 fn snapshot() -> (Vec<DeviceInfo>, Defaults) {

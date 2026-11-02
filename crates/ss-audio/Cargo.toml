@@ -13,6 +13,9 @@ aec = ["dep:sonora"]
 # Reserved: no DeepFilterNet3 build meets the dependency and model rules (T-053 notes).
 deepfilter = []
 dred = ["opusic-c/dred"]
+# Apple's full-duplex echo-cancelling Audio Unit. macOS only; enabling the
+# feature on another target keeps the portable device backend unchanged.
+macos-voiceio = ["dep:block2", "dep:coreaudio", "dep:objc2-audio-toolbox"]
 rnnoise = ["dep:nnnoiseless"]
 
 [dependencies]
@@ -29,7 +32,10 @@ tracing.workspace = true
 cpal.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = { workspace = true, optional = true }
+coreaudio = { workspace = true, optional = true }
 objc2.workspace = true
+objc2-audio-toolbox = { workspace = true, optional = true }
 objc2-avf-audio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

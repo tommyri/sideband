@@ -19,6 +19,11 @@ extension is off. Optional `dred` compiles redundancy, off until configured.
 `device` opens capture and playback through `cpal`, resamples with rubato
 when the hardware rate is not 48 kHz, and reports hot-plug, lost devices,
 and capture that is only zeros (a denied macOS microphone looks like that).
+On macOS, feature `macos-voiceio` adds one full-duplex Apple
+VoiceProcessingIO unit. Its capture and playback rings have the same 48 kHz
+contract, while the unit owns AEC/NS/AGC, muted-talker detection, and Control
+Center mic-mode reporting. `ss-client-core` disables its software processing
+chain while this backend is active.
 `jitter` admits bounded audio timing metadata and releases ordered packets.
 `receive::TrackReceiver` emits stereo 10 ms quanta. `mixer` sums them. T-041
 connects the mixer to the playback ring.
@@ -33,7 +38,8 @@ no sample is touched. Features `aec`, `rnnoise`; `deepfilter` is reserved (T-059
 ## May depend on
 
 `ss-core`, `cpal`, `rubato`, Opus bindings, `rtrb`; optional `sonora` and
-`nnnoiseless`; on macOS `objc2-avf-audio` for the microphone permission.
+`nnnoiseless`; on macOS `objc2-avf-audio` for microphone permission and,
+optionally, `coreaudio-rs`/AudioToolbox for VoiceProcessingIO.
 
 ## Must not depend on
 

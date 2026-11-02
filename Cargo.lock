@@ -2661,6 +2661,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
 dependencies = [
  "bitflags",
+ "block2",
  "libc",
  "objc2",
  "objc2-core-audio",
@@ -4266,10 +4267,13 @@ name = "ss-audio"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "block2",
+ "coreaudio-rs",
  "cpal",
  "criterion",
  "nnnoiseless",
  "objc2",
+ "objc2-audio-toolbox",
  "objc2-avf-audio",
  "opusic-c",
  "proptest",

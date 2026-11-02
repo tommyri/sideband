@@ -240,3 +240,12 @@ These need hardware, a person, or a settings change.
    that opening capture fails with `PermissionDenied`.
 5. **Five-minute glitch listen** (carried from T-010) at the 240-frame
    default on headphones.
+6. **Apple VoiceProcessingIO.** Start a call with a remote listener on the
+   built-in speakers and microphone. Switch portable → Apple → portable with
+   `VoiceSession::set_device_backend`; confirm the channel remains joined,
+   the remote echo disappears in Apple mode, and mute still produces a
+   muted-talker event. Record acoustic mouth-to-ear for both modes (the Audio
+   Unit itself reports 0 ms). Change Voice Isolation/Wide Spectrum in Control
+   Center and confirm the client event follows the active mode. Repeat for
+   five minutes, leave, then confirm no running Audio Unit or memory/thread
+   growth remains.

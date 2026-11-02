@@ -39,8 +39,11 @@ argon2 = "0.5"
 axum = "0.8"
 base64 = "0.22"
 bitflags = "2"
+block2 = "0.6.2"
 bytes = "1"
 criterion = "0.7"
+# Safe Audio Unit host used only by the optional macOS VoiceProcessingIO path.
+coreaudio = { package = "coreaudio-rs", version = "0.14.2" }
 # OSCE also compiles Deep PLC; DRED remains a separate opt-in feature.
 opusic-c = { version = "=1.6.1", features = ["osce"] }
 clap = { version = "4", features = ["derive"] }
@@ -85,6 +88,16 @@ objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = [
   "std",
   "AVAudioApplication",
+] }
+# VoiceProcessingIO property identifiers. The hosting wrapper above owns the
+# unit and callbacks; these bindings are only used for Apple-specific toggles.
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "AUComponent",
+  "AudioComponent",
+  "AudioOutputUnit",
+  "AudioUnitProperties",
+  "block2",
 ] }
 parking_lot = "0.12"
 prost = "0.14"

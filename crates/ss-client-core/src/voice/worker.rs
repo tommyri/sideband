@@ -12,6 +12,8 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 use rtrb::{Consumer, Producer};
+#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+use ss_audio::device::{MutedSpeechActivity, VoiceProcessingConfig, VoiceProcessingStream};
 use ss_audio::{
     device::{
         self, CaptureStream, DeviceEvent, DeviceManager, Direction, GraphConfig, PlaybackStream,
@@ -28,15 +30,26 @@ use crate::{
 };
 
 use super::{
-    AudioConfig, AudioSource, Cue, TalkGate, VoiceDeviceState,
+    AudioConfig, AudioSource, Cue, DeviceBackend, TalkGate, VoiceDeviceState,
     graph::{GraphSnapshot, TrackSpec, VoiceGraph},
 };
 
 pub(super) enum Update {
-    Tracks { own: u32, remote: Vec<TrackSpec> },
-    User { user: Id, gain: f32, muted: bool },
+    Tracks {
+        own: u32,
+        remote: Vec<TrackSpec>,
+    },
+    User {
+        user: Id,
+        gain: f32,
+        muted: bool,
+    },
     Cue(Cue),
     Bitrate(u32),
+    DeviceBackend {
+        backend: DeviceBackend,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -169,8 +182,284 @@ pub(super) async fn start(
 
 struct Devices {
     manager: DeviceManager,
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    capture_config: GraphConfig,
     capture: Option<(CaptureStream, Consumer<f32>)>,
     playback: Option<(PlaybackStream, Producer<f32>)>,
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    voice_processing: Option<(VoiceProcessingStream, Consumer<f32>, Producer<f32>)>,
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    voice_muted: bool,
+    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    voice_mode: ss_audio::device::MicrophoneMode,
+}
+
+impl Devices {
+    fn capture_consumer_mut(&mut self) -> Option<&mut Consumer<f32>> {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if let Some((_, consumer, _)) = &mut self.voice_processing {
+            return Some(consumer);
+        }
+        self.capture.as_mut().map(|(_, consumer)| consumer)
+    }
+
+    fn playback_producer_mut(&mut self) -> Option<&mut Producer<f32>> {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if let Some((_, _, producer)) = &mut self.voice_processing {
+            return Some(producer);
+        }
+        self.playback.as_mut().map(|(_, producer)| producer)
+    }
+
+    fn delays(&self) -> (Duration, Duration) {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if self.voice_processing.is_some() {
+            // Apple's AEC owns its timing model; the software chain is off.
+            return (Duration::ZERO, Duration::ZERO);
+        }
+        let capture = self
+            .capture
+            .as_ref()
+            .and_then(|(stream, _)| stream.capture_delay())
+            .unwrap_or_default();
+        let playback = self
+            .playback
+            .as_ref()
+            .and_then(|(stream, _)| stream.playback_delay())
+            .unwrap_or_default();
+        (capture, playback)
+    }
+
+    fn counter_values(&self) -> (u64, u64) {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if let Some((stream, _, _)) = &self.voice_processing {
+            return (
+                stream.playback_counters().underruns(),
+                stream.capture_counters().overruns(),
+            );
+        }
+        let underruns = self
+            .playback
+            .as_ref()
+            .map_or(0, |(stream, _)| stream.counters().underruns());
+        let overruns = self
+            .capture
+            .as_ref()
+            .map_or(0, |(stream, _)| stream.counters().overruns());
+        (underruns, overruns)
+    }
+
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "macos-voiceio")),
+        allow(clippy::unused_self)
+    )]
+    fn voice_processing_active(&self) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        {
+            self.voice_processing.is_some()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
+        {
+            false
+        }
+    }
+
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "macos-voiceio")),
+        allow(clippy::unused_self)
+    )]
+    fn voice_processing_stopped(&self) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        {
+            self.voice_processing
+                .as_ref()
+                .is_some_and(|(stream, _, _)| stream.is_running().is_ok_and(|running| !running))
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
+        {
+            false
+        }
+    }
+
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "macos-voiceio")),
+        allow(clippy::unused_self)
+    )]
+    fn sync_voice_processing(
+        &mut self,
+        muted: bool,
+        events: &tokio::sync::broadcast::Sender<ClientEvent>,
+    ) {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if let Some((stream, _, _)) = &mut self.voice_processing {
+            if muted != self.voice_muted {
+                match stream.set_muted(muted) {
+                    Ok(()) => self.voice_muted = muted,
+                    Err(error) => {
+                        let _ = events.send(ClientEvent::VoiceDevice(
+                            VoiceDeviceState::Unavailable(error.to_string()),
+                        ));
+                    }
+                }
+            }
+            if let Some(activity) = stream.take_muted_speech_activity() {
+                let _ = events.send(ClientEvent::VoiceDevice(VoiceDeviceState::MutedSpeech {
+                    active: activity == MutedSpeechActivity::Started,
+                }));
+            }
+            let mode = device::microphone_mode_status().active;
+            if mode != self.voice_mode {
+                self.voice_mode = mode;
+                let _ = events.send(ClientEvent::VoiceDevice(
+                    VoiceDeviceState::AppleVoiceProcessing {
+                        microphone_mode: mode,
+                    },
+                ));
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
+        let _ = (muted, events);
+    }
+
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "macos-voiceio")),
+        allow(clippy::unused_self)
+    )]
+    fn reopen_voice_processing(&mut self, config: &AudioConfig) -> Result<(), String> {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        {
+            let DeviceBackend::AppleVoiceProcessing {
+                bypass,
+                automatic_gain_control,
+            } = config.device_backend
+            else {
+                return Ok(());
+            };
+            self.voice_processing = None;
+            let streams = self
+                .manager
+                .open_voice_processing(
+                    self.capture_config,
+                    GraphConfig::STEREO,
+                    VoiceProcessingConfig {
+                        bypass,
+                        automatic_gain_control,
+                        muted: self.voice_muted,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            self.voice_processing = Some(streams);
+            self.voice_mode = ss_audio::device::MicrophoneMode::Unknown;
+            Ok(())
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
+        {
+            let _ = config;
+            Err("Apple VoiceProcessingIO is not enabled in this build".to_owned())
+        }
+    }
+}
+
+fn open_devices(
+    manager: DeviceManager,
+    config: &AudioConfig,
+    capture_config: GraphConfig,
+    events: &tokio::sync::broadcast::Sender<ClientEvent>,
+) -> Result<Devices, String> {
+    match config.device_backend {
+        DeviceBackend::Portable => {
+            let capture = match manager.open_capture(config.input_device.as_ref(), capture_config) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    send_device_error(events, &error);
+                    return Err(error.to_string());
+                }
+            };
+            let playback =
+                match manager.open_playback(config.output_device.as_ref(), GraphConfig::STEREO) {
+                    Ok(playback) => playback,
+                    Err(error) => {
+                        send_device_error(events, &error);
+                        return Err(error.to_string());
+                    }
+                };
+            Ok(Devices {
+                manager,
+                #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+                capture_config,
+                capture: Some(capture),
+                playback: Some(playback),
+                #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+                voice_processing: None,
+                #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+                voice_muted: config.start_muted,
+                #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+                voice_mode: ss_audio::device::MicrophoneMode::Unknown,
+            })
+        }
+        DeviceBackend::AppleVoiceProcessing { .. } => {
+            open_voice_processing_devices(manager, config, capture_config, events)
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+fn open_voice_processing_devices(
+    manager: DeviceManager,
+    config: &AudioConfig,
+    capture_config: GraphConfig,
+    events: &tokio::sync::broadcast::Sender<ClientEvent>,
+) -> Result<Devices, String> {
+    if config.input_device.is_some() || config.output_device.is_some() {
+        return Err("Apple VoiceProcessingIO requires the system-default devices".to_owned());
+    }
+    let DeviceBackend::AppleVoiceProcessing {
+        bypass,
+        automatic_gain_control,
+    } = config.device_backend
+    else {
+        unreachable!("called only for the Apple backend");
+    };
+    let streams = manager
+        .open_voice_processing(
+            capture_config,
+            GraphConfig::STEREO,
+            VoiceProcessingConfig {
+                bypass,
+                automatic_gain_control,
+                muted: config.start_muted,
+            },
+        )
+        .map_err(|error| {
+            send_device_error(events, &error);
+            error.to_string()
+        })?;
+    let voice_mode = device::microphone_mode_status().active;
+    let _ = events.send(ClientEvent::VoiceDevice(
+        VoiceDeviceState::AppleVoiceProcessing {
+            microphone_mode: voice_mode,
+        },
+    ));
+    Ok(Devices {
+        manager,
+        capture_config,
+        capture: None,
+        playback: None,
+        voice_processing: Some(streams),
+        voice_muted: config.start_muted,
+        voice_mode,
+    })
+}
+
+#[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
+fn open_voice_processing_devices(
+    manager: DeviceManager,
+    config: &AudioConfig,
+    capture_config: GraphConfig,
+    events: &tokio::sync::broadcast::Sender<ClientEvent>,
+) -> Result<Devices, String> {
+    let _ = (manager, config, capture_config, events);
+    Err("Apple VoiceProcessingIO is unavailable on this platform or build".to_owned())
 }
 
 struct Runtime {
@@ -206,7 +495,13 @@ impl Runtime {
     ) -> Result<Self, String> {
         let graph = VoiceGraph::new(profile, bitrate).map_err(|error| error.to_string())?;
         let channels = u16::try_from(graph.channels()).map_err(|error| error.to_string())?;
-        let chain = Chain::new(config.processing, channels).map_err(|error| error.to_string())?;
+        let processing = match config.device_backend {
+            DeviceBackend::Portable => config.processing,
+            DeviceBackend::AppleVoiceProcessing { .. } => {
+                ss_audio::processing::ProcessingConfig::OFF
+            }
+        };
+        let chain = Chain::new(processing, channels).map_err(|error| error.to_string())?;
         let vad = match config.gate {
             TalkGate::VoiceActivation(mut vad) => {
                 vad.channels = u8::try_from(graph.channels()).map_err(|error| error.to_string())?;
@@ -217,26 +512,7 @@ impl Runtime {
         let devices = if config.source == AudioSource::Device {
             let manager = DeviceManager::new();
             let capture_config = graph_config(graph.channels());
-            let capture = match manager.open_capture(config.input_device.as_ref(), capture_config) {
-                Ok(capture) => capture,
-                Err(error) => {
-                    send_device_error(&events, &error);
-                    return Err(error.to_string());
-                }
-            };
-            let playback =
-                match manager.open_playback(config.output_device.as_ref(), GraphConfig::STEREO) {
-                    Ok(playback) => playback,
-                    Err(error) => {
-                        send_device_error(&events, &error);
-                        return Err(error.to_string());
-                    }
-                };
-            Some(Devices {
-                manager,
-                capture: Some(capture),
-                playback: Some(playback),
-            })
+            Some(open_devices(manager, &config, capture_config, &events)?)
         } else {
             None
         };
@@ -311,8 +587,55 @@ impl Runtime {
                         tracing::warn!(%error, bitrate, "encoder adaptation was rejected");
                     }
                 }
+                Update::DeviceBackend { backend, reply } => {
+                    let result = self.switch_device_backend(backend);
+                    let _ = reply.send(result);
+                }
             }
         }
+    }
+
+    fn switch_device_backend(&mut self, backend: DeviceBackend) -> Result<(), String> {
+        if self.config.device_backend == backend {
+            return Ok(());
+        }
+        let previous = self.config.device_backend;
+        let channels = u16::try_from(self.graph.channels()).map_err(|error| error.to_string())?;
+        let processing = match backend {
+            DeviceBackend::Portable => self.config.processing,
+            DeviceBackend::AppleVoiceProcessing { .. } => {
+                ss_audio::processing::ProcessingConfig::OFF
+            }
+        };
+        let chain = Chain::new(processing, channels).map_err(|error| error.to_string())?;
+        self.devices = None;
+        self.config.device_backend = backend;
+        if self.config.source == AudioSource::Device {
+            let manager = DeviceManager::new();
+            match open_devices(
+                manager,
+                &self.config,
+                graph_config(self.graph.channels()),
+                &self.events,
+            ) {
+                Ok(devices) => self.devices = Some(devices),
+                Err(error) => {
+                    self.config.device_backend = previous;
+                    let manager = DeviceManager::new();
+                    self.devices = open_devices(
+                        manager,
+                        &self.config,
+                        graph_config(self.graph.channels()),
+                        &self.events,
+                    )
+                    .ok();
+                    return Err(error);
+                }
+            }
+        }
+        self.chain = chain;
+        self.render_tap.clear();
+        Ok(())
     }
 
     fn drain_incoming(&mut self) {
@@ -371,7 +694,7 @@ impl Runtime {
         let mixed = self.graph.render(self.epoch.elapsed(), deaf);
         self.render_tap.push(mixed);
         if let Some(devices) = &mut self.devices
-            && let Some((_, producer)) = &mut devices.playback
+            && let Some(producer) = devices.playback_producer_mut()
         {
             let _ = push_playback(producer, &mixed);
         }
@@ -389,7 +712,7 @@ impl Runtime {
         let Some(devices) = &mut self.devices else {
             return false;
         };
-        let Some((_, consumer)) = &mut devices.capture else {
+        let Some(consumer) = devices.capture_consumer_mut() else {
             return false;
         };
         if consumer.slots() < self.capture.len() {
@@ -419,18 +742,10 @@ impl Runtime {
     }
 
     fn echo_path(&self) -> EchoPath {
-        let capture_device = self
+        let (capture_device, playback_device) = self
             .devices
             .as_ref()
-            .and_then(|devices| devices.capture.as_ref())
-            .and_then(|(stream, _)| stream.capture_delay())
-            .unwrap_or_default();
-        let playback_device = self
-            .devices
-            .as_ref()
-            .and_then(|devices| devices.playback.as_ref())
-            .and_then(|(stream, _)| stream.playback_delay())
-            .unwrap_or_default();
+            .map_or((Duration::ZERO, Duration::ZERO), Devices::delays);
         EchoPath {
             playback_queue: Duration::from_millis(10),
             playback_device,
@@ -443,15 +758,7 @@ impl Runtime {
         let Some(devices) = &self.devices else {
             return (0, 0);
         };
-        let underruns = devices
-            .playback
-            .as_ref()
-            .map_or(0, |(stream, _)| stream.counters().underruns());
-        let overruns = devices
-            .capture
-            .as_ref()
-            .map_or(0, |(stream, _)| stream.counters().overruns());
-        (underruns, overruns)
+        devices.counter_values()
     }
 
     fn device_events(&mut self) {
@@ -459,8 +766,10 @@ impl Runtime {
         let Some(devices) = &mut self.devices else {
             return;
         };
+        devices.sync_voice_processing(self.shared.muted.load(Ordering::Relaxed), &self.events);
         let mut reopen_capture = false;
         let mut reopen_playback = false;
+        let mut reopen_voice_processing = false;
         for event in devices.manager.poll() {
             if let DeviceEvent::SilentInput { access, .. } = &event {
                 let _ = self
@@ -490,6 +799,20 @@ impl Runtime {
                     self.config.output_device.is_none(),
                 );
             }
+            if devices.voice_processing_active()
+                && matches!(event, DeviceEvent::DefaultChanged { .. })
+            {
+                reopen_voice_processing = true;
+            }
+        }
+        reopen_voice_processing |= devices.voice_processing_stopped();
+        if reopen_voice_processing {
+            if let Err(error) = devices.reopen_voice_processing(&self.config) {
+                let _ = event_tx.send(ClientEvent::VoiceDevice(VoiceDeviceState::Unavailable(
+                    error,
+                )));
+            }
+            return;
         }
         if reopen_capture {
             devices.capture = None;

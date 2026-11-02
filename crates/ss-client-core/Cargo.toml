@@ -7,6 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+macos-voiceio = ["ss-audio/macos-voiceio"]
+
 [dependencies]
 quinn.workspace = true
 ss-audio.workspace = true

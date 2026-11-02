@@ -3,7 +3,7 @@
 Status: todo
 Phase: 1
 Size: S
-Depends on: T-013
+Depends on: T-013, T-054
 Paths: `docs/plan/notes/audio-macos.md`, `crates/ss-audio/src/device/`, `crates/ss-audio/src/platform/macos.rs`
 
 ## Goal
@@ -27,6 +27,13 @@ latency timestamps if the acoustic numbers confirm the error T-013 found.
   T-057 exists).
 - Five-minute glitch listen at 240 frames on headphones (carried over from
   T-010).
+- With a remote listener and built-in speakers/microphone, switch an active
+  `VoiceSession` from `DeviceBackend::Portable` to
+  `AppleVoiceProcessing` and back. Confirm the remote party hears no echo,
+  record the acoustic mouth-to-ear result for both paths, and verify Voice
+  Isolation/Wide Spectrum status follows Control Center. Repeat switches for
+  five minutes and confirm Activity Monitor and CoreAudio running state stay
+  flat after leaving.
 - If the acoustic numbers confirm it, correct `cpal`'s macOS capture and
   playback timestamps by `kAudioStreamPropertyLatency` (about 50 ms on the
   MacBook microphone, 14 ms on its speakers) and remove the double-counted
@@ -34,7 +41,7 @@ latency timestamps if the acoustic numbers confirm the error T-013 found.
   T-017 mouth-to-ear measurement, which currently reads about 50 ms low.
 
 ## Out of scope
-`AUVoiceIO` mode (T-054); the CoreAudio voice-activity property (backlog).
+The CoreAudio voice-activity property (backlog).
 
 ## Acceptance criteria
 - `docs/plan/notes/audio-macos.md` gains the acoustic measurements and the

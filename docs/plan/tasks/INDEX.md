@@ -66,7 +66,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | todo |
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | done |
 | [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | done |
-| [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | todo |
+| [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | done |
 | [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | todo |
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | todo |
 | [T-057](T-057-packaging-updater.md) | Packaging, signing, auto-update | M | T-042 | todo |
@@ -134,7 +134,7 @@ flowchart TD
     T070 & T071 & T072 --> T074
     T040 & T041 --> T060
     T021 & T026 --> T080
-    T013 --> T019
+    T013 & T054 --> T019
     T053 --> T059
     T033 & T061 --> T066
     T061 --> T067 & T068
@@ -152,8 +152,8 @@ decide how many sub-agents to spawn.
 | 2 | T-002, T-003 |
 | 3 | T-004, T-010, T-014, T-020, T-047 |
 | 4 | T-016, T-015, T-011, T-012, T-013, T-021, T-022, T-048, T-049, T-050, T-052, T-053 |
-| 5 | T-017, T-019, T-023, T-024, T-032, T-054, T-059 |
-| 6 | T-018, T-025, T-026, T-033, T-034 |
+| 5 | T-017, T-023, T-024, T-032, T-054, T-059 |
+| 6 | T-018, T-019, T-025, T-026, T-033, T-034 |
 | 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-070 |
 | 8 | T-041, T-042, T-062 |
 | 9 | T-043, T-044, T-045, T-055, T-056, T-057, T-060, T-069, T-071 |

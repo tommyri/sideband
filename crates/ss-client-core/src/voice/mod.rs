@@ -42,6 +42,24 @@ pub enum AudioSource {
     Silent,
 }
 
+/// System device backend used for a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeviceBackend {
+    /// Portable cpal capture/playback plus the optional T-053 software chain.
+    #[default]
+    Portable,
+    /// Apple's full-duplex VoiceProcessingIO AEC/NS/AGC path.
+    ///
+    /// This follows the macOS system-default devices and forces the T-053
+    /// software processing chain off to avoid processing the signal twice.
+    AppleVoiceProcessing {
+        /// Bypass Apple's processing while retaining the duplex Audio Unit.
+        bypass: bool,
+        /// Enable Apple's automatic gain control.
+        automatic_gain_control: bool,
+    },
+}
+
 /// How capture opens and closes a talk burst.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum TalkGate {
@@ -63,6 +81,8 @@ pub struct AudioConfig {
     pub input_device: Option<DeviceId>,
     /// Output device; None follows the system default.
     pub output_device: Option<DeviceId>,
+    /// Portable devices or Apple's full-duplex voice-processing path.
+    pub device_backend: DeviceBackend,
     /// Push-to-talk, VAD, or open microphone.
     pub gate: TalkGate,
     /// Tail retained after push-to-talk is released.
@@ -81,6 +101,7 @@ impl Default for AudioConfig {
             source: AudioSource::Device,
             input_device: None,
             output_device: None,
+            device_backend: DeviceBackend::Portable,
             gate: TalkGate::PushToTalk,
             release_delay: ss_input::DEFAULT_RELEASE_DELAY,
             processing: ProcessingConfig::default(),
@@ -155,6 +176,16 @@ pub enum VoiceDeviceState {
     LowQualityInput {
         /// Granted hardware sample rate.
         sample_rate: u32,
+    },
+    /// Apple's voice-processing path is active; the software chain is off.
+    AppleVoiceProcessing {
+        /// Control Center mode currently effective on this audio route.
+        microphone_mode: ss_audio::device::MicrophoneMode,
+    },
+    /// Apple detected speech while the processed microphone uplink was muted.
+    MutedSpeech {
+        /// `true` when speech began and `false` when it ended.
+        active: bool,
     },
     /// A stream could not be reopened.
     Unavailable(String),
@@ -252,6 +283,24 @@ impl VoiceSession {
         if let Some(worker) = &self.worker {
             worker.set_ptt(pressed);
         }
+    }
+
+    /// Switch between portable devices and Apple's VoiceProcessingIO backend
+    /// without leaving the voice channel.
+    pub async fn set_device_backend(&self, backend: DeviceBackend) -> Result<(), Error> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| Error::Voice("voice worker is stopped".to_owned()))?;
+        let (reply, response) = oneshot::channel();
+        worker
+            .updates
+            .try_send(Update::DeviceBackend { backend, reply })
+            .map_err(|_| Error::Voice("voice worker update queue is unavailable".to_owned()))?;
+        response
+            .await
+            .map_err(|_| Error::Voice("voice worker stopped while switching devices".to_owned()))?
+            .map_err(Error::Voice)
     }
 
     /// Update self mute locally and on the server.
