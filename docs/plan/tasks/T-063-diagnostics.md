@@ -3,12 +3,16 @@
 Status: todo
 Phase: 4
 Size: S
-Depends on: T-041, T-044, T-032
+Depends on: T-041, T-044, T-032, T-076
 Paths: `apps/desktop/src/features/diagnostics/`, `crates/ss-client-core/src/diagnostics.rs`
 
 ## Goal
 When someone says "you sound robotic", anyone in the group can find out why
 in a minute.
+
+Reuse T-076's local collector, redaction and versioned export format. This
+task adds the broader diagnostics panel/graphs and server dashboards; the
+testing-app milestone does not wait for these extensions.
 
 ## Scope
 - Client diagnostics panel (Ctrl+Shift+D): connection (RTT, loss, cwnd,

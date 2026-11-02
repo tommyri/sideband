@@ -4,6 +4,12 @@ Status values: `todo` · `in-progress` · `done` · `blocked`. Keep this table a
 the `Status:` line in each task file in sync. Sizes: S / M / L (see
 `00-overview.md`).
 
+Current priority: [installable testing app](../05-testing-app.md).
+Start T-075, then essential T-043 → T-044 → T-051/T-058 → T-076 increments.
+T-018 gates voice-quality release approval, not UI development or test builds.
+Implemented prerequisites may feed this milestone while their documented
+manual acceptance remains in progress; do not mark those tasks done early.
+
 ## Phase 0 — Foundations
 
 | ID | Task | Size | Depends on | Status |
@@ -25,7 +31,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-015](T-015-jitter-buffer-mixer.md) | Jitter buffer, decoders, mixer | M | T-014 | done |
 | [T-016](T-016-minimal-forwarding-server.md) | Minimal forwarding server | S | T-004 | done |
 | [T-017](T-017-headless-cli-client.md) | Headless CLI client + latency measurement | M | T-010, T-014, T-015, T-016 | done |
-| [T-018](T-018-spike-evaluation.md) | Spike evaluation vs TS3, parameter lock | S | T-017 | todo |
+| [T-018](T-018-spike-evaluation.md) | Voice-quality release gate vs TS3, parameter lock | S | T-017 | todo |
 | [T-019](T-019-audio-macos-acceptance.md) | macOS audio manual acceptance, timestamp correction | S | T-013, T-054 | todo |
 
 ## Phase 2 — Server core
@@ -69,9 +75,11 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | done |
 | [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | todo |
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | todo |
-| [T-057](T-057-packaging-updater.md) | Packaging, signing, auto-update | M | T-042 | todo |
-| [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047–T-050, T-044, T-051 | todo |
+| [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | todo |
+| [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | todo |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
+| [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | todo |
+| [T-076](T-076-guided-voice-testing.md) | Guided voice tests and local evidence bundles | M | T-075, T-043, T-044, T-051, T-058 | todo |
 
 ## Phase 4 — Hardening
 
@@ -80,7 +88,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-060](T-060-reconnect-resilience.md) | Session resume, migration, restart handling | M | T-040, T-041, T-024, T-025 | done |
 | [T-061](T-061-security-review-fuzzing.md) | Security review, fuzzing, rate limits | M | T-021, T-022, T-026, T-027, T-029, T-030, T-031 | done |
 | [T-062](T-062-load-soak-test.md) | Load and soak testing | S | T-017, T-025, T-026 | done |
-| [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032 | todo |
+| [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032, T-076 | todo |
 | [T-064](T-064-documentation.md) | Documentation | S | T-034, T-057 | todo |
 | [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | todo |
 | [T-066](T-066-https-rest-listener.md) | Serve the public REST listener over TLS | M | T-033, T-061 | done |
@@ -126,7 +134,10 @@ flowchart TD
     T010 & T015 & T025 --> T041
     T042 --> T043 & T045 & T055 & T056 & T057
     T042 & T041 --> T044 --> T051 & T058
-    T003 --> T047 --> T048 & T049 & T050 --> T058
+    T003 --> T047 --> T048 & T049 & T050
+    T047 & T044 & T051 --> T058
+    T042 --> T075 --> T057
+    T075 & T043 & T044 & T051 & T058 --> T076 --> T063
     T010 --> T052 & T053
     T013 & T053 --> T054
     T045 & T028 --> T046
@@ -156,10 +167,14 @@ decide how many sub-agents to spawn.
 | 6 | T-018, T-019, T-025, T-026, T-033, T-034 |
 | 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-070 |
 | 8 | T-041, T-042, T-062 |
-| 9 | T-043, T-044, T-045, T-055, T-056, T-057, T-060, T-069, T-071 |
-| 10 | T-046, T-051, T-058, T-061, T-063, T-065, T-072 |
-| 11 | T-064, T-066, T-067, T-068, T-073, T-074, T-080 |
+| 9 | T-075 (priority), T-043, T-044, T-045, T-055, T-056, T-060, T-069, T-071 |
+| 10 | T-057, T-046, T-051, T-061, T-065, T-072 |
+| 11 | T-058, T-064, T-066, T-067, T-068, T-073, T-074 |
+| 12 | T-076, T-080 |
+| 13 | T-063 |
 
-Hard gate: do not start Phase 3 UI tasks (wave 9+) before T-018 has a "go".
-If T-018 changes voice parameters, only `ss-core` defaults and
-`02-protocol.md` §4 change; nothing else is blocked on it.
+Release gate: T-018 must record a "go" before voice quality is approved for
+a stable/public release. UI work, packaging and labelled test builds proceed
+now. If T-018 changes voice parameters, update `ss-core` defaults and
+`02-protocol.md` §4 together. See the testing-app milestone for the current
+delivery order; dependency waves do not override that priority.

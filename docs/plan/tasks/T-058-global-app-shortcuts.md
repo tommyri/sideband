@@ -3,12 +3,16 @@
 Status: todo
 Phase: 3
 Size: S
-Depends on: T-047, T-048, T-049, T-050, T-044, T-051
+Depends on: T-047, T-044, T-051
 Paths: `apps/desktop/src-tauri/src/input.rs`, `apps/desktop/src/features/settings/shortcuts/`
 
 ## Goal
 Wire `ss-input` into the desktop app: PTT, toggle mute, toggle deafen work
 while gaming, with per-OS behaviour surfaced honestly.
+
+Integrate the implemented T-048/T-049/T-050 interfaces now. Their manual
+acceptance remains open and is exercised using this app and T-076; it is not
+a prerequisite to building that test path. Missing capabilities stay explicit.
 
 ## Scope
 - `src-tauri` starts the `ss-input` backend on app start when any global

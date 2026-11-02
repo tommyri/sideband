@@ -3,11 +3,16 @@
 Status: todo
 Phase: 3
 Size: M
-Depends on: T-042
+Depends on: T-042, T-075
 Paths: `apps/desktop/src-tauri/tauri.conf.json`, `.github/workflows/release-desktop.yml`, `docs/release.md`
 
 ## Goal
 Friends install a normal app and it updates itself.
+
+Reuse T-075's test packaging and build identity. Production distribution and
+updater acceptance belong here; they do not block internal test builds.
+T-018 must record a go before declaring a stable/public voice release ready,
+but implementation of this task may proceed before that approval.
 
 ## Scope
 - Tauri bundler targets: macOS `.dmg` (universal or arm64+x64), Windows

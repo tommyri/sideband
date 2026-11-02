@@ -11,6 +11,9 @@ Everything a TeamSpeak user expects to tune, laid out so a non-expert gets
 good results with defaults.
 
 ## Scope
+- Testing-app priority: input/output selection, PTT vs VAD and honest
+  permission/backend notices, integrated with T-058. Do not wait for the
+  T-018 release verdict to expose currently supported voice settings.
 - Device pickers (input/output) with "System default" option, live input
   level meter, "Test mic" loopback (hear yourself after 1 s delay), "Test
   output" cue.

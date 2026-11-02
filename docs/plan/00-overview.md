@@ -17,6 +17,7 @@ Sub-agents pick up individual tasks from `tasks/`. Read this file and
 | `02-protocol.md` | Wire protocol: QUIC usage, control messages, media datagrams, REST |
 | `03-data-model.md` | SQLite schema, permissions model, ids |
 | `04-conventions.md` | Engineering conventions every task must follow |
+| [`05-testing-app.md`](05-testing-app.md) | Current priority: installable testing app, evidence collection, release gates |
 | [`../design/`](../design/README.md) | Why: codec contract, numbered decisions, constraints later tasks keep |
 | `tasks/INDEX.md` | Task list with dependencies and status |
 | `tasks/T-*.md` | One file per task, written to be picked up by a sub-agent |
@@ -63,13 +64,19 @@ Sub-agents pick up individual tasks from `tasks/`. Read this file and
 | 6 | Bot API | Bot accounts, REST + event stream, docs |
 | 7 | Mobile | Not planned in detail; core crates already compile for iOS/Android |
 
-Phases 0–1 are sequential and risk-first. Within phases 2 and 3 most tasks are
-parallel; phase 3 can start as soon as T-040's dependencies (T-002, T-004,
-T-021–T-026) are done enough to connect against.
+The current priority is the installable testing-app milestone in
+`05-testing-app.md`. T-018 is a voice-quality **release gate**, not a gate
+on UI development, packaging, or explicitly labelled test builds. Its results
+may revise voice defaults without invalidating the app shell.
+Within phases 2 and 3 most tasks can proceed in parallel.
 
 ## How to work the plan (for humans and sub-agents)
 
-1. Pick a task from `tasks/INDEX.md` whose dependencies are all `done`.
+1. Follow the priority order in `05-testing-app.md`, then the task index.
+   Dependencies normally must be done. For this milestone, an implemented
+   prerequisite with documented automated coverage may be integrated while
+   its manual acceptance remains in progress. Record that distinction;
+   never mark acceptance complete merely to unblock its test tooling.
 2. Read the task file fully, then `04-conventions.md`, then the referenced
    sections of the architecture/protocol/data-model docs. If the task touches
    voice, transport, input, or a numbered decision, also read `docs/design/`.

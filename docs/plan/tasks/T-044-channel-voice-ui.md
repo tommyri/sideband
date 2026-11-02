@@ -11,6 +11,9 @@ The TeamSpeak/Discord hybrid view: a channel tree where you can see who is in
 each voice channel, who is talking, and join with one click.
 
 ## Scope
+- Testing-app priority: deliver channel list, join/leave, members/speaking,
+  mute/deafen and connection state first; advanced moderation and interaction
+  polish remain in this task but do not block the test harness increment.
 - Tree: categories collapsible, text channels with unread/mention badges,
   voice channels listing members (avatar, name, mute/deaf/server-mute icons,
   speaking ring driven by TALK flags/arrival), user count/limit.

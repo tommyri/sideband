@@ -11,6 +11,9 @@ A friend receives `host:port` + an invite code and is talking within two
 minutes without reading docs.
 
 ## Scope
+- Testing-app priority: deliver add-server/trust/register/login/reconnect
+  first; this UI is no longer gated by T-018. Complete the remaining rail
+  and checklist scope without blocking integration of the essential flow.
 - "Add server" dialog: address input (accepts `host`, `host:port`,
   `ss://host:port`), live reachability check via `GET /api/v1/server`
   (name, registration mode, fingerprint).
