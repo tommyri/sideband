@@ -5,8 +5,8 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 `00-overview.md`).
 
 Current priority: [installable testing app](../05-testing-app.md).
-T-075 packaging, essential T-043 onboarding and T-044 live voice UI are implemented;
-platform acceptance remains open. Next: T-051/T-058 → T-076 increments.
+T-075 packaging, essential T-043 onboarding, T-044 live voice UI and T-051 audio
+settings are implemented; platform acceptance remains open. Next: T-058 → T-076 increments.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -70,7 +70,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | in-progress |
 | [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | in-progress |
 | [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | in-progress |
-| [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | todo |
+| [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | in-progress |
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | done |
 | [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | done |
 | [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | done |

@@ -10,6 +10,7 @@ pub struct AppState {
     pub pins: Arc<JsonPinStore>,
     pub operations: Mutex<()>,
     pub voice: Mutex<Option<crate::voice::ActiveVoice>>,
+    pub audio_test: Mutex<Option<Arc<AtomicBool>>>,
     pub close_to_tray: AtomicBool,
 }
 
@@ -21,6 +22,7 @@ impl AppState {
             pins: Arc::new(JsonPinStore::open(path.join("pins.json"))?),
             operations: Mutex::new(()),
             voice: Mutex::new(None),
+            audio_test: Mutex::new(None),
             close_to_tray: AtomicBool::new(true),
         })
     }

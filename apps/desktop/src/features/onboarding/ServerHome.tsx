@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { AudioSettings } from '../settings/audio/AudioSettings'
 import { getSnapshot, removeServer, reorderServers } from '../../lib/api'
 import { useAppStore } from '../../store/app-store'
 import { friendlyError } from './validation'
@@ -39,6 +40,10 @@ export function ServerHome() {
   }
   return (
     <main className="server-home">
+      {settings && <AudioSettings close={() => setSettings(false)} />}
+      <button className="button secondary" onClick={() => setSettings(true)}>
+        Audio settings
+      </button>
       <p className="eyebrow">SocialSpeak · Testing app</p>
       <h1>{server?.label ?? 'A place for your people'}</h1>
       {!server ? (
@@ -97,15 +102,9 @@ export function ServerHome() {
                 </button>
               </li>
             </ol>
-            {settings && (
-              <p role="status">
-                Audio settings are coming in a future test build. Device and talking-mode setup is
-                still pending.
-              </p>
-            )}
             <p>
-              Connect to browse channels and join voice using Hold to talk. Device selection and
-              global hotkeys are coming in a future test build.
+              Connect to browse channels and join voice. Configure your devices and talking mode
+              before joining.
             </p>
           </section>
           <section className="server-management" aria-label="Manage server">

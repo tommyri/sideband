@@ -5,6 +5,7 @@ import { refreshVoice, runVoice, useVoiceStore } from '../voice/store'
 import { joinVoice, leaveVoice, memberAction } from '../voice/api'
 import { MemberRow } from './MemberRow'
 import { MemberMenu } from './MemberMenu'
+import { AudioSettings } from '../settings/audio/AudioSettings'
 import { ServerHome } from '../onboarding/ServerHome'
 
 function visibleChannels(channels: ChannelView[], collapsed: Set<string>) {
@@ -32,6 +33,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const label = useAppStore((s) => s.servers.find((item) => item.id === server)?.label)
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [menu, setMenu] = useState<string | null>(null)
+  const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
   const openMenu = useCallback((id: string) => setMenu(id), [])
   useEffect(() => {
@@ -94,9 +96,13 @@ export function ChannelWorkspace({ server }: { server: string }) {
   }
   return (
     <section className="live-workspace">
+      {audioSettings && <AudioSettings close={() => setAudioSettings(false)} />}
       <aside className="live-channels" aria-label="Channel tree">
         <header>
           <h2>{label}</h2>
+          <button className="button secondary" onClick={() => setAudioSettings(true)}>
+            Audio settings
+          </button>
           <button className="button secondary" onClick={() => setDetails(true)}>
             Server details
           </button>

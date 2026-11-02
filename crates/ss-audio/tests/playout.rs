@@ -490,3 +490,19 @@ fn capture_clock_gap_recovers_a_burst_when_both_boundary_flags_were_lost() {
     );
     assert_eq!(released(jitter.pop_for_playout(ms(140))), 1);
 }
+
+#[test]
+fn custom_jitter_bounds_survive_estimation_and_reject_invalid_ranges() {
+    let mut buffer = JitterBuffer::new(VoiceProfile::Voice);
+    buffer.set_bounds(ms(60), ms(80));
+    assert_eq!(buffer.target_delay(), ms(60));
+    let payload = packet();
+    for seq in 0..10 {
+        buffer
+            .push(header(seq), &payload, ms(u64::from(seq) * 20))
+            .unwrap();
+        assert!((ms(60)..=ms(80)).contains(&buffer.target_delay()));
+    }
+    buffer.set_bounds(ms(190), ms(30));
+    assert!((ms(60)..=ms(80)).contains(&buffer.target_delay()));
+}

@@ -35,6 +35,10 @@ use super::{
 };
 
 pub(super) enum Update {
+    Configure {
+        config: AudioConfig,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     Tracks {
         own: u32,
         remote: Vec<TrackSpec>,
@@ -55,6 +59,7 @@ pub(super) enum Update {
 #[derive(Debug, Clone, Default)]
 pub(super) struct WorkerStats {
     pub graph: GraphSnapshot,
+    pub input_dbfs: f32,
     pub underruns: u64,
     pub overruns: u64,
     pub processing_latency: Duration,
@@ -478,6 +483,7 @@ struct Runtime {
     capture: Vec<f32>,
     render_tap: Vec<StereoFrame>,
     test_sample: usize,
+    input_dbfs: f32,
 }
 
 impl Runtime {
@@ -493,7 +499,8 @@ impl Runtime {
         shared: Arc<Shared>,
         stop: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        let graph = VoiceGraph::new(profile, bitrate).map_err(|error| error.to_string())?;
+        let mut graph = VoiceGraph::new(profile, bitrate).map_err(|error| error.to_string())?;
+        graph.configure(&config);
         let channels = u16::try_from(graph.channels()).map_err(|error| error.to_string())?;
         let processing = match config.device_backend {
             DeviceBackend::Portable => config.processing,
@@ -533,6 +540,7 @@ impl Runtime {
             capture: vec![0.0; quantum],
             render_tap: Vec::with_capacity(8),
             test_sample: 0,
+            input_dbfs: -96.0,
         })
     }
 
@@ -576,6 +584,9 @@ impl Runtime {
     fn drain_updates(&mut self) {
         while let Ok(update) = self.updates.try_recv() {
             match update {
+                Update::Configure { config, reply } => {
+                    let _ = reply.send(self.configure(config));
+                }
                 Update::Tracks { own, remote } => {
                     self.graph.set_track_id(own);
                     self.graph.sync_tracks(&remote, self.epoch.elapsed());
@@ -593,6 +604,73 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    fn configure(&mut self, mut config: AudioConfig) -> Result<(), String> {
+        if !(0.0..=2.0).contains(&config.master_gain)
+            || !(0.0..=1.0).contains(&config.cue_gain)
+            || !(0.0..=0.5).contains(&config.attenuation)
+            || config.release_delay > Duration::from_secs(2)
+            || config.jitter_min < Duration::from_millis(20)
+            || config.jitter_max > Duration::from_millis(200)
+            || config.jitter_min > config.jitter_max
+        {
+            return Err("Invalid audio settings".into());
+        }
+        config.source = self.config.source;
+        config.start_muted = self.shared.muted.load(Ordering::Relaxed);
+        config.start_deafened = self.shared.deaf.load(Ordering::Relaxed);
+        let processing = if config.device_backend == DeviceBackend::Portable {
+            config.processing
+        } else {
+            ss_audio::processing::ProcessingConfig::OFF
+        };
+        let chain = Chain::new(
+            processing,
+            u16::try_from(self.graph.channels()).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let vad = match config.gate {
+            TalkGate::VoiceActivation(mut v) => {
+                v.channels = u8::try_from(self.graph.channels()).map_err(|e| e.to_string())?;
+                Some(Vad::new(v).map_err(|e| e.to_string())?)
+            }
+            _ => None,
+        };
+        let reopen = self.config.input_device != config.input_device
+            || self.config.output_device != config.output_device
+            || self.config.device_backend != config.device_backend;
+        if reopen && config.source == AudioSource::Device {
+            self.devices = None;
+            match open_devices(
+                DeviceManager::new(),
+                &config,
+                graph_config(self.graph.channels()),
+                &self.events,
+            ) {
+                Ok(devices) => self.devices = Some(devices),
+                Err(error) => {
+                    self.devices = open_devices(
+                        DeviceManager::new(),
+                        &self.config,
+                        graph_config(self.graph.channels()),
+                        &self.events,
+                    )
+                    .ok();
+                    return Err(error);
+                }
+            }
+        }
+        *self.shared.ptt.lock() = PttState {
+            held: false,
+            released: None,
+        };
+        self.graph.configure(&config);
+        self.config = config;
+        self.chain = chain;
+        self.vad = vad;
+        self.render_tap.clear();
+        Ok(())
     }
 
     fn switch_device_backend(&mut self, backend: DeviceBackend) -> Result<(), String> {
@@ -649,6 +727,9 @@ impl Runtime {
     }
 
     fn capture_once(&mut self, now: Instant) {
+        let energy = self.capture.iter().map(|s| s * s).sum::<f32>()
+            / f32::from(u16::try_from(self.capture.len()).unwrap_or(960));
+        self.input_dbfs = (10.0 * energy.max(1e-10).log10()).clamp(-96.0, 0.0);
         let path = self.echo_path();
         self.chain.set_echo_delay(path.delay());
         if let Err(error) = self.chain.process(&mut self.capture, &self.render_tap) {
@@ -701,6 +782,7 @@ impl Runtime {
         let (underruns, overruns) = self.counters();
         *self.shared.stats.write() = WorkerStats {
             graph: self.graph.snapshot(),
+            input_dbfs: self.input_dbfs,
             underruns,
             overruns,
             processing_latency: self.chain.monitor().latency(),

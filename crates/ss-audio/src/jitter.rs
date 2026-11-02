@@ -139,6 +139,8 @@ pub struct JitterBuffer {
     observations: [Observation; OBSERVATIONS],
     observation_count: usize,
     observation_cursor: usize,
+    minimum: Duration,
+    maximum: Duration,
     target: Duration,
     applied: Duration,
     silent: bool,
@@ -166,10 +168,21 @@ impl JitterBuffer {
             observations: [Observation::default(); OBSERVATIONS],
             observation_count: 0,
             observation_cursor: 0,
+            minimum: MIN_DELAY,
+            maximum: MAX_DELAY,
             target: INITIAL_DELAY,
             applied: INITIAL_DELAY,
             silent: false,
             stats: Stats::default(),
+        }
+    }
+
+    /// Set validated adaptive buffering bounds. Playout adjusts at silence boundaries.
+    pub fn set_bounds(&mut self, minimum: Duration, maximum: Duration) {
+        if minimum >= MIN_DELAY && maximum <= MAX_DELAY && minimum <= maximum {
+            self.minimum = minimum;
+            self.maximum = maximum;
+            self.target = self.target.clamp(minimum, maximum);
         }
     }
 
@@ -341,16 +354,16 @@ impl JitterBuffer {
             }
         }
         if count == 0 {
-            self.target = INITIAL_DELAY;
+            self.target = INITIAL_DELAY.clamp(self.minimum, self.maximum);
             return;
         }
         deviations[..count].sort_unstable();
         let percentile = deviations[(count * 95).div_ceil(100) - 1];
-        let milliseconds = (MIN_DELAY + percentile).min(MAX_DELAY).as_millis();
+        let milliseconds = (self.minimum + percentile).min(self.maximum).as_millis();
         let frame_ms = self.frame.as_millis();
         let rounded = milliseconds.div_ceil(frame_ms) * frame_ms;
         self.target = Duration::from_millis(u64::try_from(rounded).unwrap_or(200))
-            .clamp(MIN_DELAY, MAX_DELAY);
+            .clamp(self.minimum, self.maximum);
     }
 
     fn advance(&mut self) {

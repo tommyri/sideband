@@ -6517,6 +6517,7 @@ dependencies = [
  "ss-audio",
  "ss-client-core",
  "ss-core",
+ "ss-input",
  "ss-net",
  "ss-server",
  "tauri",

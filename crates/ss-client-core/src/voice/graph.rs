@@ -84,6 +84,7 @@ pub(super) struct VoiceGraph {
     unknown: HashMap<u32, VecDeque<Pending>>,
     mixer: Mixer,
     cues: VecDeque<StereoFrame>,
+    preferences: super::AudioConfig,
     profile: VoiceProfile,
     snapshot: GraphSnapshot,
 }
@@ -114,6 +115,7 @@ impl VoiceGraph {
             unknown: HashMap::new(),
             mixer: Mixer::new(),
             cues: VecDeque::new(),
+            preferences: super::AudioConfig::default(),
             profile,
             snapshot: GraphSnapshot {
                 bitrate,
@@ -153,9 +155,10 @@ impl VoiceGraph {
                 track.muted = spec.muted;
                 continue;
             }
-            let Ok(receiver) = TrackReceiver::new(self.profile) else {
+            let Ok(mut receiver) = TrackReceiver::new(self.profile) else {
                 continue;
             };
+            receiver.set_jitter_bounds(self.preferences.jitter_min, self.preferences.jitter_max);
             self.tracks.insert(
                 spec.id,
                 Track {
@@ -172,6 +175,16 @@ impl VoiceGraph {
                     }
                 }
             }
+        }
+    }
+
+    pub fn configure(&mut self, config: &super::AudioConfig) {
+        self.preferences = config.clone();
+        let _ = self.mixer.set_master_gain(config.master_gain);
+        for track in self.tracks.values_mut() {
+            track
+                .receiver
+                .set_jitter_bounds(config.jitter_min, config.jitter_max);
         }
     }
 
@@ -245,7 +258,15 @@ impl VoiceGraph {
             let frame = *track.receiver.render(now);
             let speaking = track.receiver.speaking(now);
             if !deaf && !track.muted {
-                let _ = self.mixer.add_track(&frame, track.gain);
+                let _ = self.mixer.add_track(
+                    &frame,
+                    track.gain
+                        * if self.talking {
+                            1.0 - self.preferences.attenuation
+                        } else {
+                            1.0
+                        },
+                );
             }
             snapshots.insert(
                 id,
@@ -258,7 +279,7 @@ impl VoiceGraph {
             );
         }
         if !deaf && let Some(cue) = self.cues.pop_front() {
-            let _ = self.mixer.add_ui(&cue);
+            let _ = self.mixer.add_track(&cue, self.preferences.cue_gain);
         }
         let output = if deaf {
             let _ = self.mixer.finish();
@@ -345,6 +366,41 @@ fn audio_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn master_and_cue_volume_apply_before_playback() {
+        let mut graph = VoiceGraph::new(VoiceProfile::Voice, 80_000).unwrap();
+        graph.configure(&super::super::AudioConfig {
+            cue_gain: 0.0,
+            ..Default::default()
+        });
+        graph.play_cue(Cue::Join);
+        assert!(
+            graph
+                .render(Duration::ZERO, false)
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        graph.configure(&super::super::AudioConfig::default());
+        graph.play_cue(Cue::Join);
+        assert!(
+            graph
+                .render(Duration::ZERO, false)
+                .iter()
+                .any(|s| s.abs() > 0.0)
+        );
+        graph.configure(&super::super::AudioConfig {
+            master_gain: 0.0,
+            ..Default::default()
+        });
+        graph.play_cue(Cue::Join);
+        assert!(
+            graph
+                .render(Duration::ZERO, false)
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+    }
 
     fn tone(frame: &mut [f32], channels: usize, start: usize) {
         for index in 0..frame.len() / channels {

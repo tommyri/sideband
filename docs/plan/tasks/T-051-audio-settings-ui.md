@@ -1,6 +1,6 @@
 # T-051 — Audio and voice settings UI
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-044, T-041, T-047
@@ -46,3 +46,41 @@ Server-side channel settings (T-056).
 - Vitest tests for settings store migrations/defaults.
 
 ## Notes from implementation
+
+Implemented the audio settings dialog from onboarding, the channel sidebar and
+call controls. Preferences are versioned in `audio.json` using tauri-plugin-store;
+missing fields inherit safe defaults and invalid settings are rejected natively.
+Apply changes the running VoiceSession without leaving its channel. Device-open
+failures restore the prior configuration; disk-write failures do not apply new
+settings. Moderator moves reuse saved settings and start muted.
+
+Available controls: system/default input and output, PTT/VAD/open microphone,
+release delay, VAD threshold/hangover, local noise-floor calibration, in-app
+keyboard/mouse PTT capture (subject to backend capabilities), master/cue/per-user
+volume, reset per-user volumes, speaking attenuation and jitter min/max.
+Software AEC/WebRTC NS/AGC and RNNoise are linked in desktop builds but off by
+default; Apple VoiceProcessingIO is available on macOS and excludes software
+processing and explicit devices. Controls report actual compiled capabilities.
+
+Local tests: 10-second raw mic loopback with a 1-second delay, a 1-second output
+cue, and 2-second median noise-floor calibration. Tests cannot run during a call,
+never connect to a server, are cancellable, and stop when the dialog closes.
+The input meter runs separately from the form so meter updates do not rebuild it.
+Use headphones for loopback. A test completion is not proof the output was heard.
+
+Validation:
+- Vitest defaults/migrations, unsupported choices, native apply/error handling,
+  Apple exclusions, calibration drafts and keyboard capture tests.
+- Native tests apply live settings while retaining channel membership, reject
+  invalid settings, preserve mute, and verify jitter bounds and playback gain.
+- Packaged macOS UI checked for device/capability reporting, keyboard capture,
+  Apply, output-test completion and settings persistence across restart; native focus/layout issues fixed.
+
+Remaining acceptance: measure device-switch latency under 1 second on Windows,
+macOS and Linux with real input/output hardware, listen to loopback and cues,
+and exercise permission-denial, unplug/replug and Apple processing. No microphone
+permission was granted by automation. T-058 still owns the global listener,
+macOS Input Monitoring permission action and Linux evdev opt-in integration;
+this screen explains that limitation and only starts focused in-app bindings.
+T-063 diagnostics stays visibly unavailable and the optional 10 ms override
+remains gated by the T-018 release verdict. These do not block T-076 increments.

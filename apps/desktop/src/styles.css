@@ -1503,3 +1503,126 @@ textarea:focus-visible {
     bottom: 0;
   }
 }
+
+.audio-settings {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  color: var(--text-primary, #e9edf3);
+  background: #18212a;
+  border: 1px solid #39434e;
+}
+.audio-settings::backdrop {
+  background: #05080bc9;
+  backdrop-filter: blur(5px);
+}
+.audio-settings > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 28px;
+  border-bottom: 1px solid #39434e;
+}
+.audio-settings h2,
+.audio-settings .eyebrow {
+  margin: 0 0 8px;
+}
+.audio-body {
+  padding: 20px 28px;
+  overflow-y: auto;
+}
+.audio-settings fieldset {
+  border: 1px solid #39434e;
+  margin: 18px 0;
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+.audio-settings legend {
+  font-weight: 700;
+  padding: 0 8px;
+}
+.audio-settings label {
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+}
+.audio-settings label:has(input[type='checkbox']) {
+  display: flex;
+  align-items: center;
+}
+.audio-settings select {
+  width: 100%;
+  color: inherit;
+  background: #10161e;
+  padding: 10px;
+  border: 1px solid #59636e;
+}
+.audio-settings input[type='range'],
+.audio-meter meter {
+  width: 100%;
+}
+.audio-settings p {
+  font-size: 13px;
+  color: #b5bec8;
+  line-height: 1.5;
+  margin: 4px 0;
+}
+.audio-settings button {
+  color: inherit;
+  background: #26313d;
+  border: 1px solid #59636e;
+  border-radius: 4px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+.audio-settings button:disabled,
+.audio-settings select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.audio-settings button.primary {
+  background: #ed5b56;
+  border-color: #ed5b56;
+}
+.audio-test-actions,
+.audio-settings footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0;
+}
+.audio-settings footer {
+  justify-content: flex-end;
+  position: sticky;
+  bottom: -20px;
+  padding: 16px 0;
+  background: #18212a;
+}
+.audio-control output {
+  color: #bcc7d2;
+}
+.audio-settings {
+  margin: auto;
+  inset: 0;
+  overflow: hidden;
+}
+.audio-settings[open] {
+  display: flex;
+  flex-direction: column;
+}
+.audio-settings > header {
+  flex-shrink: 0;
+}
+.audio-settings .audio-body {
+  min-height: 0;
+}
+.audio-settings input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.audio-settings label {
+  text-transform: none;
+  letter-spacing: normal;
+}

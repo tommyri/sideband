@@ -1,3 +1,4 @@
+mod audio;
 mod build_identity;
 mod commands;
 mod onboarding;
@@ -41,6 +42,11 @@ pub fn run() {
             voice::leave_voice,
             voice::voice_control,
             voice::member_action,
+            audio::audio_environment,
+            audio::save_audio,
+            audio::audio_level,
+            audio::test_audio,
+            audio::stop_audio_test,
         ])
         .setup(|app| {
             app.manage(AppState::open(&app.path().app_data_dir()?)?);

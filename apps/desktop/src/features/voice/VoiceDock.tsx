@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { AudioSettings } from '../settings/audio/AudioSettings'
+import { environment, useAudioStore } from '../settings/audio/store'
+import { isTauri } from '../../lib/tauri'
 import { disconnect } from '../../lib/api'
 import { useAppStore } from '../../store/app-store'
 import { leaveVoice, voiceControl } from './api'
@@ -10,6 +13,10 @@ function ptt(enabled: boolean) {
   })
 }
 export function VoiceDock() {
+  const preferences = useAudioStore((s) => s.preferences)
+  useEffect(() => {
+    if (isTauri()) void environment().catch(() => {})
+  }, [])
   const active = useVoiceStore((s) => s.active)
   const busy = useVoiceStore((s) => s.busy)
   const error = useVoiceStore((s) => s.error)
@@ -99,6 +106,42 @@ export function VoiceDock() {
     window.addEventListener('keydown', shortcut)
     return () => window.removeEventListener('keydown', shortcut)
   }, [])
+  useEffect(() => {
+    if (preferences.mode !== 'ptt' || !preferences.binding || !canTalk) return
+    const matches = (event: KeyboardEvent | PointerEvent) =>
+      'code' in event
+        ? event.code === preferences.binding
+        : `Mouse${event.button}` === preferences.binding
+    const down = (event: KeyboardEvent | PointerEvent) => {
+      if (
+        !matches(event) ||
+        ('repeat' in event && event.repeat) ||
+        document.querySelector('dialog[open]')
+      )
+        return
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest('input,textarea,select,[contenteditable="true"]')
+      )
+        return
+      event.preventDefault()
+      ptt(true)
+    }
+    const up = (event: KeyboardEvent | PointerEvent) => {
+      if (matches(event)) ptt(false)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('pointerdown', down)
+    window.addEventListener('pointerup', up)
+    return () => {
+      ptt(false)
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('pointerdown', down)
+      window.removeEventListener('pointerup', up)
+    }
+  }, [preferences.mode, preferences.binding, canTalk])
   function gate(open: boolean) {
     ptt(open && canTalk)
     setHeld(open && canTalk)
@@ -140,7 +183,7 @@ export function VoiceDock() {
           </div>
           <button
             className={`button ${held && canTalk ? 'primary' : 'secondary'}`}
-            disabled={!canTalk}
+            disabled={!canTalk || preferences.mode !== 'ptt'}
             onPointerDown={(e) => {
               if (e.button !== 0) return
               e.currentTarget.setPointerCapture(e.pointerId)
@@ -170,7 +213,13 @@ export function VoiceDock() {
                   : 'Hold mouse, Space or Enter while focused'
             }
           >
-            {held && canTalk ? 'Talking…' : 'Hold to talk'}
+            {preferences.mode === 'vad'
+              ? 'Voice activation'
+              : preferences.mode === 'open'
+                ? 'Open microphone'
+                : held && canTalk
+                  ? 'Talking…'
+                  : 'Hold to talk'}
           </button>
           <button
             className="button secondary"
@@ -211,12 +260,7 @@ export function VoiceDock() {
           </button>
         </section>
       )}
-      {settings && active && (
-        <p className="voice-settings-note">
-          Using your system-default microphone and output with in-app push-to-talk. Device
-          selection, processing controls and global hotkeys will be added in a later testing build.
-        </p>
-      )}
+      {settings && <AudioSettings close={() => setSettings(false)} />}
     </div>
   )
 }

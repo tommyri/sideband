@@ -90,6 +90,12 @@ impl DeviceManager {
         }
     }
 
+    /// Enumerate devices once without starting a hot-plug polling thread.
+    #[must_use]
+    pub fn available_devices() -> Vec<DeviceInfo> {
+        snapshot().0
+    }
+
     /// Devices visible right now.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {

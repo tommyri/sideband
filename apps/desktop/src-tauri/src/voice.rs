@@ -117,11 +117,18 @@ pub async fn get_server_view(
 
 #[tauri::command]
 pub async fn join_voice(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     server_id: String,
     channel_id: String,
 ) -> Result<(), ApiError> {
-    join_with_config(&state, server_id, channel_id, AudioConfig::default()).await
+    join_with_config(
+        &state,
+        server_id,
+        channel_id,
+        crate::audio::load(&app)?.config()?,
+    )
+    .await
 }
 
 async fn join_with_config(
@@ -131,6 +138,12 @@ async fn join_with_config(
     config: AudioConfig,
 ) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
+    if state.audio_test.lock().await.is_some() {
+        return Err(ApiError::new(
+            "audio",
+            "Stop the local audio test before joining voice",
+        ));
+    }
     let server = self::server_id(&server_id)?;
     let channel = id(&channel_id)?;
     {
@@ -351,7 +364,9 @@ pub async fn watch(app: AppHandle) {
                         channel,
                         AudioConfig {
                             start_muted: true,
-                            ..AudioConfig::default()
+                            ..crate::audio::load(&app)
+                                .and_then(|p| p.config())
+                                .unwrap_or_default()
                         },
                     )
                     .await
@@ -486,6 +501,21 @@ mod tests {
             })
             .await
             .unwrap();
+            let tuned = AudioConfig {
+                gate: ss_client_core::TalkGate::VoiceActivation(ss_audio::vad::Config::default()),
+                master_gain: 0.5,
+                jitter_min: Duration::from_millis(30),
+                ..config()
+            };
+            active.session.configure(tuned).await.unwrap();
+            assert_eq!(active.session.channel(), first);
+            assert!(active.session.input_level() > -96.0);
+            let invalid = AudioConfig {
+                master_gain: f32::NAN,
+                ..config()
+            };
+            assert!(active.session.configure(invalid).await.is_err());
+            assert_eq!(active.session.channel(), first);
             active.session.set_self_mute(true).await.unwrap();
             tokio::time::timeout(Duration::from_secs(2), async {
                 while !active.session.speaking_users().is_empty() {

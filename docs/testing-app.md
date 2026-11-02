@@ -4,7 +4,8 @@ These are internal test builds, not stable releases. T-018's voice comparison
 is still a release gate. Packages now include server onboarding (T-043): add
 an address, compare and trust its certificate fingerprint, register with an
 invite or log in, and reconnect with a saved session. Connected servers show live channels, members and voice controls (T-044).
-Device settings/global PTT (T-051/T-058) and guided reports (T-076) follow.
+Audio settings (T-051) are available; global PTT (T-058) and guided reports
+(T-076) follow.
 The browser-only design preview still contains sample data.
 
 Sessions and server order survive restarting the app. Select a saved server,
@@ -14,14 +15,26 @@ app remains open. **Remove server** forgets its session on this computer;
 it does not delete the account on the server. The native app-data directory
 contains private JSON session and pin files, not an encrypted keychain.
 Passwords are never saved. Do not include `sessions.json` in test reports.
-Click a voice channel to join using the default OS audio devices. Hold **Hold to
-talk** with the mouse, or Space/Enter while it is focused, to transmit. Releasing,
+Open **Audio settings** from the server page, channel sidebar or call gear to
+choose devices and talking mode, then **Apply settings**. Settings persist and
+apply to an active call without leaving it. Defaults use system devices, PTT,
+and no processing. Open mic and voice activation can transmit without holding
+a button once applied; mute/deafen still close transmission.
+
+Click a voice channel to join. In PTT mode, hold **Hold to talk** with the mouse, or Space/Enter while it is focused, to transmit. Releasing,
 losing focus, muting or deafening closes transmission. Use **Leave** to leave
 voice or **Disconnect** to close the server connection. Ctrl/Cmd+Shift+M/D toggle
-mute/deafen; Ctrl/Cmd+Up/Down select channels. Interaction settings offer
+mute/deafen; Ctrl/Cmd+Shift+Up/Down select channels. Interaction settings offer
 double-click joining. Member menus expose playback and permitted moderation.
-The displayed latency is network RTT, not mouth-to-ear latency. Device selection
-and global shortcuts remain pending; audio checklist links describe that work.
+The displayed latency is network RTT, not mouth-to-ear latency. Global shortcuts remain pending. Captured bindings currently work only while
+the app is focused, outside dialogs/text entry. Backend permission and compositor
+limitations appear in audio settings.
+
+Outside a call, **Test mic** provides 10 seconds of local raw microphone playback
+with a 1-second delay (use headphones), **Test output** plays a cue, and VAD
+auto-calibration listens to 2 seconds of background noise. Tests stop on close
+or **Stop test**, and do not send audio to a server. Device switching speed,
+permission flows and audible quality still need real-machine validation.
 
 ## Build locally
 

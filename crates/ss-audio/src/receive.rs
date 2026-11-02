@@ -100,6 +100,11 @@ impl TrackReceiver {
     }
 
     /// Per-track linear gain (0 through 4), applied after silence detection.
+    pub fn set_jitter_bounds(&mut self, minimum: Duration, maximum: Duration) {
+        self.jitter.set_bounds(minimum, maximum);
+    }
+
+    /// Set this track's playback gain.
     pub fn set_gain(&mut self, gain: f32) -> Result<(), mixer::Error> {
         mixer::validate_gain(gain)?;
         self.gain = gain;

@@ -93,6 +93,16 @@ pub struct AudioConfig {
     pub start_muted: bool,
     /// Join self-deafened.
     pub start_deafened: bool,
+    /// Master playback gain, including cues (0..=2).
+    pub master_gain: f32,
+    /// Cue gain before master volume (0..=1).
+    pub cue_gain: f32,
+    /// Attenuation of remote users while transmitting (0..=0.5).
+    pub attenuation: f32,
+    /// Adaptive receive buffer bounds, 20..=200 ms.
+    pub jitter_min: Duration,
+    /// Maximum receive buffering, at least jitter_min.
+    pub jitter_max: Duration,
 }
 
 impl Default for AudioConfig {
@@ -107,6 +117,11 @@ impl Default for AudioConfig {
             processing: ProcessingConfig::default(),
             start_muted: false,
             start_deafened: false,
+            master_gain: 1.0,
+            cue_gain: 1.0,
+            attenuation: 0.0,
+            jitter_min: Duration::from_millis(20),
+            jitter_max: Duration::from_millis(200),
         }
     }
 }
@@ -301,6 +316,31 @@ impl VoiceSession {
             .await
             .map_err(|_| Error::Voice("voice worker stopped while switching devices".to_owned()))?
             .map_err(Error::Voice)
+    }
+
+    /// Apply audio preferences on the worker without changing channel membership.
+    /// A device-open failure restores the previous device configuration.
+    pub async fn configure(&self, config: AudioConfig) -> Result<(), Error> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| Error::Voice("voice worker stopped".into()))?;
+        let (reply, response) = oneshot::channel();
+        worker
+            .updates
+            .try_send(Update::Configure { config, reply })
+            .map_err(|_| Error::Voice("audio update queue unavailable".into()))?;
+        response
+            .await
+            .map_err(|_| Error::Voice("audio worker stopped".into()))?
+            .map_err(Error::Voice)
+    }
+
+    /// Capture energy before processing/gating, in dBFS. No PCM crosses the bridge.
+    pub fn input_level(&self) -> f32 {
+        self.worker
+            .as_ref()
+            .map_or(-96.0, |w| w.shared.stats.read().input_dbfs)
     }
 
     /// Update self mute locally and on the server.

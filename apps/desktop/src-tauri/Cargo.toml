@@ -19,10 +19,11 @@ serde_json.workspace = true
 bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ss-audio.workspace = true
+ss-audio = { workspace = true, features = ["aec", "rnnoise"] }
 reqwest.workspace = true
 tempfile.workspace = true
-ss-client-core.workspace = true
+ss-client-core = { workspace = true, features = ["macos-voiceio"] }
+ss-input.workspace = true
 ss-core.workspace = true
 ss-net.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
