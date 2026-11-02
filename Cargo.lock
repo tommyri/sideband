@@ -6511,12 +6511,14 @@ name = "socialspeak-desktop"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "ss-audio",
  "ss-client-core",
  "ss-core",
  "ss-net",
+ "ss-server",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",

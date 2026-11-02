@@ -1,5 +1,7 @@
 mod build_identity;
 mod commands;
+mod onboarding;
+mod persistence;
 mod state;
 mod types;
 
@@ -21,7 +23,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::approve_fingerprint,
@@ -30,8 +31,12 @@ pub fn run() {
             commands::send_message,
             commands::create_channel,
             commands::load_history,
+            onboarding::probe_server,
+            onboarding::remove_server,
+            onboarding::reorder_servers,
         ])
         .setup(|app| {
+            app.manage(AppState::open(&app.path().app_data_dir()?)?);
             let about = PredefinedMenuItem::about(
                 app,
                 Some("About this test build"),

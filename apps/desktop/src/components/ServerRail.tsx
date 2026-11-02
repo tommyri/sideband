@@ -29,15 +29,23 @@ export function ServerRail() {
             className={`server-button ${selected === server.id ? 'active' : ''}`}
             onClick={() => select(server.id)}
             aria-label={server.label}
-            title={server.label}
+            title={`${server.label} · ${server.status.kind}`}
           >
             {index === 0 ? <span className="server-grid">▦</span> : initials(server.label)}
             <span className={`status-dot ${server.status.kind}`} />
+            {server.unread > 0 && (
+              <span className="rail-unread" aria-label={`${server.unread} unread channels`}>
+                {server.unread}
+              </span>
+            )}
           </button>
         ))}
         <button
           className="server-button add-server"
-          onClick={() => openConnect(true)}
+          onClick={(event) => {
+            event.currentTarget.focus()
+            openConnect(true)
+          }}
           aria-label="Add server"
         >
           <Plus size={20} />

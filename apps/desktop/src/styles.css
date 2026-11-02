@@ -955,6 +955,113 @@ textarea:focus-visible {
   place-items: center;
 }
 
+.onboarding-dialog {
+  margin: auto;
+  inset: 0;
+  padding: 0;
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+}
+.onboarding-dialog::backdrop {
+  background: rgb(4 7 10 / 72%);
+  backdrop-filter: blur(8px);
+}
+.onboarding-dialog p,
+.onboarding-dialog small {
+  line-height: 1.6;
+}
+.onboarding-dialog details label {
+  margin-top: 12px;
+}
+.trust-details code,
+.trust-warning code {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 12px 0;
+  font-size: 14px;
+}
+.trust-warning {
+  border-left: 3px solid #ff5b55;
+  padding-left: 14px;
+  color: #ffaaa5;
+}
+.button.primary.danger {
+  background: #b52d31;
+  color: white;
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.button[aria-pressed='true'] {
+  border-color: var(--coral);
+  color: var(--text);
+}
+.server-home {
+  grid-column: 2 / 5;
+  overflow: auto;
+  padding: clamp(24px, 5vw, 80px);
+  max-width: 100%;
+}
+.server-home h1 {
+  font-size: 32px;
+  margin-top: 12px;
+}
+.server-home p {
+  max-width: 640px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+.setup-checklist,
+.server-management {
+  max-width: 640px;
+  margin-top: 32px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.setup-checklist li {
+  margin: 16px 0;
+}
+.setup-checklist button {
+  color: var(--text);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.server-management .dialog-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.connection-banner {
+  padding: 12px;
+  border: 1px solid var(--coral);
+}
+.rail-unread {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  background: var(--coral);
+  color: white;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 8px;
+}
+.status-dot.disconnected,
+.status-dot.failed {
+  background: #929eaa;
+}
+.status-dot.reconnecting,
+.status-dot.connecting {
+  background: #eabf63;
+}
+.startup-error {
+  position: fixed;
+  bottom: 20px;
+  left: 90px;
+  background: #622;
+  padding: 12px;
+}
+
 .connect-dialog {
   width: min(440px, 100%);
   color: var(--text);

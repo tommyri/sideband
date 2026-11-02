@@ -5,7 +5,8 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 `00-overview.md`).
 
 Current priority: [installable testing app](../05-testing-app.md).
-Start T-075, then essential T-043 → T-044 → T-051/T-058 → T-076 increments.
+T-075 packaging and essential T-043 onboarding are implemented; platform
+acceptance remains open. Next: T-044 → T-051/T-058 → T-076 increments.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -61,7 +62,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-040](T-040-client-core-connection-state.md) | Client core: connection + state store | M | T-004, T-021, T-023, T-024, T-026 | done |
 | [T-041](T-041-client-core-voice-session.md) | Client core: voice session | M | T-040, T-010, T-015, T-025 | done |
 | [T-042](T-042-tauri-app-scaffold.md) | Tauri app scaffold and bridge | M | T-040 | done |
-| [T-043](T-043-onboarding-ui.md) | Onboarding UI | M | T-042 | todo |
+| [T-043](T-043-onboarding-ui.md) | Onboarding UI | M | T-042 | in-progress |
 | [T-044](T-044-channel-voice-ui.md) | Channel sidebar and voice UI | M | T-042, T-041 | todo |
 | [T-045](T-045-text-chat-ui.md) | Text chat UI | L | T-042, T-027, T-029 | todo |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045, T-028 | todo |

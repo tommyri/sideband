@@ -1,10 +1,21 @@
 # SocialSpeak testing builds
 
 These are internal test builds, not stable releases. T-018's voice comparison
-is still a release gate. The current T-075 package contains the T-042 desktop
-scaffold: some screens contain preview data and are not evidence of a working
-voice call. Complete onboarding (T-043), voice controls (T-044), settings/PTT
-(T-051/T-058) and guided reports (T-076) follow in that order.
+is still a release gate. Packages now include server onboarding (T-043): add
+an address, compare and trust its certificate fingerprint, register with an
+invite or log in, and reconnect with a saved session. The installed app shows
+a checklist rather than simulated voice channels. Voice controls (T-044),
+settings/PTT (T-051/T-058) and guided reports (T-076) follow in that order.
+The browser-only design preview still contains sample data.
+
+Sessions and server order survive restarting the app. Select a saved server,
+choose **Reconnect / log in**, then **Reconnect with saved session** after
+the server check. Automatic reconnect handles temporary outages while the
+app remains open. **Remove server** forgets its session on this computer;
+it does not delete the account on the server. The native app-data directory
+contains private JSON session and pin files, not an encrypted keychain.
+Passwords are never saved. Do not include `sessions.json` in test reports.
+Audio checklist links explain what remains unavailable until settings land.
 
 ## Build locally
 

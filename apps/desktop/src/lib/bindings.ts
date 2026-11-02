@@ -2,6 +2,8 @@
 // verifies the files in ./generated through ts-rs export tests.
 
 export type { ApiError } from './generated/ApiError'
+export type { ProbeInput } from './generated/ProbeInput'
+export type { ServerProbe } from './generated/ServerProbe'
 export type { AppEvent } from './generated/AppEvent'
 export type { AppSnapshot } from './generated/AppSnapshot'
 export type { ApproveFingerprintInput } from './generated/ApproveFingerprintInput'

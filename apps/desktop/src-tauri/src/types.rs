@@ -27,6 +27,8 @@ pub struct ConnectInput {
     pub https_port: u16,
     pub username: String,
     pub password: String,
+    pub mode: String,
+    pub invite_code: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -54,7 +56,30 @@ pub struct ServerSummary {
     pub id: String,
     pub label: String,
     pub host: String,
+    pub port: u16,
+    pub https_port: u16,
+    pub unread: u32,
     pub status: ConnectionStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub struct ProbeInput {
+    pub host: String,
+    pub port: u16,
+    pub https_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub struct ServerProbe {
+    pub name: String,
+    pub registration_mode: String,
+    pub fingerprint: String,
+    pub previous_fingerprint: Option<String>,
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

@@ -6,6 +6,8 @@ import type {
   CreateChannelInput,
   SendMessageInput,
   ServerSummary,
+  ProbeInput,
+  ServerProbe,
 } from './bindings'
 import { invokeBridge, isTauri } from './tauri'
 
@@ -13,6 +15,9 @@ const previewServer: ServerSummary = {
   id: 'preview.local:5781',
   label: 'Product Studio',
   host: 'preview.local',
+  port: 5781,
+  httpsPort: 5781,
+  unread: 0,
   status: { kind: 'connected' },
 }
 
@@ -23,18 +28,23 @@ export async function getSnapshot(): Promise<AppSnapshot> {
 
 export async function connect(input: ConnectInput): Promise<ConnectResult> {
   if (!isTauri()) {
-    await new Promise((resolve) => window.setTimeout(resolve, 420))
-    return {
-      serverId: `${input.host}:${input.port}`,
-      label: input.host === '127.0.0.1' ? 'Local SocialSpeak' : input.host,
-      status: { kind: 'connected' },
-    }
+    throw new Error('Open the installed desktop app to connect to a real server.')
   }
   return invokeBridge<ConnectResult>('connect', { input })
 }
 
 export async function approveFingerprint(input: ApproveFingerprintInput): Promise<void> {
   return invokeBridge<void>('approve_fingerprint', { input })
+}
+
+export function probeServer(input: ProbeInput): Promise<ServerProbe> {
+  return invokeBridge('probe_server', { input })
+}
+export function removeServer(serverId: string): Promise<void> {
+  return invokeBridge('remove_server', { serverId })
+}
+export function reorderServers(serverIds: string[]): Promise<void> {
+  return invokeBridge('reorder_servers', { serverIds })
 }
 
 export async function disconnect(serverId: string): Promise<void> {

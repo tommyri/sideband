@@ -20,6 +20,8 @@ bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ss-audio.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
 ss-client-core.workspace = true
 ss-core.workspace = true
 ss-net.workspace = true
@@ -32,3 +34,4 @@ ts-rs = { version = "11", features = ["serde-compat"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+ss-server = { path = "../../../crates/ss-server" }

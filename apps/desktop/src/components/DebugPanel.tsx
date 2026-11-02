@@ -1,6 +1,7 @@
 import { Activity, CircleCheck, Copy, Radio, Trash2, X } from 'lucide-react'
 import type { AppEvent } from '../lib/bindings'
 import { useAppStore } from '../store/app-store'
+import { isTauri } from '../lib/tauri'
 
 const previewEvents: AppEvent[] = [
   {
@@ -40,7 +41,7 @@ export function DebugPanel() {
   const open = useAppStore((state) => state.debugOpen)
   const toggle = useAppStore((state) => state.toggleDebug)
   const events = useAppStore((state) => state.events)
-  const visibleEvents = events.length ? events : previewEvents
+  const visibleEvents = events.length || isTauri() ? events : previewEvents
 
   if (!open) return null
 

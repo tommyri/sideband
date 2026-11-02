@@ -22,7 +22,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, State};
 
-fn api_error(error: ClientError) -> ApiError {
+pub(crate) fn api_error(error: ClientError) -> ApiError {
     match error {
         ClientError::Network(NetworkError::Untrusted { fingerprint }) => ApiError {
             code: "untrusted_certificate".into(),
@@ -38,7 +38,7 @@ fn api_error(error: ClientError) -> ApiError {
         },
         ClientError::Disconnected => ApiError::new("disconnected", error.to_string()),
         ClientError::Timeout => ApiError::new("timeout", error.to_string()),
-        ClientError::Server { .. } => ApiError::new("server", error.to_string()),
+        ClientError::Server { code, message } => ApiError::new(format!("server_{code}"), message),
         _ => ApiError::new("client", error.to_string()),
     }
 }
@@ -203,12 +203,25 @@ pub async fn connect(
     state: State<'_, AppState>,
     input: ConnectInput,
 ) -> Result<ConnectResult, ApiError> {
+    let _operation = state.operations.lock().await;
     let mut address = ServerAddr::new(&input.host, input.port).map_err(api_error)?;
     address.https_port = input.https_port;
-    let credentials = Credentials::Login(ss_client_core::v1::Login {
-        username: input.username,
-        password: input.password,
-    });
+    if input.port == 0 || input.https_port == 0 {
+        return Err(ApiError::new("invalid_server", "Invalid port."));
+    }
+    let credentials = match input.mode.as_str() {
+        "saved" => Credentials::Saved,
+        "register" => Credentials::Register(ss_client_core::v1::Register {
+            invite_code: input.invite_code,
+            username: input.username,
+            password: input.password,
+        }),
+        "login" => Credentials::Login(ss_client_core::v1::Login {
+            username: input.username,
+            password: input.password,
+        }),
+        _ => return Err(ApiError::new("invalid", "Unknown authentication mode.")),
+    };
     let client = Client::connect_with_storage(
         address.clone(),
         credentials,
@@ -218,10 +231,25 @@ pub async fn connect(
     .await
     .map_err(api_error)?;
     let server_id = address.id().map_err(api_error)?.as_str().to_owned();
+    let label = client
+        .state()
+        .read()
+        .server
+        .as_ref()
+        .map_or_else(|| address.host.clone(), |s| s.name.clone());
+    state
+        .storage
+        .label(&server_id, label.clone())
+        .map_err(api_error)?;
     let mut receiver = client.subscribe();
     let event_server_id = server_id.clone();
     tauri::async_runtime::spawn(async move {
-        while let Ok(incoming) = receiver.recv().await {
+        loop {
+            let incoming = match receiver.recv().await {
+                Ok(incoming) => incoming,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
             let _ = app.emit(
                 "ss://event",
                 AppEvent {
@@ -241,7 +269,7 @@ pub async fn connect(
     drop(previous);
     Ok(ConnectResult {
         server_id,
-        label: address.host.clone(),
+        label,
         status: ConnectionStatus::Connected,
     })
 }
@@ -274,16 +302,42 @@ pub async fn disconnect(state: State<'_, AppState>, server_id: String) -> Result
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, ApiError> {
     let clients = state.clients.lock().await;
-    let servers = clients
-        .iter()
-        .map(|(id, client)| {
-            let address = client.address();
-            let current = client.state().read().connection.clone();
+    let servers = state
+        .storage
+        .servers()
+        .into_iter()
+        .map(|saved| {
+            let client = ServerId::new(&saved.host, saved.port)
+                .ok()
+                .and_then(|id| clients.get(&id));
             ServerSummary {
-                id: id.as_str().to_owned(),
-                label: address.host.clone(),
-                host: address.host.clone(),
-                status: status(&current),
+                id: saved.id,
+                label: saved.label,
+                host: saved.host,
+                port: saved.port,
+                https_port: saved.https_port,
+                unread: client.map_or(0, |c| {
+                    let store = c.state();
+                    let current = store.read();
+                    current
+                        .channels
+                        .iter()
+                        .chain(current.direct_messages.iter())
+                        .filter(|(id, channel)| {
+                            channel.last_message_id.as_ref().is_some_and(|last| {
+                                current
+                                    .read_states
+                                    .get(id)
+                                    .is_none_or(|read| read.last_read_message_id < *last)
+                            })
+                        })
+                        .count()
+                        .try_into()
+                        .unwrap_or(u32::MAX)
+                }),
+                status: client.map_or(ConnectionStatus::Disconnected, |c| {
+                    status(&c.state().read().connection)
+                }),
             }
         })
         .collect();
