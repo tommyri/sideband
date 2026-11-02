@@ -166,6 +166,10 @@ impl StateStore {
             next.read_states.insert(id(&read.channel_id)?, read.clone());
         }
         let mut state = self.0.write();
+        next.messages = std::mem::take(&mut state.messages);
+        next.messages.retain(|channel, _| {
+            next.channels.contains_key(channel) || next.direct_messages.contains_key(channel)
+        });
         next.revision = state.revision.wrapping_add(1);
         next.generation = state.generation.wrapping_add(1);
         *state = next;
@@ -190,6 +194,33 @@ impl StateStore {
             return Err(Error::StateChanged);
         }
         if !state.channels.contains_key(&channel) && !state.direct_messages.contains_key(&channel) {
+            return Err(Error::StateChanged);
+        }
+        state.messages.entry(channel).or_default().load(page)?;
+        state.revision = state.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn message_cursors(&self) -> Vec<(Id, Id)> {
+        self.0
+            .read()
+            .messages
+            .iter()
+            .filter_map(|(&channel, cache)| {
+                cache
+                    .newest()
+                    .and_then(|message| id(&message.id).ok())
+                    .map(|cursor| (channel, cursor))
+            })
+            .collect()
+    }
+
+    pub(crate) fn resync(&self, channel: Id, page: Vec<v1::Message>) -> Result<(), Error> {
+        let mut state = self.0.write();
+        if !matches!(state.connection, ConnectionState::Reconnecting { .. })
+            || (!state.channels.contains_key(&channel)
+                && !state.direct_messages.contains_key(&channel))
+        {
             return Err(Error::StateChanged);
         }
         state.messages.entry(channel).or_default().load(page)?;
@@ -651,6 +682,52 @@ mod tests {
         let before = store.read().revision;
         assert!(store.welcome(&welcome).is_err());
         assert_eq!(store.read().revision, before);
+    }
+    #[test]
+    fn reconnect_snapshot_keeps_visible_message_cursors_and_merges_deltas() {
+        let (store, channel_id, _) = store();
+        let first = Id::generate();
+        let second = Id::generate();
+        let (first, second) = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        store
+            .apply(Msg::MessageCreated(v1::MessageCreated {
+                message: Some(message(first, channel_id, "before")),
+                nonce: None,
+            }))
+            .unwrap();
+        let welcome = v1::Welcome {
+            user: store.read().own_user.clone(),
+            snapshot: Some(v1::Snapshot {
+                channels: vec![channel(channel_id, 0)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        store
+            .install(
+                &welcome,
+                ConnectionState::Reconnecting {
+                    attempt: 1,
+                    delay: std::time::Duration::from_secs(2),
+                },
+            )
+            .unwrap();
+        assert_eq!(store.message_cursors(), vec![(channel_id, first)]);
+        store
+            .resync(channel_id, vec![message(second, channel_id, "after")])
+            .unwrap();
+        assert_eq!(
+            store.read().messages[&channel_id]
+                .ordered()
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            ["before", "after"]
+        );
     }
     #[test]
     fn own_profile_presence_roles_and_voice_sessions_reduce_independently() {

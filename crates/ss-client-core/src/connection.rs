@@ -11,7 +11,7 @@ use ss_net::{
 };
 use ss_proto::v1::{self, client_envelope::Msg, server_envelope::Msg as Event};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -22,6 +22,7 @@ use tokio::{
 };
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
+const RECONNECT_CLOSE_CODE: u32 = 73;
 
 /// One host, QUIC port, and HTTPS port. HTTPS uses the QUIC identity's pin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,7 @@ pub enum Credentials {
 pub(crate) struct Command {
     pub message: Msg,
     pub generation: u64,
+    pub replayable: bool,
     pub reply: oneshot::Sender<Result<v1::Ack, Error>>,
 }
 
@@ -139,6 +141,7 @@ impl Client {
             auth: auth.clone(),
             desired_voice: None,
             typing: HashMap::new(),
+            pending: VecDeque::new(),
         };
         let worker = tokio::spawn(runner.run(live, command_rx));
         Ok(Self {
@@ -170,15 +173,19 @@ impl Client {
     }
 
     /// Low-level command escape hatch. Hello/Ping are owned by the connection
-    /// manager; application commands use correlated Ack/Error replies. Commands
-    /// are never replayed after reconnect because their outcome may be unknown.
-    pub async fn command(&self, message: Msg) -> Result<v1::Ack, Error> {
+    /// manager; application commands use correlated Ack/Error replies. Message
+    /// sends carry an idempotency nonce and may be queued/replayed on reconnect.
+    pub async fn command(&self, mut message: Msg) -> Result<v1::Ack, Error> {
         if matches!(message, Msg::Hello(_) | Msg::Ping(_)) {
             return Err(Error::Protocol("connection-owned command"));
         }
+        let replayable = make_replayable(&mut message);
         let generation = {
             let state = self.store.read();
-            if state.connection != ConnectionState::Connected {
+            if state.connection != ConnectionState::Connected
+                && !(replayable
+                    && matches!(&state.connection, ConnectionState::Reconnecting { .. }))
+            {
                 return Err(Error::Disconnected);
             }
             state.generation
@@ -188,6 +195,7 @@ impl Client {
             .try_send(Command {
                 message,
                 generation,
+                replayable,
                 reply,
             })
             .map_err(|error| match error {
@@ -313,6 +321,7 @@ struct Runner {
     auth: Arc<RwLock<Option<String>>>,
     desired_voice: Option<v1::JoinVoice>,
     typing: HashMap<Vec<u8>, Instant>,
+    pending: VecDeque<Command>,
 }
 impl Runner {
     fn status(&self, state: ConnectionState) {
@@ -329,6 +338,10 @@ impl Runner {
     async fn run(mut self, mut live: Live, mut commands: mpsc::Receiver<Command>) {
         loop {
             let outcome = self.connected(&mut live, &mut commands).await;
+            if outcome.as_ref().is_err_and(|error| !terminal(error)) {
+                live.connection
+                    .close(RECONNECT_CLOSE_CODE, b"client reconnecting");
+            }
             drop(live);
             match outcome {
                 Ok(()) => {
@@ -351,19 +364,20 @@ impl Runner {
                 attempt = attempt.saturating_add(1);
                 let delay = backoff(attempt);
                 self.status(ConnectionState::Reconnecting { attempt, delay });
-                if while_rejecting(tokio::time::sleep(delay), &mut commands)
+                if while_reconnecting(tokio::time::sleep(delay), &mut commands, &mut self.pending)
                     .await
                     .is_none()
                 {
                     return;
                 }
-                let result = while_rejecting(
+                let result = while_reconnecting(
                     establish(
                         &self.address,
                         self.pins.clone(),
                         v1::hello::Auth::ResumeToken(token.clone()),
                     ),
                     &mut commands,
+                    &mut self.pending,
                 )
                 .await;
                 let Some(result) = result else {
@@ -372,25 +386,17 @@ impl Runner {
                 match result {
                     Ok((mut next, welcome)) => {
                         let setup = async {
+                            let cursors = self.store.message_cursors();
                             self.store.install(
                                 &welcome,
                                 ConnectionState::Reconnecting { attempt, delay },
                             )?;
                             persist(&self.storage, &self.address, &welcome.resume_token).await?;
                             token.clone_from(&welcome.resume_token);
-                            *self.auth.write() = Some(welcome.resume_token);
-                            if let Some(join) = self.desired_voice.clone() {
-                                match self.execute(&mut next, Msg::JoinVoice(join)).await {
-                                    Ok(_) => {}
-                                    Err(Error::Server { message, .. }) => {
-                                        self.desired_voice = None;
-                                        let _ = self.events.send(ClientEvent::Notice(format!(
-                                            "Could not rejoin voice: {message}"
-                                        )));
-                                    }
-                                    Err(error) => return Err(error),
-                                }
-                            }
+                            *self.auth.write() = Some(welcome.resume_token.clone());
+                            self.restore_voice(&mut next).await?;
+                            self.resync_messages(&welcome.resume_token, cursors).await;
+                            self.flush_pending(&mut next).await?;
                             Ok::<_, Error>(())
                         }
                         .await;
@@ -422,8 +428,18 @@ impl Runner {
         live: &mut Live,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<(), Error> {
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_tick = Instant::now();
         loop {
             tokio::select! {
+                _ = heartbeat.tick() => {
+                    let now = Instant::now();
+                    if clock_jumped(last_tick, now) {
+                        return Err(Error::Disconnected);
+                    }
+                    last_tick = now;
+                }
                 event = live.incoming.recv() => {
                     let event = event.ok_or(Error::Disconnected)?;
                     if self.event(event)? { return Ok(()); }
@@ -431,11 +447,11 @@ impl Runner {
                 command = commands.recv() => {
                     let Some(command) = command else { return Ok(()); };
                     if command.reply.is_closed() { continue; }
-                    if command.generation != self.store.read().generation {
+                    if command.generation != self.store.read().generation && !command.replayable {
                         let _ = command.reply.send(Err(Error::Disconnected));
                         continue;
                     }
-                    let message = command.message;
+                    let message = command.message.clone();
                     if let Msg::Typing(typing) = &message
                         && self.typing.get(typing.channel_id.as_ref()).is_some_and(|last| last.elapsed() < Duration::from_secs(5)) {
                             let _ = command.reply.send(Ok(v1::Ack { request_id: 0, result: Some(v1::ack::Result::Empty(v1::Empty {})) }));
@@ -445,6 +461,10 @@ impl Runner {
                     if result.is_ok() { self.accepted(&message); }
                     let stop = result.as_ref().err().is_some_and(|error| !matches!(error, Error::Server { .. }) && terminal(error));
                     let retry = result.as_ref().err().is_some_and(|e| !matches!(e, Error::Server { .. }));
+                    if retry && command.replayable {
+                        self.pending.push_back(command);
+                        return Err(Error::Disconnected);
+                    }
                     let _ = command.reply.send(result);
                     if stop { return Err(Error::Protocol("command ended the session")); }
                     if retry { return Err(Error::Disconnected); }
@@ -471,6 +491,93 @@ impl Runner {
             }
         }
     }
+    async fn flush_pending(&mut self, live: &mut Live) -> Result<(), Error> {
+        while let Some(command) = self.pending.pop_front() {
+            if command.reply.is_closed() {
+                continue;
+            }
+            let result = self.execute(live, command.message.clone()).await;
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|error| !matches!(error, Error::Server { .. }))
+            {
+                self.pending.push_front(command);
+                return Err(Error::Disconnected);
+            }
+            if result.is_ok() {
+                self.accepted(&command.message);
+            }
+            let _ = command.reply.send(result);
+        }
+        Ok(())
+    }
+    async fn resync_messages(&self, token: &str, cursors: Vec<(ss_core::Id, ss_core::Id)>) {
+        for (channel, mut cursor) in cursors {
+            for _ in 0..20 {
+                let page = match crate::history::fetch_page(
+                    &self.address,
+                    self.pins.clone(),
+                    token,
+                    channel,
+                    None,
+                    Some(cursor),
+                )
+                .await
+                {
+                    Ok(page) => page,
+                    Err(error) => {
+                        let _ = self.events.send(ClientEvent::Notice(format!(
+                            "Message resync deferred: {error}"
+                        )));
+                        break;
+                    }
+                };
+                let page_len = page.len();
+                let Some(last) = page.last() else { break };
+                let Ok(next) = crate::state::id(&last.id) else {
+                    break;
+                };
+                if self.store.resync(channel, page).is_err() {
+                    break;
+                }
+                let _ = self.events.send(ClientEvent::MessagesChanged { channel });
+                cursor = next;
+                if page_len < 50 {
+                    break;
+                }
+            }
+        }
+    }
+    async fn restore_voice(&mut self, live: &mut Live) -> Result<(), Error> {
+        let Some(join) = self.desired_voice.clone() else {
+            return Ok(());
+        };
+        let already_joined = {
+            let state = self.store.read();
+            let own_user = state.own_user.as_ref().map(|user| &user.id);
+            state.voice_states.values().any(|voice| {
+                Some(&voice.user_id) == own_user
+                    && voice.channel_id.as_ref() == Some(&join.channel_id)
+            })
+        };
+        let result = if already_joined {
+            Ok(v1::Ack::default())
+        } else {
+            self.execute(live, Msg::JoinVoice(join)).await
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(Error::Server { message, .. }) => {
+                self.desired_voice = None;
+                let _ = self.events.send(ClientEvent::Notice(format!(
+                    "Could not rejoin voice: {message}"
+                )));
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
     fn accepted(&mut self, message: &Msg) {
         match message {
             Msg::JoinVoice(join) => self.desired_voice = Some(join.clone()),
@@ -490,15 +597,23 @@ impl Runner {
     }
 }
 
-async fn while_rejecting<T>(
+async fn while_reconnecting<T>(
     future: impl std::future::Future<Output = T>,
     commands: &mut mpsc::Receiver<Command>,
+    pending: &mut VecDeque<Command>,
 ) -> Option<T> {
     tokio::pin!(future);
     loop {
         tokio::select! {
             result = &mut future => return Some(result),
-            command = commands.recv() => { let command = command?; let _ = command.reply.send(Err(Error::Disconnected)); }
+            command = commands.recv() => {
+                let command = command?;
+                if command.replayable {
+                    pending.push_back(command);
+                } else {
+                    let _ = command.reply.send(Err(Error::Disconnected));
+                }
+            }
         }
     }
 }
@@ -520,10 +635,57 @@ fn terminal(error: &Error) -> bool {
     )
 }
 fn backoff(attempt: u32) -> Duration {
-    let base = (1_u64 << attempt.saturating_sub(1).min(5)).min(30) * 1000;
+    let base = (2_u64 << attempt.saturating_sub(1).min(4)).min(30) * 1000;
     let mut bytes = [0; 2];
     let _ = getrandom::getrandom(&mut bytes);
-    // Equal jitter, bounded by 30 seconds. First attempt waits 1–1.25 s.
+    // Equal jitter, bounded by 30 seconds. First attempt waits 2–2.5 s.
     let jitter = u64::from(u16::from_le_bytes(bytes)) % (base / 4 + 1);
     Duration::from_millis((base + jitter).min(30_000))
+}
+
+fn clock_jumped(last: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last) > Duration::from_secs(3)
+}
+
+fn make_replayable(message: &mut Msg) -> bool {
+    let Msg::SendMessage(send) = message else {
+        return false;
+    };
+    if send.nonce.as_ref().is_none_or(String::is_empty) {
+        send.nonce = Some(ss_core::Id::generate().to_string());
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_backoff_and_clock_jump_thresholds_are_bounded() {
+        assert!(backoff(1) >= Duration::from_secs(2));
+        assert!(backoff(1) <= Duration::from_millis(2500));
+        assert!(backoff(u32::MAX) <= Duration::from_secs(30));
+        let now = Instant::now();
+        assert!(!clock_jumped(now, now + Duration::from_secs(3)));
+        assert!(clock_jumped(
+            now,
+            now + Duration::from_secs(3) + Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn only_message_sends_are_made_replayable() {
+        let mut send = Msg::SendMessage(v1::SendMessage {
+            nonce: None,
+            ..Default::default()
+        });
+        assert!(make_replayable(&mut send));
+        let Msg::SendMessage(send) = send else {
+            unreachable!()
+        };
+        assert!(send.nonce.is_some_and(|nonce| !nonce.is_empty()));
+        let mut typing = Msg::Typing(v1::Typing::default());
+        assert!(!make_replayable(&mut typing));
+    }
 }

@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::Arc,
     time::Duration,
 };
@@ -320,6 +320,36 @@ async fn request_router_correlates_out_of_order_replies_and_events() {
         tokio::join!(requests, responses);
     })
     .await;
+}
+
+#[tokio::test]
+async fn rebinding_the_client_socket_preserves_the_control_session() {
+    let mut server = Server::new().await;
+    let (client, mut stream, _peer, mut peer_stream) = server.pair().await;
+    client
+        .rebind(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap())
+        .unwrap();
+    stream
+        .send(&v1::ClientEnvelope {
+            request_id: 2,
+            msg: Some(client_envelope::Msg::Ping(v1::Ping { sent_at: 42 })),
+        })
+        .await
+        .unwrap();
+    let request = within(peer_stream.recv()).await.unwrap();
+    assert!(matches!(request.msg, Some(client_envelope::Msg::Ping(_))));
+    peer_stream
+        .send(&v1::ServerEnvelope {
+            request_id: 2,
+            msg: Some(server_envelope::Msg::Pong(v1::Pong {
+                sent_at: 42,
+                server_time: 43,
+            })),
+        })
+        .await
+        .unwrap();
+    let response = within(stream.recv()).await.unwrap();
+    assert!(matches!(response.msg, Some(server_envelope::Msg::Pong(_))));
 }
 
 #[tokio::test]

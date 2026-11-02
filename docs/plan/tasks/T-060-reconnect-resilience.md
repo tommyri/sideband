@@ -1,6 +1,6 @@
 # T-060 — Network resilience: session resume, migration, restart handling
 
-Status: todo
+Status: done
 Phase: 4
 Size: M
 Depends on: T-040, T-041, T-024, T-025
@@ -41,3 +41,26 @@ Multi-server failover.
   random 1–10 s outages: no client stuck, no leaked tracks on the server.
 
 ## Notes from implementation
+
+- A reconnectable close creates a process-local 60-second voice lease keyed by
+  the authenticated resume token. Resuming transfers the new QUIC connection
+  onto the original connection id and audio track id without broadcasting a
+  leave/join. Normal closes, moderation closes, and expired leases still clean
+  up immediately or at lease expiry.
+- `ss-net::Connection::rebind` exposes Quinn's validated path migration. The
+  loopback test replaces the client UDP socket and proves the existing control
+  stream remains usable.
+- The client uses a one-second monotonic heartbeat; a clock jump over three
+  seconds enters reconnect instead of waiting for QUIC idle timeout. Backoff is
+  jittered from 2 seconds and capped at 30 seconds.
+- Re-sync uses the existing pinned HTTPS history API rather than adding another
+  control-protocol exchange. Visible message caches survive snapshot install,
+  and `?after=<message_id>` pages fill every known channel cursor before queued
+  sends are flushed.
+- `SendMessage` is the only replayable command. The client assigns a nonce,
+  queues it while reconnecting, and the server stores the nonce and message in
+  one SQLite transaction. Nonces expire from deduplication after five minutes.
+- The restart integration test covers voice restoration, missed-message deltas,
+  and exactly-once queued sends. CI explicitly runs the ignored two-minute
+  in-process chaos test with random 1–10 second outages and asserts one restored
+  voice seat plus one stored row per queued message.

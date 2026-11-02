@@ -1,5 +1,7 @@
 //! Pinned HTTPS pagination and protobuf-JSON decoding.
-use crate::{Client, ClientEvent, ConnectionState, Error, connection::DEADLINE, state::id};
+use crate::{
+    Client, ClientEvent, ConnectionState, Error, ServerAddr, connection::DEADLINE, state::id,
+};
 use base64::Engine;
 use serde::Deserialize;
 use ss_core::Id;
@@ -24,45 +26,66 @@ impl Client {
             state.revision
         };
         let token = self.auth.read().clone().ok_or(Error::Disconnected)?;
-        let pins = self.pins.clone();
-        let key = self.address.id()?;
-        let pin = tokio::task::spawn_blocking(move || pins.get(&key))
-            .await
-            .map_err(|e| Error::Storage(e.to_string()))??
-            .ok_or(Error::Protocol("missing approved HTTPS pin"))?;
-        let http = reqwest::Client::builder()
-            .use_preconfigured_tls(ss_net::client::pinned_tls_config(pin)?)
-            .https_only(true)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(DEADLINE)
-            .build()?;
-        let host = if self.address.host.contains(':') {
-            format!("[{}]", self.address.host)
-        } else {
-            self.address.host.clone()
-        };
-        let url = format!(
-            "https://{host}:{}/api/v1/channels/{channel}/messages",
-            self.address.https_port
-        );
-        let mut request = http.get(url).bearer_auth(token).query(&[("limit", "50")]);
-        if let Some(before) = before {
-            request = request.query(&[("before", before.to_string())]);
-        }
-        let mut response = request.send().await?.error_for_status()?;
-        let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if body.len() + chunk.len() > MAX_PAGE_BYTES {
-                return Err(Error::Protocol("history page too large"));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        let page = decode(&body, channel)?;
+        let page = fetch_page(
+            &self.address,
+            self.pins.clone(),
+            &token,
+            channel,
+            before,
+            None,
+        )
+        .await?;
         self.store.history(channel, revision, page.clone())?;
         let _ = self.events.send(ClientEvent::MessagesChanged { channel });
         Ok(page)
     }
+}
+
+pub(crate) async fn fetch_page(
+    address: &ServerAddr,
+    pins: std::sync::Arc<dyn ss_net::pins::PinStore>,
+    token: &str,
+    channel: Id,
+    before: Option<Id>,
+    after: Option<Id>,
+) -> Result<Vec<v1::Message>, Error> {
+    let key = address.id()?;
+    let pin = tokio::task::spawn_blocking(move || pins.get(&key))
+        .await
+        .map_err(|e| Error::Storage(e.to_string()))??
+        .ok_or(Error::Protocol("missing approved HTTPS pin"))?;
+    let http = reqwest::Client::builder()
+        .use_preconfigured_tls(ss_net::client::pinned_tls_config(pin)?)
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(DEADLINE)
+        .build()?;
+    let host = if address.host.contains(':') {
+        format!("[{}]", address.host)
+    } else {
+        address.host.clone()
+    };
+    let url = format!(
+        "https://{host}:{}/api/v1/channels/{channel}/messages",
+        address.https_port
+    );
+    let mut request = http.get(url).bearer_auth(token).query(&[("limit", "50")]);
+    if let Some(before) = before {
+        request = request.query(&[("before", before.to_string())]);
+    }
+    if let Some(after) = after {
+        request = request.query(&[("after", after.to_string())]);
+    }
+    let mut response = request.send().await?.error_for_status()?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_PAGE_BYTES {
+            return Err(Error::Protocol("history page too large"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    decode(&body, channel)
 }
 
 pub(crate) fn decode(body: &[u8], channel: Id) -> Result<Vec<v1::Message>, Error> {

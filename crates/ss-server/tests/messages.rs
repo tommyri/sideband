@@ -29,6 +29,7 @@ use tower::ServiceExt;
 
 const PASSWORD: &str = "password-ok";
 const DEADLINE: Duration = Duration::from_secs(5);
+const QUIET: Duration = Duration::from_millis(300);
 
 struct World {
     endpoint: Endpoint,
@@ -131,9 +132,22 @@ async fn send_requires_permission_and_replies_stay_in_channel() {
     assert_eq!(created.message.unwrap().content, "hello");
     assert_eq!(created.nonce.as_deref(), Some("nonce-1"));
 
-    let other = command(
+    let retried = command(
         &mut admin_stream,
         4,
+        send(&general, "hello", None, Some("nonce-1")),
+    )
+    .await;
+    assert_eq!(ack_message(&retried), message_id);
+    assert!(
+        timeout(QUIET, next_created(&mut bea_stream, DEADLINE))
+            .await
+            .is_err()
+    );
+
+    let other = command(
+        &mut admin_stream,
+        5,
         Msg::CreateChannel(v1::CreateChannel {
             kind: i32::from(v1::ChannelKind::Text),
             name: "other".into(),
@@ -145,7 +159,7 @@ async fn send_requires_permission_and_replies_stay_in_channel() {
     let other = ack_channel(&other);
     let reply = command(
         &mut admin_stream,
-        5,
+        6,
         send(&other, "cross", Some(message_id), None),
     )
     .await;
@@ -288,6 +302,11 @@ async fn history_pages_stop_at_cursors() {
     )
     .await;
     assert_eq!(contents(&older.body), vec![sent[0].0.to_owned()]);
+    let newer = history_after(&world, &token, &general, &sent[0].1.to_string(), Some(2)).await;
+    assert_eq!(
+        contents(&newer.body),
+        vec![sent[1].0.to_owned(), sent[2].0.to_owned()]
+    );
     let empty = history(
         &world,
         &token,
@@ -421,6 +440,19 @@ async fn history_around(
     let channel_id = id_from_bytes(channel).unwrap();
     let limit = limit.unwrap_or(50);
     let path = format!("/api/v1/channels/{channel_id}/messages/around/{message}?limit={limit}");
+    get_json(world, token, &path).await
+}
+
+async fn history_after(
+    world: &World,
+    token: &str,
+    channel: &Bytes,
+    after: &str,
+    limit: Option<u32>,
+) -> Page {
+    let channel_id = id_from_bytes(channel).unwrap();
+    let limit = limit.unwrap_or(50);
+    let path = format!("/api/v1/channels/{channel_id}/messages?after={after}&limit={limit}");
     get_json(world, token, &path).await
 }
 

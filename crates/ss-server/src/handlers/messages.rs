@@ -26,6 +26,7 @@ const MAX_NONCE: usize = 128;
 const MAX_MENTIONS: usize = 50;
 const MAX_ATTACHMENTS: usize = 10;
 const EDIT_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const NONCE_WINDOW_MS: i64 = 5 * 60 * 1000;
 const SEND_BURST: u32 = 5;
 const EVERYONE: &str = "@everyone";
 
@@ -112,6 +113,15 @@ impl Messages {
         }
         let mut conn = self.perms.pool().write().await;
         require_text(&mut conn, channel_id).await?;
+        if let Some(value) = nonce.as_deref() {
+            let cutoff = Timestamp::from_millis(Timestamp::now().as_millis() - NONCE_WINDOW_MS);
+            if let Some(id) = messages::get_by_nonce(&mut conn, actor, value, cutoff).await? {
+                return Ok(CommandReply {
+                    ack: ack::Result::MessageId(id_to_bytes(id)),
+                    events: Vec::new(),
+                });
+            }
+        }
         let reply_to = reply_target(&mut conn, channel_id, command.reply_to.as_deref()).await?;
         let mentions = known_users(&mut conn, &mentioned).await?;
         let files = claimable_files(&mut conn, actor, &command.attachment_ids).await?;
@@ -119,21 +129,22 @@ impl Messages {
             .check(&actor)
             .map_err(|wait| Error::RateLimited("sending messages too quickly", wait))?;
         let id = Id::generate();
-        let stored = messages::insert(
-            &mut conn,
-            NewMessage {
-                id,
-                channel_id,
-                author_id: Some(actor),
-                webhook_id: None,
-                webhook_name: None,
-                content: content.clone(),
-                reply_to,
-                mentions,
-                mentions_everyone: everyone,
-            },
-        )
-        .await?;
+        let message = NewMessage {
+            id,
+            channel_id,
+            author_id: Some(actor),
+            webhook_id: None,
+            webhook_name: None,
+            content: content.clone(),
+            reply_to,
+            mentions,
+            mentions_everyone: everyone,
+        };
+        let stored = if let Some(value) = nonce.as_deref() {
+            messages::insert_with_nonce(&mut conn, message, actor, value, Timestamp::now()).await?
+        } else {
+            messages::insert(&mut conn, message).await?
+        };
         for file in &files {
             attachments::set_message(&mut conn, file.id, Some(id)).await?;
         }

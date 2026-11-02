@@ -98,6 +98,16 @@ impl Connection {
         }
     }
 
+    /// Rebinds the client endpoint to a replacement UDP socket. Quinn validates
+    /// the new path before switching traffic, preserving streams and datagrams.
+    pub fn rebind(&self, socket: std::net::UdpSocket) -> Result<(), Error> {
+        if !self.is_client {
+            return Err(Error::Config("only clients migrate connections"));
+        }
+        self.endpoint.rebind(socket)?;
+        Ok(())
+    }
+
     /// Access for future video streams; callers must not open extra bi streams.
     pub const fn quic(&self) -> &quinn::Connection {
         &self.inner

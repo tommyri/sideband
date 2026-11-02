@@ -365,6 +365,61 @@ async fn welcome_includes_voice_and_a_second_connection_moves_the_user() {
 }
 
 #[tokio::test]
+async fn resume_token_reattaches_the_same_voice_seat_without_leave_join_events() {
+    let world = World::new().await;
+    let (ada_id, ada_login) = register_owner(&world, "ada").await;
+    let (ada_conn, mut ada_stream) = world.connect().await;
+    let ada = hello(&mut ada_stream, ada_login).await;
+    let token = ada.resume_token.clone();
+    let voice = voice_named(ada.snapshot.as_ref().unwrap(), "General");
+    let (_bea_conn, mut bea_stream) = world.connect().await;
+    hello(&mut bea_stream, invite(&world, ada_id, "bea").await).await;
+    let joined = command(&mut ada_stream, 2, join(&voice, true, false)).await;
+    assert!(matches!(joined.msg, Some(Event::Ack(_))));
+    let original = next_track_for(&mut ada_stream, ada_id).await;
+    drain(&mut bea_stream).await;
+
+    ada_conn.close(73, b"test reconnect");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let disconnected = voice_states_for(&mut bea_stream, ada_id).await;
+    assert_eq!(disconnected.len(), 0, "{disconnected:?}");
+
+    let (resumed_conn, mut resumed_stream) = world.connect().await;
+    let resumed = hello(
+        &mut resumed_stream,
+        v1::Hello {
+            protocol_version: 1,
+            client_name: "resumed".into(),
+            auth: Some(v1::hello::Auth::ResumeToken(token)),
+            ..Default::default()
+        },
+    )
+    .await;
+    let snapshot = resumed.snapshot.unwrap();
+    let state = snapshot
+        .voice_states
+        .iter()
+        .find(|state| state.user_id.as_ref() == id_to_bytes(ada_id).as_ref())
+        .unwrap();
+    let track = snapshot
+        .tracks
+        .iter()
+        .find(|track| track.user_id.as_ref() == id_to_bytes(ada_id).as_ref())
+        .unwrap();
+    assert_eq!(state.conn_id, original.conn_id);
+    assert_eq!(track.conn_id, original.conn_id);
+    assert_eq!(track.track_id, original.track_id);
+    assert!(state.self_mute);
+    let reattached = voice_states_for(&mut bea_stream, ada_id).await;
+    assert_eq!(reattached.len(), 0, "{reattached:?}");
+
+    resumed_conn.close(0, b"bye");
+    let left = voice_states_for(&mut bea_stream, ada_id).await;
+    assert_eq!(left.len(), 1);
+    assert!(left[0].channel_id.is_none());
+}
+
+#[tokio::test]
 async fn disconnect_and_channel_delete_clear_membership_quickly() {
     let world = World::new().await;
     let (ada_id, ada_login) = register_owner(&world, "ada").await;

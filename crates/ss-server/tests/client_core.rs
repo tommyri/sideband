@@ -87,6 +87,9 @@ impl World {
         .unwrap()
     }
     async fn restart(&mut self) {
+        self.restart_after(Duration::ZERO).await;
+    }
+    async fn restart_after(&mut self, outage: Duration) {
         let addr = self.endpoint.local_addr().unwrap();
         self.endpoint.close(0, b"forced restart");
         self.worker.abort();
@@ -101,6 +104,7 @@ impl World {
         .unwrap();
         let old = std::mem::replace(&mut self.endpoint, replacement);
         drop(old);
+        tokio::time::sleep(outage).await;
         self.server = Arc::new(Server::open(self.pool.clone()).await.unwrap());
         self.endpoint = timeout(WAIT, async {
             loop {
@@ -306,6 +310,8 @@ async fn permission_changes_refresh_existing_and_newly_visible_channels() {
 #[tokio::test]
 async fn forced_restart_resumes_snapshot_and_voice_without_duplicate_commands() {
     let mut world = World::new().await;
+    let (https_port, https_task) = https(&world, false).await;
+    world.address.https_port = https_port;
     let client = world.owner().await;
     let mut events = client.subscribe();
     let voice = named(&client.state().read(), "General", v1::ChannelKind::Voice);
@@ -321,6 +327,24 @@ async fn forced_restart_resumes_snapshot_and_voice_without_duplicate_commands() 
     until(&client, &mut events, |s| !s.voice_states.is_empty()).await;
     let _ = client.send_message(post(general, "once")).await.unwrap();
     world.restart().await;
+    until(&client, &mut events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    let poster = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    let _ = poster
+        .send_message(post(general, "missed while offline"))
+        .await
+        .unwrap();
+    let queued = client.send_message(post(general, "during restart"));
+    let queued_id = timeout(WAIT, queued).await.unwrap().unwrap();
     timeout(WAIT, async {
         loop {
             if matches!(events.recv().await.unwrap(), ClientEvent::Resynced) {
@@ -337,14 +361,92 @@ async fn forced_restart_resumes_snapshot_and_voice_without_duplicate_commands() 
                 .any(|v| v.channel_id == Some(wire(voice)) && v.self_mute)
     })
     .await;
-    assert!(!client.state().read().messages.contains_key(&general));
+    assert!(
+        client.state().read().messages[&general]
+            .ordered()
+            .iter()
+            .any(|message| message.content == "during restart")
+    );
+    assert!(
+        client.state().read().messages[&general]
+            .ordered()
+            .iter()
+            .any(|message| message.content == "missed while offline")
+    );
     assert!(!client.state().read().channels.is_empty());
+    let mut conn = world.pool.read().await.unwrap();
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE id = ? AND content = 'during restart'",
+    )
+    .bind(queued_id)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(stored, 1);
     assert!(
         client
             .send_message(post(general, "after restart"))
             .await
             .is_ok()
     );
+    https_task.abort();
+}
+
+#[tokio::test]
+#[ignore = "two-minute CI chaos test"]
+async fn two_minute_random_outages_leave_no_stuck_client_or_voice_tracks() {
+    let mut world = World::new().await;
+    let client = world.owner().await;
+    let mut events = client.subscribe();
+    let voice = named(&client.state().read(), "General", v1::ChannelKind::Voice);
+    let general = named(&client.state().read(), "general", v1::ChannelKind::Text);
+    client
+        .join_voice(v1::JoinVoice {
+            channel_id: wire(voice),
+            self_mute: false,
+            self_deaf: false,
+        })
+        .await
+        .unwrap();
+    until(&client, &mut events, |state| !state.tracks.is_empty()).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let mut sent = 0_i64;
+    while tokio::time::Instant::now() < deadline {
+        let mut random = [0_u8; 1];
+        getrandom::getrandom(&mut random).unwrap();
+        let outage = Duration::from_secs(1 + u64::from(random[0] % 10));
+        let content = format!("chaos-{sent}");
+        let restart = world.restart_after(outage);
+        let exercise = async {
+            until(&client, &mut events, |state| {
+                matches!(state.connection, ConnectionState::Reconnecting { .. })
+            })
+            .await;
+            let _ = client.send_message(post(general, &content)).await.unwrap();
+        };
+        tokio::join!(restart, exercise);
+        until(&client, &mut events, |state| {
+            state.connection == ConnectionState::Connected
+                && state
+                    .voice_states
+                    .values()
+                    .any(|voice_state| voice_state.channel_id == Some(wire(voice)))
+        })
+        .await;
+        assert_eq!(world.server.voice_members(), 1);
+        sent += 1;
+    }
+
+    assert!(sent >= 8, "only completed {sent} outage cycles");
+    let mut conn = world.pool.read().await.unwrap();
+    let stored: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE content LIKE 'chaos-%'")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert_eq!(stored, sent);
+    assert_eq!(world.server.voice_members(), 1);
 }
 
 #[tokio::test]

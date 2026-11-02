@@ -48,6 +48,25 @@ const NEWER: &str = "SELECT id, channel_id, author_id, webhook_id, webhook_name,
 
 /// Inserts a message and its mentions.
 pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<Message, Error> {
+    insert_inner(conn, message, None).await
+}
+
+/// Inserts the message and its reconnect nonce in one transaction.
+pub async fn insert_with_nonce(
+    conn: &mut SqliteConnection,
+    message: NewMessage,
+    user_id: Id,
+    nonce: &str,
+    now: Timestamp,
+) -> Result<Message, Error> {
+    insert_inner(conn, message, Some((user_id, nonce, now))).await
+}
+
+async fn insert_inner(
+    conn: &mut SqliteConnection,
+    message: NewMessage,
+    nonce: Option<(Id, &str, Timestamp)>,
+) -> Result<Message, Error> {
     let created_at = Timestamp::now().as_millis();
     let mut tx = db(conn.begin().await)?;
     db(sqlx::query(
@@ -67,6 +86,9 @@ pub async fn insert(conn: &mut SqliteConnection, message: NewMessage) -> Result<
     .execute(&mut *tx)
     .await)?;
     replace_mentions(&mut tx, message.id, &message.mentions).await?;
+    if let Some((user_id, nonce, now)) = nonce {
+        remember_nonce(&mut tx, user_id, nonce, message.id, now).await?;
+    }
     db(tx.commit().await)?;
     crate::observe::record_message();
     get(conn, message.id).await?.ok_or(Error::NotFound)
@@ -79,6 +101,51 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<Message>,
         .fetch_optional(&mut *conn)
         .await)?;
     Ok(row.map(MessageRow::into_message))
+}
+
+/// Returns the message previously accepted for a recent client nonce.
+pub async fn get_by_nonce(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    nonce: &str,
+    not_before: Timestamp,
+) -> Result<Option<Id>, Error> {
+    db(sqlx::query_scalar(
+        "SELECT message_id FROM message_nonces
+         WHERE user_id = ? AND nonce = ? AND created_at >= ?",
+    )
+    .bind(user_id)
+    .bind(nonce)
+    .bind(not_before.as_millis())
+    .fetch_optional(&mut *conn)
+    .await)
+}
+
+/// Remembers a successful send for idempotent reconnect retries.
+pub async fn remember_nonce(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    nonce: &str,
+    message_id: Id,
+    now: Timestamp,
+) -> Result<(), Error> {
+    db(
+        sqlx::query("DELETE FROM message_nonces WHERE created_at < ?")
+            .bind(now.as_millis() - 5 * 60 * 1000)
+            .execute(&mut *conn)
+            .await,
+    )?;
+    db(sqlx::query(
+        "INSERT INTO message_nonces (user_id, nonce, message_id, created_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(nonce)
+    .bind(message_id)
+    .bind(now.as_millis())
+    .execute(&mut *conn)
+    .await)?;
+    Ok(())
 }
 
 /// Replaces the body and mentions, and sets `edited_at`.
@@ -185,6 +252,16 @@ pub async fn page_before(
     };
     rows.reverse();
     Ok(rows)
+}
+
+/// Oldest `limit` visible messages strictly newer than `after`.
+pub async fn page_after(
+    conn: &mut SqliteConnection,
+    channel_id: Id,
+    after: Id,
+    limit: u32,
+) -> Result<Vec<Message>, Error> {
+    newer_than(conn, channel_id, after, limit).await
 }
 
 /// Up to `limit` visible messages around `anchor`, in ascending id order.

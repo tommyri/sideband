@@ -253,7 +253,7 @@ impl Server {
     }
 
     async fn session(&self, mut connection: Connection) -> Result<(), Error> {
-        let conn_id = Id::generate();
+        let mut conn_id = Id::generate();
         let peer = connection.quic().remote_address().ip();
         let _close = CloseOnDrop(connection.quic().clone());
         let mut stream = timeout(OPEN_TIMEOUT, connection.accept_control())
@@ -286,6 +286,9 @@ impl Server {
         let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
         let (kicks, kick_rx) = mpsc::channel(1);
         let quic = connection.quic().clone();
+        conn_id = self
+            .voice
+            .connect(conn_id, &authed.resume_token, authed.user.id, quic.clone());
         let event = self.registry.register(Registration {
             conn_id,
             user_id: authed.user.id,
@@ -306,11 +309,13 @@ impl Server {
         if let Some(event) = event {
             self.bus.publish(Some(conn_id), event);
         }
-        self.voice.attach(conn_id, authed.user.id, quic.clone());
-        let voice_guard = VoiceGuard {
+        let mut voice_guard = VoiceGuard {
             voice: Arc::clone(&self.voice),
             bus: self.bus.clone(),
             conn_id,
+            user_id: authed.user.id,
+            resume_token: authed.resume_token.clone(),
+            reconnect: false,
         };
         let context = AuthedContext {
             user_id: authed.user.id,
@@ -329,7 +334,7 @@ impl Server {
                         outbound,
                         outgoing,
                         kicks: kick_rx,
-                        quic,
+                        quic: quic.clone(),
                     },
                     &mut subscription,
                     request_id,
@@ -339,9 +344,10 @@ impl Server {
             }
             Err(error) => Err(error),
         };
+        voice_guard.reconnect = reconnectable(close_reason(&quic).await);
         drop(subscription);
-        drop(voice_guard);
         drop(unregister);
+        drop(voice_guard);
         result
     }
 
@@ -957,13 +963,43 @@ struct VoiceGuard {
     voice: Arc<Voice>,
     bus: EventBus,
     conn_id: Id,
+    user_id: Id,
+    resume_token: String,
+    reconnect: bool,
 }
 
 impl Drop for VoiceGuard {
     fn drop(&mut self) {
+        if self.reconnect
+            && self.voice.lease(
+                self.resume_token.clone(),
+                self.conn_id,
+                self.user_id,
+                self.bus.clone(),
+            )
+        {
+            return;
+        }
         for event in self.voice.detach(self.conn_id) {
             self.bus.publish(None, event);
         }
+    }
+}
+
+fn reconnectable(reason: Option<quinn::ConnectionError>) -> bool {
+    match reason {
+        Some(quinn::ConnectionError::ApplicationClosed(close)) => close.error_code != 0_u32.into(),
+        Some(quinn::ConnectionError::Reset | quinn::ConnectionError::TimedOut) => true,
+        _ => false,
+    }
+}
+
+async fn close_reason(connection: &quinn::Connection) -> Option<quinn::ConnectionError> {
+    match connection.close_reason() {
+        Some(reason) => Some(reason),
+        None => timeout(Duration::from_secs(1), connection.closed())
+            .await
+            .ok(),
     }
 }
 

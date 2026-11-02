@@ -48,6 +48,7 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>) -> Router {
 #[derive(Deserialize)]
 struct PageQuery {
     before: Option<String>,
+    after: Option<String>,
     limit: Option<u32>,
 }
 
@@ -66,6 +67,12 @@ async fn page(
     let channel_id = parse_id(&channel_id)?;
     visible(&state, user, channel_id)?;
     let before = query.before.as_deref().map(parse_id).transpose()?;
+    let after = query.after.as_deref().map(parse_id).transpose()?;
+    if before.is_some() && after.is_some() {
+        return Err(HttpError::BadRequest(
+            "before and after are mutually exclusive",
+        ));
+    }
     let limit = page_limit(query.limit)?;
     let mut conn = state
         .perms
@@ -73,9 +80,12 @@ async fn page(
         .read()
         .await
         .map_err(|_| HttpError::Internal)?;
-    let page = messages::page_before(&mut conn, channel_id, before, limit)
-        .await
-        .map_err(|_| HttpError::Internal)?;
+    let page = if let Some(after) = after {
+        messages::page_after(&mut conn, channel_id, after, limit).await
+    } else {
+        messages::page_before(&mut conn, channel_id, before, limit).await
+    }
+    .map_err(|_| HttpError::Internal)?;
     wires(&mut conn, &page).await
 }
 

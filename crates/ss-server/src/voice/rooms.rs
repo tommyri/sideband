@@ -114,6 +114,23 @@ impl Rooms {
         );
     }
 
+    pub(crate) fn reattach(&mut self, conn: Id, user: Id, connection: quinn::Connection) -> bool {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return false;
+        };
+        if peer.user != user || peer.seat.is_none() {
+            return false;
+        }
+        peer.connection = connection;
+        true
+    }
+
+    pub(crate) fn is_seated(&self, conn: Id) -> bool {
+        self.peers
+            .get(&conn)
+            .is_some_and(|peer| peer.seat.is_some())
+    }
+
     pub(crate) fn detach(&mut self, conn: Id) -> Vec<v1::server_envelope::Msg> {
         let events = self.leave(conn);
         self.peers.remove(&conn);

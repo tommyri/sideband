@@ -69,3 +69,17 @@ jobs:
           sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
       - name: Image, healthz, and two bots
         run: bash deploy/smoke.sh
+
+  reconnect-chaos:
+    name: reconnect chaos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux audio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
+      - name: Random 1-10 second outages for two minutes
+        run: cargo test -p ss-server --test client_core two_minute_random_outages -- --ignored --nocapture

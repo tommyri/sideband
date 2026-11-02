@@ -1,6 +1,6 @@
 //! Permission-checked join, mute, and the Welcome voice snapshot.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use ss_core::{ChannelKind, Id, Permissions, VoiceProfile};
@@ -26,7 +26,16 @@ pub struct Voice {
     perms: Arc<PermissionService>,
     rooms: Arc<Mutex<Rooms>>,
     streams: Arc<crate::media::streams::Streams>,
+    leases: Mutex<HashMap<String, Lease>>,
 }
+
+#[derive(Clone, Copy)]
+struct Lease {
+    conn: Id,
+    user: Id,
+}
+
+const RESUME_LEASE: Duration = Duration::from_secs(60);
 
 impl Voice {
     pub(crate) fn open(
@@ -42,6 +51,7 @@ impl Voice {
             streams,
             perms,
             rooms: Arc::clone(&rooms),
+            leases: Mutex::new(HashMap::new()),
         });
         (voice, Arc::new(Forwarder::new(rooms)))
     }
@@ -58,6 +68,66 @@ impl Voice {
 
     pub(crate) fn attach(&self, conn: Id, user: Id, connection: quinn::Connection) {
         self.rooms.lock().attach(conn, user, connection);
+    }
+
+    pub(crate) fn resume(
+        &self,
+        token: &str,
+        user: Id,
+        connection: quinn::Connection,
+    ) -> Option<Id> {
+        let lease = self.leases.lock().remove(token)?;
+        if lease.user != user || !self.rooms.lock().reattach(lease.conn, user, connection) {
+            return None;
+        }
+        Some(lease.conn)
+    }
+
+    pub(crate) fn connect(
+        &self,
+        conn: Id,
+        token: &str,
+        user: Id,
+        connection: quinn::Connection,
+    ) -> Id {
+        if let Some(resumed) = self.resume(token, user, connection.clone()) {
+            resumed
+        } else {
+            self.attach(conn, user, connection);
+            conn
+        }
+    }
+
+    pub(crate) fn lease(
+        self: &Arc<Self>,
+        token: String,
+        conn: Id,
+        user: Id,
+        bus: crate::events::EventBus,
+    ) -> bool {
+        if !self.rooms.lock().is_seated(conn) {
+            return false;
+        }
+        self.leases
+            .lock()
+            .insert(token.clone(), Lease { conn, user });
+        let voice = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(RESUME_LEASE).await;
+            let expired = voice
+                .leases
+                .lock()
+                .get(&token)
+                .is_some_and(|lease| lease.conn == conn);
+            if !expired {
+                return;
+            }
+            voice.leases.lock().remove(&token);
+            for event in voice.detach(conn) {
+                bus.publish(None, event);
+            }
+        });
+        true
     }
 
     pub(crate) fn detach(&self, conn: Id) -> Vec<v1::server_envelope::Msg> {
