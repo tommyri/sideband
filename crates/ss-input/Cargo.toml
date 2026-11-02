@@ -18,6 +18,9 @@ objc2-core-graphics.workspace = true
 objc2-core-foundation.workspace = true
 rtrb.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true
 

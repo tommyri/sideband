@@ -1,6 +1,6 @@
 # T-048 — `ss-input` Windows backend (low-level hooks / Raw Input)
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: S
 Depends on: T-047
@@ -35,3 +35,25 @@ Push-to-talk on any key or mouse button that still reaches the game.
   change never leaves PTT stuck.
 
 ## Notes from implementation
+- Added `WinListener` and selected it from `Backend::detect` on Windows. Raw
+  Input registers keyboard and mouse with `RIDEV_INPUTSINK` against a hidden
+  message-only window owned by a dedicated thread. It never registers or
+  consumes a hotkey; the explicit mock remains available for tests.
+- Set 1 scan codes map to physical USB-HID `Code` values independently of the
+  active keyboard layout. Extended keys, left/right modifiers, F13–F24, and
+  Mouse4/5 are covered. The shared `PttStateMachine` retains the common 30 ms
+  debounce and configurable release delay.
+- Held inputs retain their side-specific virtual key and are checked with
+  `GetAsyncKeyState` every 250 ms. A missing physical down state synthesizes
+  the lost up edge, preventing a focus transition from leaving transmit open.
+- Capabilities detect a non-elevated SocialSpeak process facing an elevated
+  foreground application and name that window in the UIPI limitation shown to
+  the settings UI.
+- Windows-target compilation and strict clippy run on every existing Windows
+  CI job. Unit tests cover scan/button mapping, reservations, and state-machine
+  edges. A CI-only `SendInput` test exercises the native window when the runner
+  exposes an interactive window station and otherwise records a permitted skip.
+- Remaining before `done`: implement or explicitly waive the low-level-hook
+  fallback, then run the fullscreen Mouse5/pass-through and focus-change manual
+  acceptance checks on Windows. Those interactive checks have not been run on
+  this macOS development host.

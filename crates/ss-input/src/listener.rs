@@ -18,7 +18,7 @@ use crate::{
 ///
 /// The mock runs it on the thread that injected the event. Operating-system
 /// backends run it on their input thread. Send controls from another thread;
-/// synchronous controls called from the macOS handler return ReentrantControl.
+/// synchronous controls called from a native handler return ReentrantControl.
 /// Keep it short and do not
 /// panic. Shared state captured by the closure needs its own synchronization;
 /// the callback is [`Send`] and [`Sync`] so it can cross that thread.

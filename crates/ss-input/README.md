@@ -7,8 +7,15 @@ not a hotkey registration API.
 
 The binding model, capture gestures, and the press/release state machine
 are platform-independent. Backends only report key and button edges.
-`Backend::detect` selects the native macOS listener; Windows and Linux keep
-`MockListener` pending their backends. No platform cargo features are needed.
+`Backend::detect` selects native Windows and macOS listeners; Linux keeps
+`MockListener` pending T-050. No platform cargo features are needed.
+
+Windows uses Raw Input for keyboard and mouse on a dedicated thread's
+message-only window. It maps physical scan codes, preserves left/right
+modifiers, supports Mouse4/5, and polls held inputs every 250 ms to repair a
+lost release. It never registers or consumes a hotkey. A non-elevated client
+cannot observe an elevated foreground application; capabilities report that
+limitation when detected.
 
 macOS asks for Input Monitoring at start/capture, never during detection.
 The tap uses its own thread and a bounded event ring. Revocation/secure input

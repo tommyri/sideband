@@ -5,8 +5,8 @@
 //! portal, or opt-in evdev). Hotkey registration is not used, because it
 //! swallows the key and cannot bind mouse buttons.
 //!
-//! [`Backend::detect`] selects the native listener on macOS and the mock on
-//! Windows/Linux until their backends land. No platform feature flags are
+//! [`Backend::detect`] selects the native listener on Windows and macOS, and
+//! the mock on Linux until its backend lands. No platform feature flags are
 //! required. Backends report [`InputEvent`] edges; [`PttStateMachine`] turns
 //! them into [`PttEvent`]s.
 //!
@@ -25,6 +25,8 @@ mod listener;
 pub mod macos;
 mod mock;
 mod state;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 #[doc(inline)]
 pub use crate::{

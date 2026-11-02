@@ -1,13 +1,13 @@
 //! Runtime selection of the input backend.
 //!
-//! [`Backend::detect`] selects the native macOS listener and keeps the mock
-//! on Windows/Linux pending their tasks. No platform cargo features.
+//! [`Backend::detect`] selects the native Windows or macOS listener and keeps
+//! the mock on Linux pending T-050. No platform cargo features.
 
 use std::{fmt, time::Duration};
 
 use tracing::debug;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use crate::mock::MockListener;
 
 use crate::{
@@ -27,8 +27,9 @@ pub struct Backend {
 impl Backend {
     /// Select the listener for this process.
     ///
-    /// macOS uses a listen-only session event tap with Input Monitoring.
-    /// Windows and Linux still use the mock pending T-048 and T-050.
+    /// Windows uses Raw Input on a message-only window. macOS uses a
+    /// listen-only session event tap with Input Monitoring. Linux still uses
+    /// the mock pending T-050.
     /// Detection itself never prompts; start/capture request permission.
     ///
     /// That is decision D8. Hotkey registration is intentionally not used:
@@ -38,7 +39,9 @@ impl Backend {
     pub fn detect() -> Self {
         #[cfg(target_os = "macos")]
         let listener: Box<dyn Listener> = Box::new(crate::macos::MacListener::new());
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        let listener: Box<dyn Listener> = Box::new(crate::windows::WinListener::new());
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let listener: Box<dyn Listener> = Box::new(MockListener::new(Caps::mock()));
         debug!(os = std::env::consts::OS, "selected input backend");
         Self { listener }
@@ -89,19 +92,19 @@ impl fmt::Debug for Backend {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     use std::time::Duration;
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     use super::Backend;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     use crate::{
         binding::{Binding, Code},
         error::Error,
         listener::Caps,
     };
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn detect_reports_mock_limits_and_starts() {
         let backend = Backend::detect();
