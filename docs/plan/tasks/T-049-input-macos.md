@@ -54,7 +54,7 @@ just surface it).
 - Start/capture preflight Input Monitoring; if missing, request it once for
   that attempt and return PermissionRequired with the Privacy_ListenEvent
   settings deep link. Capability checks never prompt. The app rechecks them
-  on focus. No UI layer exists yet to wire focus events (T-042/T-058).
+  on focus. T-058 will wire those focus events into the T-042 desktop shell.
 - Disabled-by-timeout/user-input notifications and ring overflow force-release,
   discard stale queued input, repair missed ups from physical state, and
   re-enable the tap. Inputs still held stay suppressed until their matching up.

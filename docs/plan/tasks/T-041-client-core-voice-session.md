@@ -56,7 +56,7 @@ Implementing the processing stages (T-053), raw input (T-047–T-050).
   `AudioSource::Silent`; it verifies audible routing, mute, deafen, and 50
   join/leave cycles. Cue tones are generated in-core for now; T-055 can replace
   them with the final sound pack without changing the API.
-- `cargo fmt` and workspace clippy pass. The full workspace test suite passes
-  when skipping the pre-existing macOS headless
-  `AVAudioApplication::sharedInstance()` null test; that single test also makes
-  an otherwise unchanged `just check` fail in this non-app test process.
+- `cargo fmt` and workspace clippy pass. At task completion, the full workspace
+  test suite needed to skip the macOS headless
+  `AVAudioApplication::sharedInstance()` null test. T-054 subsequently fixed
+  that headless path, so the current workspace no longer needs the skip.
