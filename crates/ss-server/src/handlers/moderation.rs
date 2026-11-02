@@ -78,6 +78,7 @@ impl Moderation {
         self.require(actor, Permissions::CREATE_INVITES, "missing create invites")?;
         let max_uses = use_cap(command.max_uses)?;
         let expires_at = future_expiry(command.expires_at, "invite expiry must be in the future")?;
+        let code = auth::invite_code().map_err(|_| db::Error::Corrupt("random"))?;
         let invite = {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
@@ -85,7 +86,7 @@ impl Moderation {
                 &mut tx,
                 NewInvite {
                     id: Id::generate(),
-                    code: auth::invite_code().map_err(|_| db::Error::Corrupt("random"))?,
+                    code: code.clone(),
                     created_by: actor,
                     max_uses,
                     expires_at,
@@ -104,10 +105,12 @@ impl Moderation {
             tx.commit().await.map_err(db::Error::from)?;
             invite
         };
-        let wire = wire_invite(&invite);
+        let event = wire_invite(&invite, None);
         Ok(replied(
-            ack::Result::Invite(wire.clone()),
-            server_envelope::Msg::InviteCreated(v1::InviteCreated { invite: Some(wire) }),
+            ack::Result::Invite(wire_invite(&invite, Some(code))),
+            server_envelope::Msg::InviteCreated(v1::InviteCreated {
+                invite: Some(event),
+            }),
         ))
     }
 
@@ -140,7 +143,7 @@ impl Moderation {
                 ..invite
             }
         };
-        let wire = wire_invite(&invite);
+        let wire = wire_invite(&invite, None);
         Ok(replied(
             ack::Result::Empty(v1::Empty {}),
             server_envelope::Msg::InviteRevoked(v1::InviteRevoked { invite: Some(wire) }),
@@ -436,10 +439,10 @@ fn replied(ack: ack::Result, event: server_envelope::Msg) -> CommandReply {
     }
 }
 
-fn wire_invite(invite: &db::Invite) -> v1::Invite {
+fn wire_invite(invite: &db::Invite, code: Option<String>) -> v1::Invite {
     v1::Invite {
         id: id_to_bytes(invite.id),
-        code: invite.code.clone(),
+        code: code.unwrap_or_default(),
         created_by: id_to_bytes(invite.created_by),
         max_uses: invite.max_uses.and_then(|value| u32::try_from(value).ok()),
         uses: u32::try_from(invite.uses).unwrap_or(u32::MAX),

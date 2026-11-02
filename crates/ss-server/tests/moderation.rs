@@ -352,6 +352,16 @@ async fn move_respects_view_and_bypass_a_full_channel() {
 
     let invite = command(&mut ada, 8, Msg::CreateInvite(v1::CreateInvite::default())).await;
     assert_ne!(ack_invite(&invite).code, "");
+    let published = timeout(DEADLINE, async {
+        loop {
+            if let Event::InviteCreated(event) = next_event(&mut ada).await {
+                return event.invite.unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(published.code, "");
     let revoked = command(
         &mut ada,
         9,

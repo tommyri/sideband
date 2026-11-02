@@ -85,7 +85,7 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 | [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | todo |
 | [T-066](T-066-https-rest-listener.md) | Serve the public REST listener over TLS | M | T-033, T-061 | done |
 | [T-067](T-067-security-acceptance.md) | Security acceptance: 1 h fuzz runs, doc review, licence policy | S | T-061 | todo |
-| [T-068](T-068-server-hardening-followups.md) | Server hardening follow-ups (datagram cap, hashed invites, …) | M | T-061 | todo |
+| [T-068](T-068-server-hardening-followups.md) | Server hardening follow-ups (datagram cap, hashed invites, …) | M | T-061 | done |
 | [T-069](T-069-vps-load-validation.md) | Load validation on the VPS, UDP buffer tuning | S | T-062, T-034 | todo |
 
 ## Phase 5 — Screen share

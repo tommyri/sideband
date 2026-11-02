@@ -1,6 +1,6 @@
 # T-068 — Server hardening follow-ups from the T-061 review
 
-Status: todo
+Status: done
 Phase: 4
 Size: M
 Depends on: T-061
@@ -43,3 +43,14 @@ TLS for the REST listener (T-066); external penetration test.
 - `docs/security.md` section 12 lists only accepted, documented gaps.
 
 ## Notes from implementation
+- Authenticated voice datagrams use a per-connection one-second budget at
+  1.5× the active channel profile's maximum bitrate. The video transport is
+  stream-group based rather than datagram based; its existing group byte,
+  concurrency, lifetime, and queue limits remain the applicable guardrails.
+- Regular invite codes are SHA-256 hashed by the repository and returned only
+  in the create acknowledgement. Migration `0004_hash_invites.sql` revokes
+  legacy plaintext codes and emits a one-time startup warning with the count.
+- The rolling upload-byte quota returns a conservative 24-hour `Retry-After`.
+  Failed-login buckets intentionally stay process-local for this single-node,
+  operator-restarted threat model. UI tasks T-044 and T-045 now require the
+  immutable username beside mutable display names.

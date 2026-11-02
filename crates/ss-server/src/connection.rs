@@ -14,7 +14,7 @@ use crate::{
         Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles, Webhooks,
     },
     limits::{self, KeyedLimiter, PeerSessions, quota},
-    media::{self, Forwarder},
+    media::{self, ForwardOutcome, Forwarder},
     perms::PermissionService,
     registry::{self, ClientInfo, ConnectionRegistry, Kick, Registration},
     snapshot, storage,
@@ -423,6 +423,7 @@ impl Server {
         let (sender, receiver) = stream.split();
         let media_conn = pump.quic.clone();
         let forwarder = Arc::clone(&self.media);
+        let media_registry = Arc::clone(&self.registry);
         let media_conn_id = context.conn_id;
         let video_conn = pump.quic.clone();
         let video = self.voice.streams();
@@ -447,7 +448,20 @@ impl Server {
                 match media_conn.read_datagram().await {
                     Ok(bytes) => {
                         tokio::task::yield_now().await;
-                        forwarder.forward(media_conn_id, &bytes);
+                        if let ForwardOutcome::Disconnect(wait) =
+                            forwarder.forward(media_conn_id, &bytes)
+                        {
+                            media_registry.enqueue(
+                                media_conn_id,
+                                v1::ServerEnvelope::rate_limited(0, "media bitrate exceeded", wait),
+                            );
+                            tokio::time::sleep(NOTICE_GRACE).await;
+                            media_conn.close(
+                                registry::CLOSE_RATE_LIMITED.into(),
+                                b"media bitrate exceeded",
+                            );
+                            return Err(Error::Protocol);
+                        }
                     }
                     Err(error) => return Err(Error::Connection(error)),
                 }

@@ -13,7 +13,7 @@ users            (id PK, username UNIQUE COLLATE NOCASE, display_name, password_
                   disabled_at NULL)
 sessions         (id PK, user_id FK, token_hash UNIQUE, device_name, created_at,
                   last_seen_at, expires_at NULL)
-invites          (id PK, code UNIQUE, created_by FK users, max_uses NULL, uses,
+invites          (id PK, code_hash UNIQUE, created_by FK users, max_uses NULL, uses,
                   expires_at NULL, revoked_at NULL, created_at)
 
 roles            (id PK, name, color NULL, permissions INTEGER /*u64 bitflags*/,

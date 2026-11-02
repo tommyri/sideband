@@ -1,5 +1,6 @@
 //! `invites` rows.
 
+use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 use ss_core::{Id, Timestamp};
 
@@ -15,7 +16,7 @@ use super::{
 pub struct NewInvite {
     /// Primary key.
     pub id: Id,
-    /// Unique code.
+    /// Plaintext code. [`insert`] hashes it before storage.
     pub code: String,
     /// Creator.
     pub created_by: Id,
@@ -25,18 +26,18 @@ pub struct NewInvite {
     pub expires_at: Option<Timestamp>,
 }
 
-const BY_ID: &str = "SELECT id, code, created_by, max_uses, uses, expires_at, revoked_at, created_at FROM invites WHERE id = ?";
-const BY_CODE: &str = "SELECT id, code, created_by, max_uses, uses, expires_at, revoked_at, created_at FROM invites WHERE code = ?";
+const BY_ID: &str = "SELECT id, created_by, max_uses, uses, expires_at, revoked_at, created_at FROM invites WHERE id = ?";
+const BY_CODE_HASH: &str = "SELECT id, created_by, max_uses, uses, expires_at, revoked_at, created_at FROM invites WHERE code_hash = ?";
 
 /// Inserts an invite with `uses = 0`.
 pub async fn insert(conn: &mut SqliteConnection, invite: NewInvite) -> Result<Invite, Error> {
     let created_at = Timestamp::now().as_millis();
     db(sqlx::query(
-        "INSERT INTO invites (id, code, created_by, max_uses, uses, expires_at, created_at)
+        "INSERT INTO invites (id, code_hash, created_by, max_uses, uses, expires_at, created_at)
          VALUES (?, ?, ?, ?, 0, ?, ?)",
     )
     .bind(invite.id)
-    .bind(&invite.code)
+    .bind(hash(&invite.code))
     .bind(invite.created_by)
     .bind(invite.max_uses)
     .bind(invite.expires_at.map(Timestamp::as_millis))
@@ -57,8 +58,8 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<Invite>, 
 
 /// Loads an invite by code.
 pub async fn get_by_code(conn: &mut SqliteConnection, code: &str) -> Result<Option<Invite>, Error> {
-    let row = db(sqlx::query_as::<_, InviteRow>(BY_CODE)
-        .bind(code)
+    let row = db(sqlx::query_as::<_, InviteRow>(BY_CODE_HASH)
+        .bind(hash(code))
         .fetch_optional(&mut *conn)
         .await)?;
     Ok(row.map(InviteRow::into_invite))
@@ -119,7 +120,6 @@ pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
 #[derive(Debug, sqlx::FromRow)]
 struct InviteRow {
     id: Id,
-    code: String,
     created_by: Id,
     max_uses: Option<i64>,
     uses: i64,
@@ -132,7 +132,6 @@ impl InviteRow {
     fn into_invite(self) -> Invite {
         Invite {
             id: self.id,
-            code: self.code,
             created_by: self.created_by,
             max_uses: self.max_uses,
             uses: self.uses,
@@ -141,6 +140,16 @@ impl InviteRow {
             created_at: stamp(self.created_at),
         }
     }
+}
+
+fn hash(code: &str) -> String {
+    let digest = Sha256::digest(code.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -166,6 +175,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(created.uses, 0);
+        let stored: String = sqlx::query_scalar("SELECT code_hash FROM invites WHERE id = ?")
+            .bind(created.id)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 64);
+        assert_ne!(stored, "welcome");
         assert_eq!(
             get_by_code(&mut conn, "welcome").await.unwrap().unwrap().id,
             created.id

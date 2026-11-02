@@ -46,13 +46,11 @@ pub struct Session {
     pub expires_at: Option<Timestamp>,
 }
 
-/// An invite code. `Debug` redacts the code.
-#[derive(Clone, PartialEq, Eq)]
+/// An invite. Its one-time plaintext code is never loaded from storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invite {
     /// Primary key.
     pub id: Id,
-    /// Unique code presented to the new user.
-    pub code: String,
     /// User who created the invite.
     pub created_by: Id,
     /// Cap on [`Self::uses`]. `None` means no cap.
@@ -330,21 +328,6 @@ impl std::fmt::Debug for User {
             .field("kind", &self.kind)
             .field("created_at", &self.created_at)
             .field("disabled_at", &self.disabled_at)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for Invite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Invite")
-            .field("id", &self.id)
-            .field("code", &REDACTED)
-            .field("created_by", &self.created_by)
-            .field("max_uses", &self.max_uses)
-            .field("uses", &self.uses)
-            .field("expires_at", &self.expires_at)
-            .field("revoked_at", &self.revoked_at)
-            .field("created_at", &self.created_at)
             .finish()
     }
 }

@@ -23,7 +23,9 @@ each voice channel, who is talking, and join with one click.
 - Voice channel header when joined: channel name, profile (voice/music),
   bitrate, latency, leave button.
 - Member list pane (right): grouped by role with colors, presence, hover
-  card.
+  card. Every member row and hover card renders the immutable `username`
+  alongside the mutable display name so a nickname cannot impersonate an
+  account.
 - Keyboard shortcuts in-app (not global): mute, deafen, channel up/down.
 
 ## Out of scope

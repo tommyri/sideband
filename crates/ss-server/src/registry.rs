@@ -24,6 +24,8 @@ pub const CLOSE_SLOW: u32 = 2;
 pub const CLOSE_KICKED: u32 = 3;
 /// QUIC close code after a `Banned` frame.
 pub const CLOSE_BANNED: u32 = 4;
+/// Repeated media bitrate violations.
+pub const CLOSE_RATE_LIMITED: u32 = 5;
 /// How long a full outbound queue, or one stalled write, is tolerated.
 pub const SLOW_CONSUMER_AFTER: Duration = Duration::from_secs(10);
 /// Per-connection outbound control queue. Command replies wait for space.

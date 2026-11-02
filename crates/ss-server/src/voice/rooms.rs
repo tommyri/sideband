@@ -26,6 +26,7 @@ pub(crate) struct Seat {
     pub track: u32,
     pub flags: Flags,
     pub codec_channels: u8,
+    pub max_bitrate_bps: u32,
 }
 
 /// Mute, deaf, and speak bits stored on a seat. Four separate `bool` fields
@@ -187,6 +188,7 @@ impl Rooms {
             self_mute,
             self_deaf,
             codec_channels,
+            max_bitrate_bps,
             can_speak,
             limit,
         } = plan;
@@ -221,6 +223,7 @@ impl Rooms {
             track,
             flags: Flags::arriving(self_mute, self_deaf, can_speak).with_server_mute(server_mute),
             codec_channels,
+            max_bitrate_bps,
         };
         let direct = self.announce_existing(conn, channel);
         {
@@ -390,6 +393,7 @@ pub(crate) struct JoinPlan {
     pub self_deaf: bool,
     pub can_speak: bool,
     pub codec_channels: u8,
+    pub max_bitrate_bps: u32,
     /// `None` or `Some(0)` means no cap. Callers that may move members pass `None`.
     pub limit: Option<i64>,
 }

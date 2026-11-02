@@ -21,6 +21,8 @@ pub struct Stats {
     pub rejected: u64,
     /// Recipient datagrams dropped for a full queue, closed peer, or MTU error.
     pub dropped: u64,
+    /// Sender datagrams dropped for exceeding the per-second bitrate budget.
+    pub rate_limited: u64,
 }
 
 /// Validates track ownership and forwards shared Bytes to channel peers.
@@ -87,6 +89,7 @@ impl Router {
             forwarded: self.forwarded.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
+            rate_limited: 0,
         }
     }
 }

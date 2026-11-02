@@ -51,6 +51,10 @@ fn sample(server: &Server) {
         "socialspeak_datagrams_rejected_total",
         "Datagrams refused: bad header, wrong track, muted, or not seated"
     );
+    metrics::describe_counter!(
+        "socialspeak_datagrams_rate_limited_total",
+        "Sender datagrams dropped for exceeding the bitrate budget"
+    );
     metrics::describe_counter!("socialspeak_messages_total", "Messages inserted");
     metrics::describe_counter!(
         "socialspeak_sessions_total",
@@ -76,6 +80,7 @@ fn sample(server: &Server) {
     metrics::counter!("socialspeak_datagrams_dropped_total").absolute(stats.dropped);
     metrics::counter!("socialspeak_datagrams_received_total").absolute(stats.received);
     metrics::counter!("socialspeak_datagrams_rejected_total").absolute(stats.rejected);
+    metrics::counter!("socialspeak_datagrams_rate_limited_total").absolute(stats.rate_limited);
     metrics::counter!("socialspeak_messages_total").absolute(observe::messages());
     metrics::counter!("socialspeak_sessions_total").absolute(observe::sessions());
     metrics::counter!("socialspeak_slow_disconnects_total").absolute(observe::slow_disconnects());

@@ -19,6 +19,8 @@ previews + lightbox. Create sub-task files if splitting.
   messages by author within 7 min, day separators, "new messages" divider at
   last read, scroll-anchoring when older pages load, jump-to-bottom button,
   jump-to-message for reply links.
+- Author headers and hover cards always render the immutable `username`
+  alongside the mutable display name.
 - Rendering: markdown subset (bold/italic/strike/code/codeblock with
   highlighting/quotes/links/spoilers), `<@id>` mentions resolved to names with
   highlight (parse ids case-insensitively with Crockford aliases, as the

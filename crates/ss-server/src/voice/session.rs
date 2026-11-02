@@ -146,6 +146,7 @@ impl Voice {
                 self_mute: command.self_mute,
                 self_deaf: command.self_deaf,
                 codec_channels: rooms::codec_channels(profile),
+                max_bitrate_bps: profile.encoder_params().max_bitrate_bps,
                 can_speak: self
                     .perms
                     .check(user, Some(channel_id), Permissions::SPEAK)
@@ -261,6 +262,7 @@ impl Voice {
                 self_mute,
                 self_deaf,
                 codec_channels: rooms::codec_channels(profile),
+                max_bitrate_bps: profile.encoder_params().max_bitrate_bps,
                 can_speak: self
                     .perms
                     .check(target, Some(channel_id), Permissions::SPEAK)

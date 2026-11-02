@@ -134,18 +134,18 @@ async fn register_accepts_the_owner_code_and_rejects_bad_invites() {
         Err(auth::Error::OwnerExists)
     ));
 
-    let open = insert_invite(&accounts, owner.user.id, "once", Some(1), None).await;
-    let member = accounts.register(&open.code, "bea").await;
+    insert_invite(&accounts, owner.user.id, "once", Some(1), None).await;
+    let member = accounts.register("once", "bea").await;
     assert!(!member.permissions.contains(Permissions::ADMINISTRATOR));
     assert!(member.permissions.contains(Permissions::SPEAK));
     let used = accounts
         .auth
-        .hello(&register(&open.code, "cyr", PASSWORD), peer(1))
+        .hello(&register("once", "cyr", PASSWORD), peer(1))
         .await
         .unwrap_err();
     assert!(matches!(used, auth::Error::InvalidInvite));
 
-    let expired = insert_invite(
+    insert_invite(
         &accounts,
         owner.user.id,
         "old",
@@ -155,7 +155,7 @@ async fn register_accepts_the_owner_code_and_rejects_bad_invites() {
     .await;
     let expired = accounts
         .auth
-        .hello(&register(&expired.code, "dee", PASSWORD), peer(4))
+        .hello(&register("old", "dee", PASSWORD), peer(4))
         .await
         .unwrap_err();
     assert!(matches!(expired, auth::Error::InvalidInvite));
@@ -169,15 +169,15 @@ async fn register_accepts_the_owner_code_and_rejects_bad_invites() {
     }
     let revoked = accounts
         .auth
-        .hello(&register(&revoked.code, "eve", PASSWORD), peer(5))
+        .hello(&register("gone", "eve", PASSWORD), peer(5))
         .await
         .unwrap_err();
     assert!(matches!(revoked, auth::Error::InvalidInvite));
 
-    let spare = insert_invite(&accounts, owner.user.id, "spare", None, None).await;
+    insert_invite(&accounts, owner.user.id, "spare", None, None).await;
     let duplicate = accounts
         .auth
-        .hello(&register(&spare.code, "ada", PASSWORD), peer(6))
+        .hello(&register("spare", "ada", PASSWORD), peer(6))
         .await
         .unwrap_err();
     assert!(matches!(duplicate, auth::Error::Conflict));

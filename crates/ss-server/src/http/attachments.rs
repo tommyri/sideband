@@ -475,8 +475,13 @@ impl HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        if let Self::RateLimited(wait) = self {
-            return super::hardening::too_many_requests(wait);
+        let retry_after = match self {
+            Self::RateLimited(wait) => Some((wait, "rate limited")),
+            Self::Quota(message) => Some((std::time::Duration::from_hours(24), message)),
+            _ => None,
+        };
+        if let Some((wait, message)) = retry_after {
+            return super::hardening::too_many_requests_with_message(wait, message);
         }
         let (status, message) = self.parts();
         (status, Json(json!({ "error": message }))).into_response()

@@ -14,7 +14,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Password hashes | `users.password_hash` (argon2id PHC strings) | Offline cracking leads to reuse on other services |
 | Session tokens | Client only. Server stores SHA-256 hex in `sessions.token_hash` | A token is a full login for 90 days |
 | Owner bootstrap code | `server_settings.owner_invite` until the first registration | Grants `Admin` |
-| Invite codes | `invites.code`, plaintext | Registration on an invite-only server |
+| Invite codes | Client only. Server stores SHA-256 hex in `invites.code_hash` | Registration on an invite-only server |
 | Webhook tokens | Client only. SHA-256 hex in `webhooks.token_hash` | Posting into a channel as a bot |
 | Attachment signing key | `<data>/attachment.key`, mode 0600 | Forges 10-minute download links |
 | TLS private key | `<data>/tls/identity.json` (self-signed), operator PEM files, or `tls/acme/` | Impersonating the server |
@@ -86,9 +86,9 @@ It does not protect against:
 - **Owner code**: 16 random bytes, stored in `server_settings` until the
   first registration, deleted when any user exists. Printed to stdout only;
   it is not written to the log files.
-- **Invite codes**: 16 random bytes (128 bits), stored **in plaintext** so a
-  moderator can see them again. Accepted risk: a database leak exposes unused
-  invites; revoke them after a leak.
+- **Invite codes**: 16 random bytes (128 bits), SHA-256 stored and returned
+  once to the creator. The migration revokes legacy plaintext codes and logs
+  how many were invalidated.
 - **Webhook tokens**: 16 random bytes, SHA-256 stored, returned once.
 - **Attachment links**: HMAC-SHA256 over id and expiry, 10-minute lifetime,
   32-byte key created with mode 0600 before any byte is written.
@@ -97,8 +97,8 @@ It does not protect against:
   the attachment signing key on drop. Tokens also exist in prost messages and
   the client; zeroization reduces lifetime in freed memory, it is not a
   guarantee.
-- **Never logged**: `Debug` for `db::User`, `db::Invite`, and
-  `auth::Authenticated` prints `<redacted>` for hashes, codes, and tokens
+- **Never logged**: `Debug` for `db::User` and `auth::Authenticated` prints
+  `<redacted>` for hashes, codes, and tokens
   (tested). No `tracing` call takes a token, password, or code (checked by
   grep for T-061). There is no HTTP request logging, so `?token=` download
   links do not reach logs.
@@ -147,14 +147,14 @@ rejection is `Error{code: RATE_LIMITED, retry_after_ms}`; HTTP is `429` with
 | `Typing` | account and channel | 1 per 5 s | `RATE_LIMITED` + retry |
 | Webhook posts | webhook | burst 30, then 1 per 2 s | `429` + `Retry-After` |
 | Uploads | account | burst 10, then 1 per 6 s | `429` + `Retry-After` |
-| Upload bytes | account | 500 MiB per rolling 24 h | `429`, no `Retry-After` |
+| Upload bytes | account | 500 MiB per rolling 24 h | `429` + conservative 24 h `Retry-After` |
 | Public HTTP requests | address | burst 200, then 50 per s | `429` + `Retry-After` |
 | Public HTTP connections | listener | 1024 open | accept waits |
 | Public HTTP connections | address | 64 open | closed on accept |
 | Public HTTP connection lifetime | connection | closed after 60 s with no bytes either way, and at 10 min of age (graceful, then hard after 300 s); HTTP/1 keep-alive and HTTP/2 alike | connection closed |
 | Link previews | server | queue of 32 (full drops), 2 workers, one fetch per host at a time, 3 URLs per message | dropped silently |
 | Outbound control queue | connection | bounded; a slow reader is closed | `ServerNotice`, close |
-| Media datagrams | connection | header, track ownership, `SPEAK`, server mute validated; full send buffers drop | counted, never awaited |
+| Media datagrams | connection | header, track ownership, `SPEAK`, server mute validated; 1.5× the channel profile maximum over 1 s; full send buffers drop | excess dropped and counted; repeated excess gets `RATE_LIMITED` then close; never awaited |
 
 The username quota counts failures only and never holds back an address
 that has not failed against that account, so knowing a username is not
@@ -164,6 +164,14 @@ password-guessing botnet gets one guess per address per 15 minutes on top
 of the per-address gate. The owner is held back only if they mistyped from
 the same address during an attack, for at most the remaining lock. Existing
 sessions (token `Hello`) are unaffected.
+
+These login buckets deliberately remain process-local. This is a small,
+self-hosted server whose restarts are controlled by its operator, not by an
+internet client. Persisting failed usernames would turn stale guesses into a
+durable denial-of-service state while adding no protection across replicas
+(there are none). The independent address quota remains in force, and a clean
+address with the correct password is never held back by another address's
+failures.
 
 Every QUIC connection whose source address has not been validated gets a
 stateless Retry before it is counted against any session slot, so spoofed
@@ -208,8 +216,9 @@ Message bodies are stored as sent; clients render them as text.
 Only usernames must be unique, and they are compared by confusable skeleton
 (section 4). Display, channel, and role names have no uniqueness rule, so
 there is no duplicate check to run under NFKC. A display name can still
-imitate another member's name; clients should show the username next to it
-where impersonation matters.
+imitate another member's name. The protocol always includes the immutable
+username in each `User` carried by snapshots and member/message events, and
+the voice and text UI tasks require rendering it beside every display name.
 
 ## 8. Transport and HTTP hardening
 
@@ -293,13 +302,4 @@ updated `h2` past RUSTSEC-2026-0258.
 
 ## 12. Known gaps
 
-- No per-sender bitrate cap on media datagrams: a member with `SPEAK` can
-  send at line rate and the router fans it out to the channel. Quinn's
-  bounded send buffers drop the excess. Tracked as T-068.
-- Invite codes are stored in plaintext (section 4). Tracked as T-068.
-- Quotas are per process and reset on restart; there is no persistent
-  lockout. Decision tracked as T-068.
-- The upload byte quota answers `429` without `Retry-After`. Tracked as T-068.
-- Display names are not unique and are not compared against other members'
-  names (section 7). Decision tracked as T-068.
 - Fuzz targets have not yet run the 1 h each that T-061 asks for. Tracked as T-067.

@@ -265,6 +265,56 @@ async fn server_mute_drops_datagrams_and_deaf_skips_the_recipient() {
 }
 
 #[tokio::test]
+async fn over_bitrate_sender_is_disconnected_without_stopping_other_audio() {
+    let world = World::new().await;
+    let (ada_id, ada_login) = register_owner(&world, "ada").await;
+    let (ada_conn, mut ada_stream) = world.connect().await;
+    let ada = hello(&mut ada_stream, ada_login).await;
+    let voice = voice_named(ada.snapshot.as_ref().unwrap(), "General");
+
+    let (bea_conn, mut bea_stream) = world.connect().await;
+    let bea = hello(&mut bea_stream, invite(&world, ada_id, "bea").await).await;
+    let bea_id = user_id(&bea);
+    let (cyr_conn, mut cyr_stream) = world.connect().await;
+    let cyr = hello(&mut cyr_stream, invite(&world, ada_id, "cyr").await).await;
+
+    command(&mut ada_stream, 2, join(&voice, false, false)).await;
+    let ada_track = own_track(&mut ada_stream, ada_id).await;
+    command(&mut bea_stream, 2, join(&voice, false, false)).await;
+    let bea_track = own_track(&mut bea_stream, bea_id).await;
+    command(&mut cyr_stream, 2, join(&voice, false, false)).await;
+    let _ = own_track(&mut cyr_stream, user_id(&cyr)).await;
+    drain(&mut ada_stream).await;
+
+    let flood = packet_with_payload(ada_track, 1_000);
+    for _ in 0..24 {
+        if ada_conn.send_datagram(flood.clone()).is_err() {
+            break;
+        }
+    }
+    let notice = timeout(DEADLINE, async {
+        loop {
+            let frame = ada_stream.recv().await.unwrap();
+            if matches!(frame.msg, Some(Event::Error(_))) {
+                return frame;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(error_code(&notice), i32::from(v1::ErrorCode::RateLimited));
+    assert!(world.server.media_stats().rate_limited >= 3);
+
+    while timeout(QUIET, cyr_conn.read_datagram()).await.is_ok() {}
+    bea_conn.send_datagram(packet(bea_track)).unwrap();
+    let heard = timeout(DEADLINE, cyr_conn.read_datagram())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(heard, packet(bea_track));
+}
+
+#[tokio::test]
 async fn welcome_includes_voice_and_a_second_connection_moves_the_user() {
     let world = World::new().await;
     let (ada_id, ada_login) = register_owner(&world, "ada").await;
@@ -535,7 +585,11 @@ fn error_message(envelope: &v1::ServerEnvelope) -> &str {
 }
 
 fn packet(track: u32) -> Bytes {
-    let mut bytes = BytesMut::with_capacity(208);
+    packet_with_payload(track, 200)
+}
+
+fn packet_with_payload(track: u32, payload: usize) -> Bytes {
+    let mut bytes = BytesMut::with_capacity(payload + 8);
     DatagramHeader {
         version: 0,
         kind: 0,
@@ -546,6 +600,6 @@ fn packet(track: u32) -> Bytes {
     }
     .encode_into(&mut bytes)
     .unwrap();
-    bytes.extend_from_slice(&[0x55; 200]);
+    bytes.resize(bytes.len() + payload, 0x55);
     bytes.freeze()
 }

@@ -299,7 +299,7 @@ async fn rejects_oversize_executables_quota_and_duplicate_blobs() {
     )
     .await;
     assert_duplicate_blob(&rig, &router).await;
-    expect_error(
+    let quota = expect_error(
         &router,
         &rig,
         "more.txt",
@@ -308,6 +308,7 @@ async fn rejects_oversize_executables_quota_and_duplicate_blobs() {
         "daily upload quota exceeded",
     )
     .await;
+    assert_eq!(header(&quota.headers, "retry-after"), "86400");
     deny_attach(&rig).await;
     assert_allowlisted_executable(&rig).await;
 }
@@ -343,10 +344,11 @@ async fn expect_error(
     bytes: &[u8],
     status: StatusCode,
     message: &str,
-) {
+) -> Upload {
     let uploaded = post_file(router, &rig.owner_token, &rig.channel, filename, bytes).await;
     assert_eq!(uploaded.status, status);
     assert_eq!(uploaded.body["error"], message);
+    uploaded
 }
 
 async fn assert_duplicate_blob(rig: &Rig, router: &axum::Router) {
@@ -521,6 +523,7 @@ async fn world_router(world: &World) -> axum::Router {
 
 struct Upload {
     status: StatusCode,
+    headers: axum::http::HeaderMap,
     body: Value,
 }
 
@@ -552,11 +555,16 @@ async fn post_file(
         .await
         .unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
         .unwrap();
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    Upload { status, body }
+    Upload {
+        status,
+        headers,
+        body,
+    }
 }
 
 async fn get_bytes(router: &axum::Router, token: Option<&str>, uri: &str) -> Download {

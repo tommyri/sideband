@@ -110,6 +110,22 @@ impl Pool {
         }
         let mut write = sqlx::SqliteConnection::connect_with(&options(&path, true)).await?;
         migrator().run(&mut write).await?;
+        if let Some(count) = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM server_settings WHERE key = 'migration.invites_plaintext_invalidated'",
+        )
+        .fetch_optional(&mut write)
+        .await?
+        {
+            tracing::warn!(
+                invalidated_invites = %count,
+                "invalidated legacy plaintext invite codes during migration"
+            );
+            sqlx::query(
+                "DELETE FROM server_settings WHERE key = 'migration.invites_plaintext_invalidated'",
+            )
+            .execute(&mut write)
+            .await?;
+        }
         let read = SqlitePoolOptions::new()
             .max_connections(4)
             .min_connections(0)

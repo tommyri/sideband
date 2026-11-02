@@ -107,10 +107,16 @@ pub fn harden(router: Router) -> Router {
 /// A 429 with `Retry-After` in whole seconds, rounded up.
 #[must_use]
 pub fn too_many_requests(retry_after: Duration) -> Response {
+    too_many_requests_with_message(retry_after, "rate limited")
+}
+
+/// A 429 with a caller-specific body and `Retry-After`.
+#[must_use]
+pub fn too_many_requests_with_message(retry_after: Duration, message: &'static str) -> Response {
     let seconds = retry_after.as_millis().div_ceil(1000).max(1);
     let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(json!({ "error": "rate limited" })),
+        Json(json!({ "error": message })),
     )
         .into_response();
     if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
