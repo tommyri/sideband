@@ -9,6 +9,7 @@ pub struct AppState {
     pub storage: Arc<DesktopStorage>,
     pub pins: Arc<JsonPinStore>,
     pub operations: Mutex<()>,
+    pub voice: Mutex<Option<crate::voice::ActiveVoice>>,
     pub close_to_tray: AtomicBool,
 }
 
@@ -19,6 +20,7 @@ impl AppState {
             storage: Arc::new(DesktopStorage::open(path.join("sessions.json"))?),
             pins: Arc::new(JsonPinStore::open(path.join("pins.json"))?),
             operations: Mutex::new(()),
+            voice: Mutex::new(None),
             close_to_tray: AtomicBool::new(true),
         })
     }

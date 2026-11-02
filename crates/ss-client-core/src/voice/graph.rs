@@ -47,6 +47,7 @@ pub(super) struct TrackSnapshot {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct GraphSnapshot {
+    pub talking: bool,
     pub sent_bytes: u64,
     pub sent_packets: u64,
     pub bitrate: u32,
@@ -282,7 +283,9 @@ impl VoiceGraph {
     }
 
     pub fn snapshot(&self) -> GraphSnapshot {
-        self.snapshot.clone()
+        let mut snapshot = self.snapshot.clone();
+        snapshot.talking = self.talking;
+        snapshot
     }
 
     fn finish_frame(&mut self, gate: bool) -> Result<(), GraphError> {

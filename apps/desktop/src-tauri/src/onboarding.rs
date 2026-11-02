@@ -117,6 +117,7 @@ pub async fn probe_server(
 #[tauri::command]
 pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
+    crate::voice::stop(&state, Some(&server_id)).await?;
     let saved = state
         .storage
         .servers()

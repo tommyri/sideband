@@ -22,6 +22,10 @@ struct Data {
     servers: Vec<SavedServer>,
     sessions: BTreeMap<String, String>,
     last: Option<String>,
+    #[serde(default)]
+    volumes: BTreeMap<String, f32>,
+    #[serde(default)]
+    muted: BTreeMap<String, bool>,
 }
 
 pub struct DesktopStorage {
@@ -106,6 +110,47 @@ impl DesktopStorage {
 }
 
 impl Storage for DesktopStorage {
+    fn user_volume(&self, server: &ServerId, user: ss_core::Id) -> Result<Option<f32>, Error> {
+        Ok(self
+            .data
+            .lock()
+            .unwrap()
+            .volumes
+            .get(&format!("{}/{user}", server.as_str()))
+            .copied())
+    }
+    fn save_user_volume(
+        &self,
+        server: &ServerId,
+        user: ss_core::Id,
+        gain: f32,
+    ) -> Result<(), Error> {
+        self.update(|data| {
+            data.volumes
+                .insert(format!("{}/{user}", server.as_str()), gain);
+        })
+    }
+    fn user_muted(&self, server: &ServerId, user: ss_core::Id) -> Result<bool, Error> {
+        Ok(self
+            .data
+            .lock()
+            .unwrap()
+            .muted
+            .get(&format!("{}/{user}", server.as_str()))
+            .copied()
+            .unwrap_or(false))
+    }
+    fn save_user_muted(
+        &self,
+        server: &ServerId,
+        user: ss_core::Id,
+        muted: bool,
+    ) -> Result<(), Error> {
+        self.update(|data| {
+            data.muted
+                .insert(format!("{}/{user}", server.as_str()), muted);
+        })
+    }
     fn session(&self, server: &ServerId) -> Result<Option<String>, Error> {
         Ok(self
             .data

@@ -104,8 +104,8 @@ export function ServerHome() {
               </p>
             )}
             <p>
-              Server onboarding is ready. Voice channels and audio settings are still being built;
-              this version cannot start a voice chat.
+              Connect to browse channels and join voice using Hold to talk. Device selection and
+              global hotkeys are coming in a future test build.
             </p>
           </section>
           <section className="server-management" aria-label="Manage server">

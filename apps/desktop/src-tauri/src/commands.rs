@@ -159,7 +159,7 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn parse_server_id(value: &str) -> Result<ServerId, ApiError> {
+pub(crate) fn parse_server_id(value: &str) -> Result<ServerId, ApiError> {
     let (host, port) = if let Some(rest) = value.strip_prefix('[') {
         let (host, port) = rest
             .split_once("]:")
@@ -204,6 +204,9 @@ pub async fn connect(
     input: ConnectInput,
 ) -> Result<ConnectResult, ApiError> {
     let _operation = state.operations.lock().await;
+    let key = ServerId::new(&input.host, input.port)
+        .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
+    crate::voice::stop(&state, Some(key.as_str())).await?;
     let mut address = ServerAddr::new(&input.host, input.port).map_err(api_error)?;
     address.https_port = input.https_port;
     if input.port == 0 || input.https_port == 0 {
@@ -291,6 +294,8 @@ pub async fn approve_fingerprint(
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>, server_id: String) -> Result<(), ApiError> {
+    let _operation = state.operations.lock().await;
+    crate::voice::stop(&state, Some(&server_id)).await?;
     let id = parse_server_id(&server_id)?;
     let client = state.clients.lock().await.remove(&id);
     if let Some(client) = client {

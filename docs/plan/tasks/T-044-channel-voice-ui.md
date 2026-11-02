@@ -1,6 +1,6 @@
 # T-044 — Channel sidebar and voice UI
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-042, T-041
@@ -42,3 +42,36 @@ Global hotkeys (T-058), text chat (T-045), admin dialogs (T-056).
   tooltip).
 
 ## Notes from implementation
+
+Implemented the native live channel/member projection, collapsible tree, unread
+and mention badges, role groups, immutable usernames, membership flags and
+change-only speaking updates. Added permission-aware moderation, member moves,
+persistent per-user volume/local mute, click/double-click joining, call controls,
+network RTT/bitrate, and in-app shortcuts. Audio uses default OS devices and
+hold-to-talk; device selection and global PTT remain T-051/T-058.
+
+The desktop owns one native voice session. Switching channels, disconnecting,
+removing a server and leaving during reconnect release it. Reconnect closes PTT;
+a moderator move restarts audio muted in the destination profile. Speaking
+updates poll the audio worker every 40 ms independently of diagnostic stats.
+
+Validation:
+- Workspace formatting, strict Clippy and tests passed.
+- Desktop native tests cover real-server joining/switching/leaving, PTT and mute,
+  persistent playback preferences, and cancelling reconnect membership.
+- Frontend tests cover denied permissions, playback controls, shortcuts, and a
+  React Profiler fixture with 50 channels × 30 members. A speaking update commits
+  only the affected member rows instead of rebuilding the channel workspace.
+- Packaged macOS smoke test against a disposable local server: login, live
+  channels/role list, join, mute, deafen and leave passed; layout inspected.
+
+Remaining acceptance (keep in-progress): measure audio-start-to-speaking-ring
+latency below 100 ms with two real clients and check scrolling/interactions on
+Windows, macOS and Linux at the scale fixture. The automated render-count test
+is not a hardware frame-time measurement. Exercise moderator moves and network
+reconnect in those installed builds. T-051/T-058/T-076 can proceed meanwhile.
+
+Manual check: join from two computers, hold PTT and record audio/ring timing;
+verify release/focus loss/mute/deafen silence transmission; test a restricted
+account's disabled actions, an admin move, an outage/reconnect, and leave during
+an outage. Record OS, build, devices, observed timing and results in test evidence.

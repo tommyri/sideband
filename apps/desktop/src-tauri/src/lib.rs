@@ -4,6 +4,8 @@ mod onboarding;
 mod persistence;
 mod state;
 mod types;
+mod voice;
+mod voice_view;
 
 use state::AppState;
 use std::sync::atomic::Ordering;
@@ -34,9 +36,15 @@ pub fn run() {
             onboarding::probe_server,
             onboarding::remove_server,
             onboarding::reorder_servers,
+            voice::get_server_view,
+            voice::join_voice,
+            voice::leave_voice,
+            voice::voice_control,
+            voice::member_action,
         ])
         .setup(|app| {
             app.manage(AppState::open(&app.path().app_data_dir()?)?);
+            tauri::async_runtime::spawn(voice::watch(app.handle().clone()));
             let about = PredefinedMenuItem::about(
                 app,
                 Some("About this test build"),

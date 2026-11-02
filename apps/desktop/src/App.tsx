@@ -10,10 +10,13 @@ import { subscribeToClientEvents } from './lib/events'
 import { useAppStore } from './store/app-store'
 import { isTauri } from './lib/tauri'
 import { ServerHome } from './features/onboarding/ServerHome'
+import { ChannelWorkspace } from './features/channels/ChannelWorkspace'
+import { VoiceDock } from './features/voice/VoiceDock'
 
 export default function App() {
   const hydrate = useAppStore((state) => state.hydrate)
   const theme = useAppStore((state) => state.theme)
+  const server = useAppStore((state) => state.servers.find((s) => s.id === state.selectedServerId))
   const [startupError, setStartupError] = useState('')
 
   useEffect(() => {
@@ -31,7 +34,11 @@ export default function App() {
     <div className="app-shell" data-theme={theme}>
       <ServerRail />
       {isTauri() ? (
-        <ServerHome />
+        server && ['connected', 'reconnecting'].includes(server.status.kind) ? (
+          <ChannelWorkspace key={server.id} server={server.id} />
+        ) : (
+          <ServerHome />
+        )
       ) : (
         <>
           <ChannelSidebar />
@@ -46,6 +53,7 @@ export default function App() {
       )}
       <DebugPanel />
       <ConnectDialog />
+      {isTauri() && <VoiceDock />}
     </div>
   )
 }

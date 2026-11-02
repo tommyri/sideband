@@ -3,24 +3,69 @@ import type { AppEvent } from './bindings'
 import { useAppStore } from '../store/app-store'
 import { isTauri } from './tauri'
 import { getSnapshot } from './api'
+import { scheduleVoiceRefresh, useVoiceStore } from '../features/voice/store'
+import type { SpeakingView } from './generated/SpeakingView'
 
 let subscription: Promise<UnlistenFn> | undefined
 
 export function subscribeToClientEvents(): Promise<UnlistenFn> {
   if (!subscription) {
     subscription = isTauri()
-      ? listen<AppEvent>('ss://event', ({ payload }) => {
-          useAppStore.getState().receiveEvent(payload)
-          if (
-            ['connection', 'readStatesChanged', 'messagesChanged', 'resynced'].includes(
-              payload.event.kind,
+      ? Promise.all([
+          listen<AppEvent>('ss://event', ({ payload }) => {
+            useAppStore.getState().receiveEvent(payload)
+            if (payload.event.kind === 'voiceStats') {
+              const stats = payload.event.stats
+              useVoiceStore.setState((s) => ({ stats: { ...s.stats, [payload.serverId]: stats } }))
+            }
+            if (payload.event.kind === 'voiceDevice') {
+              const device = payload.event.state
+              const message =
+                device.kind === 'permissionDenied'
+                  ? 'Microphone access was denied. Allow it in system settings and rejoin voice.'
+                  : device.kind === 'unavailable'
+                    ? device.message
+                    : device.kind === 'silentInput'
+                      ? 'The microphone is sending silence. Check permission and your input device.'
+                      : device.kind === 'lowQualityInput'
+                        ? 'The microphone opened in low-quality hands-free mode.'
+                        : ''
+              if (message) useVoiceStore.setState({ deviceNotice: message })
+            }
+            if (
+              [
+                'connection',
+                'channelsChanged',
+                'membersChanged',
+                'voiceChanged',
+                'resynced',
+                'readStatesChanged',
+                'messagesChanged',
+              ].includes(payload.event.kind)
             )
-          ) {
-            void getSnapshot()
-              .then((snapshot) => useAppStore.getState().hydrate(snapshot.servers))
-              .catch(() => undefined)
-          }
-        })
+              scheduleVoiceRefresh(payload.serverId)
+            if (
+              ['connection', 'readStatesChanged', 'messagesChanged', 'resynced'].includes(
+                payload.event.kind,
+              )
+            ) {
+              void getSnapshot()
+                .then((snapshot) => useAppStore.getState().hydrate(snapshot.servers))
+                .catch(() => undefined)
+            }
+          }),
+          listen<SpeakingView>('ss://speaking', ({ payload }) => {
+            useVoiceStore.setState((s) => ({
+              speaking: { ...s.speaking, [payload.serverId]: payload.userIds },
+            }))
+          }),
+          listen('ss://voice-session', () => {
+            for (const server of useAppStore.getState().servers) scheduleVoiceRefresh(server.id)
+          }),
+          listen<string>('ss://voice-error', ({ payload }) =>
+            useVoiceStore.setState({ error: payload }),
+          ),
+        ]).then((listeners) => () => listeners.forEach((stop) => stop()))
       : Promise.resolve(() => undefined)
   }
   return subscription

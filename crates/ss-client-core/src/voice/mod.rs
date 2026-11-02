@@ -393,6 +393,29 @@ impl VoiceSession {
         self.stats.read().clone()
     }
 
+    /// Lightweight speaking state from the audio worker, independently of the
+    /// 500 ms diagnostics interval. Hosts may sample this at UI cadence.
+    pub fn speaking_users(&self) -> Vec<Id> {
+        let Some(worker) = &self.worker else {
+            return Vec::new();
+        };
+        let stats = worker.shared.stats.read();
+        let mut users: BTreeSet<Id> = stats
+            .graph
+            .tracks
+            .values()
+            .filter(|track| track.speaking)
+            .filter_map(|track| track.user)
+            .collect();
+        if stats.graph.talking
+            && let Some(user) = self.store.read().own_user.as_ref()
+            && let Ok(user) = id(&user.id)
+        {
+            users.insert(user);
+        }
+        users.into_iter().collect()
+    }
+
     /// Leave voice and wait for every worker to release its stream/thread.
     pub async fn leave(mut self) -> Result<(), Error> {
         let result = self
