@@ -1626,3 +1626,18 @@ textarea:focus-visible {
   text-transform: none;
   letter-spacing: normal;
 }
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(100px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+.shortcut-settings li {
+  font-size: 13px;
+  padding: 4px 0;
+}
+@media (max-width: 700px) {
+  .shortcut-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

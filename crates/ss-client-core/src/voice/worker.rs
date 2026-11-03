@@ -97,6 +97,13 @@ pub(super) struct WorkerHandle {
 }
 
 impl WorkerHandle {
+    pub fn release_ptt(&self) {
+        *self.shared.ptt.lock() = PttState {
+            held: false,
+            released: None,
+        };
+    }
+
     pub fn set_ptt(&self, pressed: bool) {
         let mut state = self.shared.ptt.lock();
         if pressed {

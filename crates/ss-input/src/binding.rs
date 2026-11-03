@@ -685,7 +685,26 @@ impl Trigger {
     }
 }
 
-/// A push-to-talk chord: one trigger plus the modifiers that must be held.
+/// Action assigned to a chord. Capture and legacy records default to PTT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShortcutAction {
+    /// Hold to transmit.
+    #[default]
+    PushToTalk,
+    /// Toggle self mute once per press.
+    ToggleMute,
+    /// Toggle self deafen once per press.
+    ToggleDeafen,
+}
+impl ShortcutAction {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires a reference.
+    fn is_ptt(&self) -> bool {
+        *self == Self::PushToTalk
+    }
+}
+
+/// A shortcut chord: one trigger plus the modifiers that must be held.
 ///
 /// JSON uses an externally tagged trigger and a modifier object of only the
 /// flags that are true:
@@ -700,6 +719,9 @@ pub struct Binding {
     /// Modifiers that must also be down. Empty means the trigger alone.
     #[serde(default)]
     pub modifiers: ModifierSet,
+    /// Semantic action; omitted in legacy PTT JSON.
+    #[serde(default, skip_serializing_if = "ShortcutAction::is_ptt")]
+    pub action: ShortcutAction,
 }
 
 impl Binding {
@@ -709,6 +731,7 @@ impl Binding {
         Self {
             trigger: Trigger::Key(code),
             modifiers: ModifierSet::EMPTY,
+            action: ShortcutAction::PushToTalk,
         }
     }
 
@@ -718,7 +741,15 @@ impl Binding {
         Self {
             trigger: Trigger::Mouse(button),
             modifiers: ModifierSet::EMPTY,
+            action: ShortcutAction::PushToTalk,
         }
+    }
+
+    /// Assign the action emitted when this chord becomes held.
+    #[must_use]
+    pub const fn with_action(mut self, action: ShortcutAction) -> Self {
+        self.action = action;
+        self
     }
 
     /// Require `modifiers` in addition to the trigger.

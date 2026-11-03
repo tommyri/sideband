@@ -300,6 +300,13 @@ impl VoiceSession {
         }
     }
 
+    /// Close PTT immediately, ignoring its release tail (permission loss/suspension).
+    pub fn release_ptt(&self) {
+        if let Some(worker) = &self.worker {
+            worker.release_ptt();
+        }
+    }
+
     /// Switch between portable devices and Apple's VoiceProcessingIO backend
     /// without leaving the voice channel.
     pub async fn set_device_backend(&self, backend: DeviceBackend) -> Result<(), Error> {

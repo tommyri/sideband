@@ -5,8 +5,9 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 `00-overview.md`).
 
 Current priority: [installable testing app](../05-testing-app.md).
-T-075 packaging, essential T-043 onboarding, T-044 live voice UI and T-051 audio
-settings are implemented; platform acceptance remains open. Next: T-058 → T-076 increments.
+T-075 packaging, essential T-043 onboarding, T-044 voice UI, T-051 audio settings
+and T-058 global shortcuts are implemented; platform acceptance remains open.
+Next: T-076 guided testing and evidence.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -77,7 +78,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | todo |
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | todo |
 | [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | todo |
-| [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | todo |
+| [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | in-progress |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
 | [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | in-progress |
 | [T-076](T-076-guided-voice-testing.md) | Guided voice tests and local evidence bundles | M | T-075, T-043, T-044, T-051, T-058 | todo |

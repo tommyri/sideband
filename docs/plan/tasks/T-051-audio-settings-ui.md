@@ -79,8 +79,8 @@ Validation:
 Remaining acceptance: measure device-switch latency under 1 second on Windows,
 macOS and Linux with real input/output hardware, listen to loopback and cues,
 and exercise permission-denial, unplug/replug and Apple processing. No microphone
-permission was granted by automation. T-058 still owns the global listener,
-macOS Input Monitoring permission action and Linux evdev opt-in integration;
-this screen explains that limitation and only starts focused in-app bindings.
+permission was granted by automation. T-058 now integrates the global listener,
+macOS Input Monitoring settings action and Linux evdev opt-in; open Global
+shortcuts from this screen. Its platform acceptance matrix remains pending.
 T-063 diagnostics stays visibly unavailable and the optional 10 ms override
 remains gated by the T-018 release verdict. These do not block T-076 increments.

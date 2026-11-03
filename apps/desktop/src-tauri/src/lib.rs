@@ -1,6 +1,7 @@
 mod audio;
 mod build_identity;
 mod commands;
+mod input;
 mod onboarding;
 mod persistence;
 mod state;
@@ -12,7 +13,7 @@ use state::AppState;
 use std::sync::atomic::Ordering;
 use tauri::{
     Manager, WindowEvent,
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
 };
 
@@ -47,9 +48,16 @@ pub fn run() {
             audio::audio_level,
             audio::test_audio,
             audio::stop_audio_test,
+            input::input_snapshot,
+            input::save_shortcuts,
+            input::suspend_shortcuts,
+            input::capture_shortcut,
+            input::cancel_shortcut_capture,
+            input::configure_system_shortcuts,
         ])
         .setup(|app| {
             app.manage(AppState::open(&app.path().app_data_dir()?)?);
+            input::init(app.handle());
             tauri::async_runtime::spawn(voice::watch(app.handle().clone()));
             let about = PredefinedMenuItem::about(
                 app,
@@ -61,7 +69,12 @@ pub fn run() {
             app.set_menu(app_menu)?;
             let show = MenuItem::with_id(app, "show", "Show SocialSpeak", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &about, &quit])?;
+            let mute =
+                CheckMenuItem::with_id(app, "mute", "Mute microphone", false, false, None::<&str>)?;
+            let deafen =
+                CheckMenuItem::with_id(app, "deafen", "Deafen", false, false, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &mute, &deafen, &about, &quit])?;
+            app.manage(input::TrayControls { mute, deafen });
             let mut tray =
                 TrayIconBuilder::new()
                     .menu(&menu)
@@ -72,6 +85,8 @@ pub fn run() {
                                 let _ = window.set_focus();
                             }
                         }
+                        "mute" => input::toggle(app, false),
+                        "deafen" => input::toggle(app, true),
                         "quit" => app.exit(0),
                         _ => {}
                     });

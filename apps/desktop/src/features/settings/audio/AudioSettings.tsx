@@ -1,3 +1,4 @@
+import { ShortcutSettings } from '../shortcuts/ShortcutSettings'
 import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { invokeBridge } from '../../../lib/tauri'
@@ -42,6 +43,7 @@ function InputMeter({ testing, active }: { testing: boolean; active: boolean }) 
   )
 }
 export function AudioSettings({ close }: { close: () => void }) {
+  const [shortcuts, setShortcuts] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
   const [env, setEnv] = useState<AudioEnvironment | null>(null)
   const [draft, setDraft] = useState<AudioPreferences>(defaults)
@@ -123,6 +125,7 @@ export function AudioSettings({ close }: { close: () => void }) {
   return (
     <dialog
       ref={dialog}
+      data-binding-capture={capturing}
       className="audio-settings"
       aria-labelledby="audio-title"
       onCancel={(e) => {
@@ -154,7 +157,9 @@ export function AudioSettings({ close }: { close: () => void }) {
           ×
         </button>
       </header>
+      {shortcuts && <ShortcutSettings close={() => setShortcuts(false)} />}
       <div className="audio-body">
+        <button onClick={() => setShortcuts(true)}>Global shortcuts</button>
         {error && (
           <p role="alert" className="form-error">
             {error}
@@ -281,8 +286,8 @@ export function AudioSettings({ close }: { close: () => void }) {
                   <button onClick={() => change('binding', '')}>Clear binding</button>
                   <p>
                     Bindings work while the app is focused, outside text fields and dialogs. Hold to
-                    talk remains available. Global shortcuts and permission/evdev setup are coming
-                    with T-058.
+                    talk remains available. Configure global listening and platform permissions in
+                    Global shortcuts.
                   </p>
                   {env.systemBinding && (
                     <p>
@@ -292,8 +297,8 @@ export function AudioSettings({ close }: { close: () => void }) {
                   )}
                   {env.permission && (
                     <p>
-                      Global PTT requires {env.permission}. No global listener is started by this
-                      screen.
+                      Global PTT requires {env.permission}. Use Global shortcuts to configure
+                      listening.
                     </p>
                   )}
                   {env.limitations.map((s, i) => (

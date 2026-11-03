@@ -1,3 +1,4 @@
+import { useShortcuts } from '../settings/shortcuts/store'
 import { useEffect, useState } from 'react'
 import { AudioSettings } from '../settings/audio/AudioSettings'
 import { environment, useAudioStore } from '../settings/audio/store'
@@ -13,6 +14,9 @@ function ptt(enabled: boolean) {
   })
 }
 export function VoiceDock() {
+  const globalPtt = useShortcuts(
+    (s) => !!(s.snapshot?.preferences.ptt || s.snapshot?.preferences.portal),
+  )
   const preferences = useAudioStore((s) => s.preferences)
   useEffect(() => {
     if (isTauri()) void environment().catch(() => {})
@@ -107,7 +111,7 @@ export function VoiceDock() {
     return () => window.removeEventListener('keydown', shortcut)
   }, [])
   useEffect(() => {
-    if (preferences.mode !== 'ptt' || !preferences.binding || !canTalk) return
+    if (globalPtt || preferences.mode !== 'ptt' || !preferences.binding || !canTalk) return
     const matches = (event: KeyboardEvent | PointerEvent) =>
       'code' in event
         ? event.code === preferences.binding
@@ -141,7 +145,7 @@ export function VoiceDock() {
       window.removeEventListener('pointerdown', down)
       window.removeEventListener('pointerup', up)
     }
-  }, [preferences.mode, preferences.binding, canTalk])
+  }, [globalPtt, preferences.mode, preferences.binding, canTalk])
   function gate(open: boolean) {
     ptt(open && canTalk)
     setHeld(open && canTalk)

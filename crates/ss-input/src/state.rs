@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::binding::{Binding, Code, InputEvent, MouseButton};
+use crate::binding::{Binding, Code, InputEvent, MouseButton, ShortcutAction};
 
 /// Gaps between a release and the next press that are coalesced.
 ///
@@ -25,17 +25,22 @@ pub const DEBOUNCE: Duration = Duration::from_millis(30);
 /// key comes up so the end of a word is not clipped.
 pub const DEFAULT_RELEASE_DELAY: Duration = Duration::from_millis(150);
 
-/// Transmit edge emitted by [`PttStateMachine`].
+/// Semantic shortcut event emitted by [`PttStateMachine`].
 ///
 /// `Pressed` opens the gate. `Released` closes it. The machine emits each
 /// edge once per transition, including through the debounce and release-delay
-/// window, where it stays logically pressed without a new event.
+/// window, where it stays logically pressed without a new event. Toggle events
+/// occur only on a fresh matching press and do not change the transmit gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PttEvent {
     /// The chord just became held. Start transmitting.
     Pressed,
     /// The chord has been released and the delay has elapsed. Stop transmitting.
     Released,
+    /// A configured mute chord became held.
+    ToggleMute,
+    /// A configured deafen chord became held.
+    ToggleDeafen,
 }
 
 impl std::fmt::Display for PttEvent {
@@ -43,6 +48,8 @@ impl std::fmt::Display for PttEvent {
         formatter.write_str(match self {
             Self::Pressed => "pressed",
             Self::Released => "released",
+            Self::ToggleMute => "toggle mute",
+            Self::ToggleDeafen => "toggle deafen",
         })
     }
 }
@@ -73,6 +80,7 @@ impl std::fmt::Display for PttEvent {
 #[derive(Debug, Clone)]
 pub struct PttStateMachine {
     bindings: Vec<Binding>,
+    action_held: [bool; 2],
     release_delay: Duration,
     keys: HashSet<Code>,
     buttons: HashSet<MouseButton>,
@@ -106,6 +114,7 @@ impl PttStateMachine {
     pub fn with_release_delay(bindings: impl Into<Vec<Binding>>, release_delay: Duration) -> Self {
         Self {
             bindings: bindings.into(),
+            action_held: [false; 2],
             release_delay,
             keys: HashSet::new(),
             buttons: HashSet::new(),
@@ -115,7 +124,7 @@ impl PttStateMachine {
         }
     }
 
-    /// Bindings currently watched. Any one of them can open transmit.
+    /// Bindings currently watched. PTT chords open transmit; action chords emit toggles.
     #[must_use]
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
@@ -155,7 +164,21 @@ impl PttStateMachine {
     #[must_use]
     pub fn handle(&mut self, event: InputEvent, now: Instant) -> Vec<PttEvent> {
         self.apply(event);
-        self.reconcile(now)
+        let mut events = self.reconcile(now);
+        for (index, action, event) in [
+            (0, ShortcutAction::ToggleMute, PttEvent::ToggleMute),
+            (1, ShortcutAction::ToggleDeafen, PttEvent::ToggleDeafen),
+        ] {
+            let held = self
+                .bindings
+                .iter()
+                .any(|b| b.action == action && b.is_held(&self.keys, &self.buttons));
+            if held && !self.action_held[index] {
+                events.push(event);
+            }
+            self.action_held[index] = held;
+        }
+        events
     }
 
     /// Emit a delayed release if `now` has reached [`Self::release_deadline`].
@@ -207,6 +230,7 @@ impl PttStateMachine {
     /// must inject that up; the up lifts the suppression.
     #[must_use]
     pub fn force_release(&mut self) -> Option<PttEvent> {
+        self.action_held = [false; 2];
         self.suppressed_keys.extend(self.keys.drain());
         self.suppressed_buttons.extend(self.buttons.drain());
         match self.phase {
@@ -287,9 +311,10 @@ impl PttStateMachine {
     }
 
     fn chord_down(&self) -> bool {
-        self.bindings
-            .iter()
-            .any(|binding| binding.is_held(&self.keys, &self.buttons))
+        self.bindings.iter().any(|binding| {
+            binding.action == ShortcutAction::PushToTalk
+                && binding.is_held(&self.keys, &self.buttons)
+        })
     }
 
     fn release_wait(&self) -> Duration {
@@ -539,5 +564,63 @@ mod tests {
         let up_at = t0 + Duration::from_millis(90);
         quiet(&ptt.handle(InputEvent::key_up(Code::F13), up_at));
         assert_eq!(ptt.poll(up_at + DEBOUNCE), Some(PttEvent::Released));
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use crate::Code;
+    #[test]
+    #[allow(clippy::assert_is_empty)]
+    fn toggle_chords_are_independent_of_ptt_and_repeat_only_after_release() {
+        let mut state = PttStateMachine::new(vec![
+            Binding::key(Code::KeyV),
+            Binding::key(Code::KeyM).with_action(ShortcutAction::ToggleMute),
+            Binding::key(Code::KeyD).with_action(ShortcutAction::ToggleDeafen),
+        ]);
+        let now = Instant::now();
+        assert_eq!(
+            state.handle(InputEvent::key_down(Code::KeyV), now),
+            vec![PttEvent::Pressed]
+        );
+        assert_eq!(
+            state.handle(InputEvent::key_down(Code::KeyM), now),
+            vec![PttEvent::ToggleMute]
+        );
+        assert!(
+            state
+                .handle(InputEvent::key_down(Code::KeyM), now)
+                .is_empty()
+        );
+        assert_eq!(
+            state.handle(InputEvent::key_down(Code::KeyD), now),
+            vec![PttEvent::ToggleDeafen]
+        );
+        assert!(state.is_transmitting());
+        assert_eq!(state.force_release(), Some(PttEvent::Released));
+        assert!(
+            state
+                .handle(InputEvent::key_down(Code::KeyM), now)
+                .is_empty()
+        );
+        assert!(state.handle(InputEvent::key_up(Code::KeyM), now).is_empty());
+        assert_eq!(
+            state.handle(InputEvent::key_down(Code::KeyM), now),
+            vec![PttEvent::ToggleMute]
+        );
+        assert!(!state.is_transmitting());
+    }
+    #[test]
+    fn legacy_binding_json_keeps_ptt_and_actions_roundtrip() {
+        let legacy = Binding::key(Code::KeyV);
+        let json = serde_json::to_value(legacy).unwrap();
+        assert!(json.get("action").is_none());
+        assert_eq!(serde_json::from_value::<Binding>(json).unwrap(), legacy);
+        let action = legacy.with_action(ShortcutAction::ToggleMute);
+        assert_eq!(
+            serde_json::from_value::<Binding>(serde_json::to_value(action).unwrap()).unwrap(),
+            action
+        );
     }
 }

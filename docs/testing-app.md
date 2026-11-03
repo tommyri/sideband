@@ -4,7 +4,7 @@ These are internal test builds, not stable releases. T-018's voice comparison
 is still a release gate. Packages now include server onboarding (T-043): add
 an address, compare and trust its certificate fingerprint, register with an
 invite or log in, and reconnect with a saved session. Connected servers show live channels, members and voice controls (T-044).
-Audio settings (T-051) are available; global PTT (T-058) and guided reports
+Audio settings (T-051) and global shortcuts (T-058) are available; guided reports
 (T-076) follow.
 The browser-only design preview still contains sample data.
 
@@ -26,9 +26,22 @@ losing focus, muting or deafening closes transmission. Use **Leave** to leave
 voice or **Disconnect** to close the server connection. Ctrl/Cmd+Shift+M/D toggle
 mute/deafen; Ctrl/Cmd+Shift+Up/Down select channels. Interaction settings offer
 double-click joining. Member menus expose playback and permitted moderation.
-The displayed latency is network RTT, not mouth-to-ear latency. Global shortcuts remain pending. Captured bindings currently work only while
-the app is focused, outside dialogs/text entry. Backend permission and compositor
-limitations appear in audio settings.
+The displayed latency is network RTT, not mouth-to-ear latency.
+
+For global PTT/mute/deafen, open **Audio settings → Global shortcuts**. Capture
+separate keys or mouse buttons, then **Save shortcuts**. Capture may request input
+permission; no listener starts automatically while saved bindings are empty.
+On Wayland, use system-managed shortcuts when the portal owns bindings. The
+screen reports capabilities and limitations; Linux evdev fallback requires
+explicit opt-in and user-managed device access. Global PTT uses the selected
+PTT transmission mode; it does not turn off VAD/open mic.
+
+Password fields and binding capture suspend the listener and immediately release
+PTT. The tray mirrors mute/deafen. The last ten semantic input events are shown
+locally for troubleshooting, without recording typed text or uploading anything.
+After fixing permissions, choose **Retry saved bindings**. The in-app custom
+binding remains available when global PTT is not configured. Actual gaming,
+permission/revocation and compositor behavior still need the T-058 manual matrix.
 
 Outside a call, **Test mic** provides 10 seconds of local raw microphone playback
 with a 1-second delay (use headphones), **Test output** plays a cue, and VAD

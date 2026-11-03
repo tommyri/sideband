@@ -199,6 +199,9 @@ pub async fn save_audio(
         return Err(error("Stop the local audio test before applying settings"));
     }
     let config = preferences.config()?;
+    if let Some(active) = state.voice.lock().await.as_mut() {
+        active.release_ptt();
+    }
     let session = state
         .voice
         .lock()

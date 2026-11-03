@@ -17,8 +17,23 @@ pub struct ActiveVoice {
     pub connection: Id,
     pub muted: bool,
     pub deafened: bool,
+    pub local_ptt: bool,
+    pub global_ptt: bool,
 }
 impl ActiveVoice {
+    pub fn set_local_ptt(&mut self, pressed: bool) {
+        self.local_ptt = pressed;
+        self.session.set_ptt(self.local_ptt || self.global_ptt);
+    }
+    pub fn set_global_ptt(&mut self, pressed: bool) {
+        self.global_ptt = pressed;
+        self.session.set_ptt(self.local_ptt || self.global_ptt);
+    }
+    pub fn release_ptt(&mut self) {
+        self.local_ptt = false;
+        self.global_ptt = false;
+        self.session.release_ptt();
+    }
     fn view(&self) -> ActiveVoiceView {
         ActiveVoiceView {
             server_id: self.server.as_str().into(),
@@ -185,6 +200,8 @@ async fn join_with_config(
         .map_err(api_error)?;
     let connection = own_connection(client)?;
     *state.voice.lock().await = Some(ActiveVoice {
+        local_ptt: false,
+        global_ptt: false,
         server,
         session: Arc::new(session),
         connection,
@@ -208,9 +225,9 @@ pub async fn voice_control(
 ) -> Result<(), ApiError> {
     // Release PTT without waiting for any network-backed operation.
     if action == "ptt" {
-        let voice = state.voice.lock().await;
-        if let Some(active) = voice.as_ref() {
-            active.session.set_ptt(enabled);
+        let mut voice = state.voice.lock().await;
+        if let Some(active) = voice.as_mut() {
+            active.set_local_ptt(enabled);
         }
         return Ok(());
     }
@@ -349,7 +366,7 @@ pub async fn watch(app: AppHandle) {
                 )
             });
             if retrying {
-                active.session.set_ptt(false);
+                active.release_ptt();
             } else if !connected || channel.is_none() {
                 voice.take();
                 let _ = app.emit("ss://voice-session", ());
@@ -374,6 +391,8 @@ pub async fn watch(app: AppHandle) {
                         Ok(session) => {
                             if let Ok(connection) = own_connection(client) {
                                 *voice = Some(ActiveVoice {
+                                    local_ptt: false,
+                                    global_ptt: false,
                                     server,
                                     session: Arc::new(session),
                                     connection,
@@ -490,12 +509,22 @@ mod tests {
             .await
             .unwrap();
         {
-            let voice = state.voice.lock().await;
-            let active = voice.as_ref().unwrap();
+            let mut voice = state.voice.lock().await;
+            let active = voice.as_mut().unwrap();
             assert!(active.session.speaking_users().is_empty());
-            active.session.set_ptt(true);
+            active.set_global_ptt(true);
+            active.set_local_ptt(true);
+            active.set_local_ptt(false);
             tokio::time::timeout(Duration::from_secs(2), async {
                 while !active.session.speaking_users().contains(&own) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            active.release_ptt();
+            tokio::time::timeout(Duration::from_millis(100), async {
+                while !active.session.speaking_users().is_empty() {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
             })

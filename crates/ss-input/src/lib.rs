@@ -34,7 +34,8 @@ pub mod windows;
 pub use crate::{
     backend::Backend,
     binding::{
-        Binding, CaptureSession, Code, HostPlatform, InputEvent, ModifierSet, MouseButton, Trigger,
+        Binding, CaptureSession, Code, HostPlatform, InputEvent, ModifierSet, MouseButton,
+        ShortcutAction, Trigger,
     },
     error::{Error, Permission},
     listener::{Caps, CapturedBinding, Handle, Handler, Listener},
