@@ -57,7 +57,8 @@ if [[ "$https" -ne 1 ]]; then
   echo "public HTTPS did not return server info" >&2
   exit 1
 fi
-if curl -fsS "http://127.0.0.1:${quic_port}/api/v1/server" >/dev/null 2>&1; then
+# Gitleaks otherwise mistakes the later Docker --user UID:GID for curl credentials.
+if curl -fsS "http://127.0.0.1:${quic_port}/api/v1/server" >/dev/null 2>&1; then # gitleaks:allow
   echo "public listener accepted plaintext HTTP" >&2
   exit 1
 fi

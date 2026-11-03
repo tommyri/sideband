@@ -16,3 +16,34 @@ apps/desktop/dist
 apps/desktop/.vite
 apps/desktop/src-tauri/gen
 .pnpm-store
+
+# Local workspaces, tool indexes and exported test evidence
+/.worktrees/
+/.codebase-memory/
+/.codex/
+/recordings/
+/reports/
+/logs/
+/*.wav
+/*.zip
+
+# Credentials, certificates and runtime state (never source assets)
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+sessions.json
+pins.json
+identity.json
+
+# Python tooling
+__pycache__/
+*.pyc

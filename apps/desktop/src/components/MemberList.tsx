@@ -6,7 +6,7 @@ const groups = [
     people: [
       ['Maya Chen', 'Designing', 'MC', 'avatar-1'],
       ['Oskar Lind', 'Reviewing transport', 'OL', 'avatar-2'],
-      ['Tommy Riska', 'In Studio', 'TR', 'avatar-3'],
+      ['Alex Rivera', 'In Studio', 'AR', 'avatar-3'],
       ['Ada', 'Available', 'A', 'avatar-4'],
     ],
   },

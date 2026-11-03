@@ -10,3 +10,6 @@
 - The member list drops below 1100px. The debug drawer becomes an overlay
   below 880px. The core rail and conversation remain available throughout.
 - The generated concept used a generic transport label; product copy uses QUIC.
+
+The concept is a generated design reference, not a screenshot or evidence of
+implemented chat features. Preview participants and messages are sample data.

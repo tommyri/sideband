@@ -69,6 +69,7 @@ Production signing/notarization, updater feeds, public release publishing
   and macOS downloaded-artifact/Gatekeeper results. Linux test packages use
   Ubuntu 24.04 as their runtime baseline; older-distribution portability and
   AppImage runtime dependencies require validation, not an assumed pass.
-- The local artifact is a debug testing scaffold, not performance evidence
-  or a completed voice-testing app. T-043 is the next implementation priority.
+- Initial artifacts were a debug scaffold. Current builds include onboarding,
+  voice controls/settings, guided tests and diagnostics (T-043/T-044/T-051/T-058/
+  T-076/T-063); debug builds still are not performance evidence.
   See `docs/testing-app.md` for building, installation and current limitations.

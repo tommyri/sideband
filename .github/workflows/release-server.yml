@@ -5,52 +5,52 @@ on:
     tags: ["server-v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            cc: musl-gcc
-            strip: strip
+            os: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
-            cc: aarch64-linux-musl-gcc
-            strip: aarch64-linux-musl-strip
+            os: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           targets: ${{ matrix.target }}
       - name: musl toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/aarch64-musl.tgz
-            sudo tar -xzf /tmp/aarch64-musl.tgz -C /opt
-            echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          fi
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Static binary
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: ${{ matrix.cc }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           cargo build -p ss-server --locked --release --target "${{ matrix.target }}"
-          ${{ matrix.strip }} --strip-unneeded "target/${{ matrix.target }}/release/ss-server"
+          strip --strip-unneeded "target/${{ matrix.target }}/release/ss-server"
           if readelf -l "target/${{ matrix.target }}/release/ss-server" | grep -q 'INTERP'; then
             echo "ss-server is dynamically linked" >&2
             exit 1
           fi
           install -m 0755 "target/${{ matrix.target }}/release/ss-server" \
             "$RUNNER_TEMP/ss-server-${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ss-server-${{ matrix.target }}
           path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
@@ -63,8 +63,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
       - name: Publish

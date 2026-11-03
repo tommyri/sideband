@@ -18,9 +18,9 @@ const messages = [
     body: 'Nice. I pushed a tiny server-side change for the local test path. Certificate pinning still catches first use as expected.',
   },
   {
-    name: 'Tommy Riska',
+    name: 'Alex Rivera',
     time: '09:53',
-    avatar: 'TR',
+    avatar: 'AR',
     color: 'avatar-3',
     body: 'The app shell is taking shape now — compact, calm, and all network traffic stays behind Rust.',
     reaction: '✓ 2',

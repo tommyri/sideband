@@ -1,7 +1,7 @@
 import { ChevronDown, Hash, Headphones, Mic, Radio, Settings, Volume2 } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 
-const voiceMembers = ['Maya', 'Oskar', 'Tommy']
+const voiceMembers = ['Maya', 'Oskar', 'Alex']
 
 export function ChannelSidebar() {
   const server = useAppStore((state) =>

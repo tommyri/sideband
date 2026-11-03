@@ -1,6 +1,6 @@
 # Static ss-server. The build is native: amd64 produces the x86_64 musl
-# binary, arm64 produces the aarch64 one. Cross builds live in the release
-# workflow.
+# binary, arm64 produces the aarch64 one. The release workflow also uses
+# native runners for each architecture.
 
 FROM rust:1.99.1-bookworm AS build
 
