@@ -169,6 +169,20 @@ pub struct ConnectionRegistry {
 }
 
 impl ConnectionRegistry {
+    /// Internal operator diagnostics. No client-supplied strings, tokens or addresses.
+    pub fn diagnostics(&self) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock();
+        let mut rows: Vec<_> = inner.peers.iter().map(|(id,peer)| {
+            let path = peer.connection.stats().path;
+            serde_json::json!({"connectionId":id.to_string(),"rttMs":peer.connection.rtt().as_secs_f64()*1000.0,
+                "lostPackets":path.lost_packets,"sentPackets":path.sent_packets,
+                "congestionWindowBytes":path.cwnd,"pathMtuBytes":path.current_mtu,
+                "queuedControlMessages":peer.outbound.max_capacity()-peer.outbound.capacity()})
+        }).collect();
+        rows.sort_by(|a, b| a["connectionId"].as_str().cmp(&b["connectionId"].as_str()));
+        rows
+    }
+
     pub(crate) fn new(slow_after: Duration) -> Self {
         Self {
             inner: Mutex::new(Inner {

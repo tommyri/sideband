@@ -120,7 +120,6 @@ impl MediaLink {
         *self.stats.read()
     }
 
-    #[cfg(feature = "screen-share")]
     pub fn quic(&self) -> Option<quinn::Connection> {
         self.quic.read().clone()
     }

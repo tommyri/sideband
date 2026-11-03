@@ -440,6 +440,42 @@ impl VoiceSession {
         self.stats.read().clone()
     }
 
+    /// Extended diagnostics without account identifiers. Reads the same worker
+    /// snapshot as CLI voice statistics; CPU values are processing time per frame.
+    pub fn diagnostics(&self) -> Option<serde_json::Value> {
+        let worker = self.worker.as_ref()?;
+        let stats = worker.shared.stats.read().clone();
+        let stages: Vec<_> = stats
+            .processing_monitor
+            .as_ref()
+            .map(|m| {
+                m.stages().map(|s| serde_json::json!({
+            "stage": format!("{:?}", s.stage), "backend":format!("{:?}", s.backend),
+            "frames":s.cpu.frames,"lastMs":s.cpu.last.as_secs_f64()*1000.0,
+            "meanMs":s.cpu.mean.as_secs_f64()*1000.0,"maxMs":s.cpu.max.as_secs_f64()*1000.0
+        })).collect()
+            })
+            .unwrap_or_default();
+        let mut speakers: Vec<_> = stats
+            .graph
+            .tracks
+            .iter()
+            .map(|(track, s)| {
+                serde_json::json!({
+                    "track":track,"jitterDelayMs":s.delay.as_secs_f64()*1000.0,
+                    "lost":s.stats.jitter.lost,"late":s.stats.jitter.late,"plc":s.stats.plc
+                })
+            })
+            .collect();
+        speakers.sort_by_key(|s| s["track"].as_u64());
+        Some(
+            serde_json::json!({"speakers":speakers,"processingStages":stages,
+                "inputRateHz":stats.input_rate,"outputRateHz":stats.output_rate,"backend":stats.backend,
+                "encoderFec":channel_profile(&self.store,self.channel).ok().map(|(p,_)|p.encoder_params().inband_fec)
+            }),
+        )
+    }
+
     /// Lightweight speaking state from the audio worker, independently of the
     /// 500 ms diagnostics interval. Hosts may sample this at UI cadence.
     pub fn speaking_users(&self) -> Vec<Id> {

@@ -28,6 +28,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect live connections through the loopback operator listener.
+    Conn {
+        #[command(subcommand)]
+        action: ConnAction,
+    },
     /// Write `config.toml`, the database, and a TLS identity.
     Init {
         /// Directory for the config, database, attachments, and TLS identity.
@@ -79,6 +84,15 @@ enum Command {
     Role {
         #[command(subcommand)]
         action: RoleAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnAction {
+    /// Print current QUIC path counters as JSON (no credentials or addresses).
+    List {
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
     },
 }
 
@@ -195,6 +209,26 @@ fn main() -> anyhow::Result<()> {
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
+        Some(Command::Conn {
+            action: ConnAction::List { data_dir },
+        }) => {
+            let config = ss_server::config::load(&data_dir)?;
+            anyhow::ensure!(
+                config.internal.bind.ip().is_loopback(),
+                "connection inspection requires a loopback internal listener"
+            );
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(5))
+                .build()?
+                .get(format!("http://{}/connections", config.internal.bind))
+                .send()
+                .await?
+                .error_for_status()?;
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&response.bytes().await?)?;
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
         Some(Command::Init { data_dir }) => ss_server::serve::init(data_dir).await?,
         Some(Command::Run { data_dir }) => ss_server::serve::run(data_dir).await?,
         Some(Command::CheckConfig { data_dir }) => {
@@ -246,7 +280,8 @@ async fn start() -> anyhow::Result<()> {
                     action: RoleAction::GrantAdmin { username, data_dir },
                 }) => grant_admin(data_dir, &username).await?,
                 Some(
-                    Command::Init { .. }
+                    Command::Conn { .. }
+                    | Command::Init { .. }
                     | Command::Run { .. }
                     | Command::CheckConfig { .. }
                     | Command::Fingerprint { .. }

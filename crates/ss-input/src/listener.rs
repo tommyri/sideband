@@ -212,6 +212,11 @@ impl fmt::Debug for Handle {
 /// this contract. Do not override [`Self::capture_next`]: the default refuses to
 /// observe keys when the compositor owns the binding.
 pub trait Listener: Send + Sync {
+    /// Selected platform implementation, without device names or identifiers.
+    fn backend_name(&self) -> &'static str {
+        "Unknown input backend"
+    }
+
     /// What this backend can bind, and what the UI should explain.
     fn capabilities(&self) -> Caps;
 

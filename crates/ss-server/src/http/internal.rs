@@ -15,6 +15,7 @@ pub fn router(server: Arc<Server>, metrics: PrometheusHandle) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics_text))
+        .route("/connections", get(connections))
         .with_state(Arc::new(InternalState { server, metrics }))
 }
 
@@ -88,4 +89,10 @@ fn sample(server: &Server) {
 
 fn as_f64(value: usize) -> f64 {
     f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+async fn connections(
+    State(state): State<Arc<InternalState>>,
+) -> axum::Json<Vec<serde_json::Value>> {
+    axum::Json(state.server.registry().diagnostics())
 }

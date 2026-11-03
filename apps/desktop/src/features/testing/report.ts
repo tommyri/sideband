@@ -3,6 +3,13 @@ import type { AudioEnvironment } from '../settings/audio/store'
 import type { Snapshot } from '../settings/shortcuts/store'
 
 export const definitions = {
+  diagnostics: {
+    title: 'Diagnostics snapshot',
+    tasks: ['T-063'],
+    steps: [
+      'Review the diagnostics with a listener and record the observed problem; statistics alone do not prove audible quality.',
+    ],
+  },
   'ptt-focus': {
     title: 'PTT, fullscreen & focus',
     tasks: ['T-048', 'T-049', 'T-050', 'T-058'],
@@ -193,6 +200,7 @@ export function context(audio: AudioEnvironment, shortcuts: Snapshot): Json {
       'Actual negotiated device format and buffer size are not exposed by this build',
     ),
     shortcuts: {
+      backend: shortcuts.backend ?? 'Unavailable',
       preferences: JSON.parse(JSON.stringify(shortcuts.preferences)) as Json,
       running: shortcuts.running,
       suspended: shortcuts.suspended,

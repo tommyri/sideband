@@ -32,7 +32,7 @@
       "type": "string"
     },
     "testId": {
-      "enum": ["ptt-focus", "device-recovery", "listening-trial", "acoustic-latency"]
+      "enum": ["ptt-focus", "device-recovery", "listening-trial", "acoustic-latency", "diagnostics"]
     },
     "acceptanceTasks": {
       "type": "array",

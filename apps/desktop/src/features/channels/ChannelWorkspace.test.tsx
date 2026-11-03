@@ -166,6 +166,19 @@ describe('live channels and voice', () => {
     fireEvent.keyDown(window, { key: 'm', ctrlKey: true, shiftKey: true })
     await waitFor(() => expect(voiceControl).toHaveBeenCalledWith('mute', true))
   })
+  it('reserves Ctrl+Shift+D for diagnostics and requires Alt for built-in deafen', async () => {
+    render(<VoiceDock />)
+    fireEvent.keyDown(window, { key: 'D', code: 'KeyD', ctrlKey: true, shiftKey: true })
+    expect(voiceControl).not.toHaveBeenCalledWith('deafen', true)
+    fireEvent.keyDown(window, {
+      key: 'Î',
+      code: 'KeyD',
+      ctrlKey: true,
+      shiftKey: true,
+      altKey: true,
+    })
+    await waitFor(() => expect(voiceControl).toHaveBeenCalledWith('deafen', true))
+  })
   it('does not join a channel when permissions are absent', async () => {
     const view = fixture()
     view.channels[1] = { ...channel, canJoin: false }

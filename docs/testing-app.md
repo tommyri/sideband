@@ -23,8 +23,7 @@ a button once applied; mute/deafen still close transmission.
 
 Click a voice channel to join. In PTT mode, hold **Hold to talk** with the mouse, or Space/Enter while it is focused, to transmit. Releasing,
 losing focus, muting or deafening closes transmission. Use **Leave** to leave
-voice or **Disconnect** to close the server connection. Ctrl/Cmd+Shift+M/D toggle
-mute/deafen; Ctrl/Cmd+Shift+Up/Down select channels. Interaction settings offer
+voice or **Disconnect** to close the server connection. Ctrl/Cmd+Shift+M toggles mute; Ctrl/Cmd+Shift+Alt+D toggles deafen; Ctrl/Cmd+Shift+Up/Down select channels. Interaction settings offer
 double-click joining. Member menus expose playback and permitted moderation.
 The displayed latency is network RTT, not mouth-to-ear latency.
 
@@ -48,6 +47,37 @@ with a 1-second delay (use headphones), **Test output** plays a cue, and VAD
 auto-calibration listens to 2 seconds of background noise. Tests stop on close
 or **Stop test**, and do not send audio to a server. Device switching speed,
 permission flows and audible quality still need real-machine validation.
+
+## Live diagnostics
+
+Open **Audio settings → Diagnostics**, or press **Ctrl+Shift+D**. The built-in
+deafen shortcut is now **Ctrl/Cmd+Shift+Alt+D** to avoid that conflict. Configured
+global bindings are unchanged. The panel inspects the active call, or the selected
+server when no call is active. Changing server resets history; closing stops
+collection. It does not request microphone or global-input permission.
+
+The panel keeps up to 120 samples over the last 60 seconds, polling about every
+500 ms. Graph gaps denote unavailable or delayed samples. QUIC RTT, cumulative
+path packet loss/sent counts, congestion window, UDP-payload path MTU and application
+datagram ceiling come from the live transport. They are different quantities from
+audio frame loss/PLC/late counts and per-speaker applied jitter delay. Counters reset
+on reconnect or stream reopen. Encoder bitrate is the configured/adapted encoder
+rate, not measured wire throughput. FEC shows the active channel profile's setting.
+
+Actual CPAL device sample rates and backend, software stage timing, ring overruns
+and underruns, selected devices/settings, and the input backend's last ten semantic
+events are shown. CPU figures are last/mean/max processing time per 10 ms frame,
+not total process CPU. Apple system-stage CPU and device rates are unavailable
+when the native API does not expose them. Hardware buffer sizes and migration count
+are explicitly unavailable. Mouth-to-ear latency is unmeasured unless you perform
+the separate calibrated guided test; no transport estimate substitutes for it.
+
+**Preview redacted diagnostics** freezes a report for **Copy diagnostics** or
+**Save log bundle**. It reuses the T-076 versioned schema, bounded recorder,
+redaction and local ZIP export; raw logs, account identities, addresses, arbitrary
+keys and recordings are excluded. Review free text before sharing. Notes and
+measurements never auto-mark an audible test passed. Server operators can use
+`ss-server conn list --data-dir ./data` and the dashboard in `deploy/grafana/`.
 
 ## Build locally
 

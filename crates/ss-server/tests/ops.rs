@@ -151,6 +151,8 @@ async fn run_serves_metrics_and_shuts_down_with_a_client() {
         .unwrap();
     assert!(welcome.request_id == 1, "{welcome:?}");
 
+    check_connections(&path, internal);
+
     let started = Instant::now();
     let status = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
@@ -164,7 +166,6 @@ async fn run_serves_metrics_and_shuts_down_with_a_client() {
         started.elapsed()
     );
     assert!(finished.success(), "{}", logged.join().unwrap());
-    drop(connection);
 }
 
 fn succeed(args: &[&str]) -> String {
@@ -220,4 +221,25 @@ fn http_get(addr: SocketAddr, path: &str) -> String {
     let mut body = String::new();
     let _ = std::io::Read::read_to_string(&mut stream, &mut body);
     body
+}
+
+fn check_connections(path: &str, internal: SocketAddr) {
+    let inspected = Command::new(env!("CARGO_BIN_EXE_ss-server"))
+        .args(["conn", "list", "--data-dir", path])
+        .env("SS_INTERNAL_BIND", internal.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0]["pathMtuBytes"].as_u64().unwrap() >= 1200);
+    assert!(rows[0]["congestionWindowBytes"].as_u64().unwrap() > 0);
+    let text = String::from_utf8(inspected.stdout).unwrap();
+    for secret in [PASSWORD, "ada", "ops", "127.0.0.1"] {
+        assert!(!text.contains(secret));
+    }
 }

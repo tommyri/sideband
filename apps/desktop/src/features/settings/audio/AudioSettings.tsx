@@ -1,3 +1,4 @@
+import { openDiagnostics } from '../../diagnostics/model'
 import { ShortcutSettings } from '../shortcuts/ShortcutSettings'
 import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
@@ -471,9 +472,7 @@ export function AudioSettings({ close }: { close: () => void }) {
                 boundaries. Frame duration follows the channel profile; a 10 ms override awaits the
                 T-018 release decision.
               </p>
-              <button disabled title="The diagnostics panel will be added in T-063">
-                Diagnostics · coming soon
-              </button>
+              <button onClick={openDiagnostics}>Diagnostics · Ctrl+Shift+D</button>
             </fieldset>
             <footer>
               <button disabled={busy} onClick={close}>

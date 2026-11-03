@@ -84,6 +84,15 @@ impl LinuxListener {
 }
 
 impl Listener for LinuxListener {
+    fn backend_name(&self) -> &'static str {
+        match self.selected {
+            Selected::X11 => "X11 XI2",
+            Selected::Evdev => "Linux evdev",
+            Selected::Portal => "Wayland GlobalShortcuts portal",
+            Selected::Unavailable => "Unavailable",
+        }
+    }
+
     fn capabilities(&self) -> Caps {
         match self.selected {
             Selected::X11 => passive_caps(),

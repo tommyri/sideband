@@ -63,6 +63,10 @@ pub(super) struct WorkerStats {
     pub underruns: u64,
     pub overruns: u64,
     pub processing_latency: Duration,
+    pub processing_monitor: Option<ss_audio::processing::Monitor>,
+    pub input_rate: Option<u32>,
+    pub output_rate: Option<u32>,
+    pub backend: Option<&'static str>,
     pub processing_over_budget: u64,
 }
 
@@ -207,6 +211,14 @@ struct Devices {
 }
 
 impl Devices {
+    fn backend(&self) -> Option<&'static str> {
+        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+        if self.voice_processing.is_some() {
+            return Some("Apple VoiceProcessingIO");
+        }
+        (self.capture.is_some() || self.playback.is_some()).then_some("CPAL")
+    }
+
     fn capture_consumer_mut(&mut self) -> Option<&mut Consumer<f32>> {
         #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if let Some((_, consumer, _)) = &mut self.voice_processing {
@@ -793,6 +805,16 @@ impl Runtime {
             underruns,
             overruns,
             processing_latency: self.chain.monitor().latency(),
+            processing_monitor: Some(self.chain.monitor()),
+            input_rate: self
+                .devices
+                .as_ref()
+                .and_then(|d| d.capture.as_ref().map(|(s, _)| s.device_rate())),
+            output_rate: self
+                .devices
+                .as_ref()
+                .and_then(|d| d.playback.as_ref().map(|(s, _)| s.device_rate())),
+            backend: self.devices.as_ref().and_then(Devices::backend),
             processing_over_budget: self.chain.monitor().over_budget(),
         };
     }

@@ -24,6 +24,12 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// Selected implementation without device identifiers. Does not start listening.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.listener.backend_name()
+    }
+
     /// Select the listener for this process.
     ///
     /// Windows uses Raw Input on a message-only window. macOS uses a

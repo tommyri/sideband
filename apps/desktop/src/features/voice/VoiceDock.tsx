@@ -83,7 +83,11 @@ export function VoiceDock() {
         return
       const state = useVoiceStore.getState()
       if (state.busy) return
-      if (state.active && ['m', 'd'].includes(event.key.toLowerCase())) {
+      if (
+        state.active &&
+        (event.key.toLowerCase() === 'm' ||
+          ((event.code === 'KeyD' || event.key.toLowerCase() === 'd') && event.altKey))
+      ) {
         event.preventDefault()
         void runVoice(() =>
           voiceControl(

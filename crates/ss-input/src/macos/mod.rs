@@ -63,6 +63,10 @@ impl MacListener {
     }
 }
 impl Listener for MacListener {
+    fn backend_name(&self) -> &'static str {
+        "macOS CGEventTap"
+    }
+
     fn capabilities(&self) -> Caps {
         let mut caps = Caps { mouse_buttons: true, passthrough: true,
             needs_permission: (!native::permitted()).then_some(Permission::InputMonitoring),

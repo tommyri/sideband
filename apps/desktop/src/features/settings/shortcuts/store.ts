@@ -13,6 +13,7 @@ export interface Preferences {
   allowEvdev: boolean
 }
 export interface Snapshot {
+  backend?: string
   preferences: Preferences
   labels: string[]
   running: boolean

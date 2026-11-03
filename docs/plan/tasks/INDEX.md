@@ -9,6 +9,8 @@ T-075 packaging, essential T-043 onboarding, T-044 voice UI, T-051 audio setting
 and T-058 global shortcuts are implemented; platform acceptance remains open.
 T-076 guided testing and evidence export are implemented. Next: collect real
 cross-OS acceptance reports with the installed app; T-018 remains the release gate.
+T-063 live diagnostics and operator inspection are implemented; real-call and
+dashboard deployment acceptance remain open.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -91,7 +93,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-060](T-060-reconnect-resilience.md) | Session resume, migration, restart handling | M | T-040, T-041, T-024, T-025 | done |
 | [T-061](T-061-security-review-fuzzing.md) | Security review, fuzzing, rate limits | M | T-021, T-022, T-026, T-027, T-029, T-030, T-031 | done |
 | [T-062](T-062-load-soak-test.md) | Load and soak testing | S | T-017, T-025, T-026 | done |
-| [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032, T-076 | todo |
+| [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032, T-076 | in-progress |
 | [T-064](T-064-documentation.md) | Documentation | S | T-034, T-057 | todo |
 | [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | todo |
 | [T-066](T-066-https-rest-listener.md) | Serve the public REST listener over TLS | M | T-033, T-061 | done |

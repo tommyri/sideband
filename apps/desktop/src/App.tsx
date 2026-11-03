@@ -12,6 +12,7 @@ import { isTauri } from './lib/tauri'
 import { ServerHome } from './features/onboarding/ServerHome'
 import { ChannelWorkspace } from './features/channels/ChannelWorkspace'
 import { ShortcutGuard } from './features/settings/shortcuts/ShortcutGuard'
+import { DiagnosticsPanel } from './features/diagnostics/DiagnosticsPanel'
 import { TestingPanel } from './features/testing/TestingPanel'
 import { VoiceDock } from './features/voice/VoiceDock'
 
@@ -59,6 +60,7 @@ export default function App() {
         <>
           <ShortcutGuard />
           <TestingPanel />
+          <DiagnosticsPanel />
           <VoiceDock />
         </>
       )}

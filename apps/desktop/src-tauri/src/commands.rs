@@ -103,7 +103,7 @@ fn event(event: ClientEvent) -> ClientEventPayload {
     }
 }
 
-fn voice_stats(stats: VoiceStats) -> VoiceStatsPayload {
+pub(crate) fn voice_stats(stats: VoiceStats) -> VoiceStatsPayload {
     VoiceStatsPayload {
         speakers: stats
             .speakers

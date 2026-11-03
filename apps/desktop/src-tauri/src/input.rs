@@ -54,6 +54,7 @@ impl Preferences {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    backend: String,
     preferences: Preferences,
     labels: Vec<String>,
     running: bool,
@@ -213,6 +214,7 @@ fn snapshot(app: &tauri::AppHandle, rt: &mut Runtime) -> Snapshot {
     let backend = rt.backend.clone().unwrap_or_else(|| detect(app, rt));
     let caps = backend.capabilities();
     Snapshot {
+        backend: backend.name().to_owned(),
         preferences: rt.preferences.clone(),
         labels: [
             rt.preferences.ptt,

@@ -73,6 +73,10 @@ impl WinListener {
 }
 
 impl Listener for WinListener {
+    fn backend_name(&self) -> &'static str {
+        "Windows Raw Input"
+    }
+
     fn capabilities(&self) -> Caps {
         let mut caps = Caps {
             mouse_buttons: true,

@@ -500,6 +500,9 @@ mod tests {
             .unwrap();
         let own =
             Id::try_from(client.state().read().own_user.as_ref().unwrap().id.as_ref()).unwrap();
+        let transport = client.diagnostics().expect("live transport diagnostics");
+        assert!(transport.path_mtu_bytes >= 1200);
+        assert!(transport.congestion_window_bytes > 0);
         state.clients.lock().await.insert(client).unwrap();
         let config = || AudioConfig {
             source: AudioSource::Test,
@@ -522,6 +525,13 @@ mod tests {
             })
             .await
             .unwrap();
+            let details = active.session.diagnostics().expect("worker diagnostics");
+            assert!(
+                details["backend"].is_null(),
+                "synthetic input must not claim hardware"
+            );
+            assert!(details["inputRateHz"].is_null());
+            assert!(details["encoderFec"].is_boolean());
             active.release_ptt();
             tokio::time::timeout(Duration::from_millis(100), async {
                 while !active.session.speaking_users().is_empty() {
