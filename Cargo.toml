@@ -81,7 +81,7 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 metrics = "0.24"
 # The crate's HTTP listener and push gateway pull aws-lc. We render the
 # text ourselves, so those features stay off and the static build stays on ring.
-metrics-exporter-prometheus = { version = "0.17", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 moq-net = "=0.3.18"
 moq-video = { version = "=0.1.18", default-features = false }
 # Content sniffing for uploads. The client-supplied type is ignored.
