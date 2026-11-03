@@ -416,13 +416,19 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         "http/internal.rs",
         "get",
         "/healthz",
-        open("internal loopback listener only"),
+        open("internal operator listener only; loopback by default"),
     ),
     (
         "http/internal.rs",
         "get",
         "/metrics",
-        open("internal loopback listener only"),
+        open("internal operator listener only; loopback by default"),
+    ),
+    (
+        "http/internal.rs",
+        "get",
+        "/connections",
+        open("redacted diagnostics on the internal operator listener; loopback by default"),
     ),
 ];
 
