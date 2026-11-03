@@ -17,12 +17,16 @@ Before the first push:
    branches and tool refs are not part of the initial publication.
 4. Set `main` as the default branch. Enable private vulnerability reporting,
    secret scanning and push protection where available. Configure branch rules
-   to require review and passing checks once the initial workflows have run.
-5. Verify the hosted Windows, macOS and Linux jobs. Locally passing checks do
+   to require review. Automatic CI is currently disabled to control Actions
+   usage; require status checks only when automatic runs are enabled again.
+5. Manually dispatch workflows when ready to spend Actions minutes, then verify
+   the hosted Windows, macOS and Linux jobs. Locally passing checks do
    not establish that every hosted runner or installed package works.
 
-The server release workflow publishes on `server-v*` tags. Push release tags
-only when intentionally publishing binaries. Desktop test packages remain
+All workflows are manual-only (`workflow_dispatch`); pushes, pull requests and
+schedules do not start them. The server release workflow publishes only when
+manually dispatched against a `server-v*` tag. Select a release tag only when
+intentionally publishing binaries. Desktop test packages remain
 unsigned/ad-hoc signed; signing, updating and complete binary dependency notices
 still require release work. See [third-party notices](../THIRD_PARTY_NOTICES.md).
 

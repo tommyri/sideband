@@ -65,7 +65,9 @@ Native prerequisites:
   has not been established.
 
 The standard-library Python repository checks run with
-`python3 scripts/check-public-repo.py`. CI also scans Git history with Gitleaks.
+`python3 scripts/check-public-repo.py`. The public repository workflow also scans
+Git history with Gitleaks. All GitHub Actions workflows are manual-only for now
+to control usage; pushes and pull requests do not automatically run CI.
 
 ## Run a server
 

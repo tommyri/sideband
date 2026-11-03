@@ -1,10 +1,8 @@
 name: Fuzz
 
-# Nightly: every cargo-fuzz target for ten minutes. A crash, timeout, or leak
+# Manual: every cargo-fuzz target for ten minutes. A crash, timeout, or leak
 # fails the job and uploads the reproducer. Corpora persist in the cache.
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
