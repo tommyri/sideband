@@ -1641,3 +1641,50 @@ textarea:focus-visible {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.testing-launch {
+  position: fixed;
+  right: 20px;
+  bottom: 92px;
+  z-index: 20;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-raised);
+}
+.testing-panel {
+  width: min(820px, calc(100vw - 32px));
+}
+.testing-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.testing-panel fieldset {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.testing-panel label {
+  display: block;
+  margin: 10px 0;
+}
+.testing-panel textarea {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+}
+.testing-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+}
+.testing-panel input:not([type='checkbox']),
+.testing-panel select {
+  max-width: 100%;
+}

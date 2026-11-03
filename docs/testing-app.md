@@ -4,8 +4,8 @@ These are internal test builds, not stable releases. T-018's voice comparison
 is still a release gate. Packages now include server onboarding (T-043): add
 an address, compare and trust its certificate fingerprint, register with an
 invite or log in, and reconnect with a saved session. Connected servers show live channels, members and voice controls (T-044).
-Audio settings (T-051) and global shortcuts (T-058) are available; guided reports
-(T-076) follow.
+Audio settings (T-051), global shortcuts (T-058), and guided reports (T-076)
+are available.
 The browser-only design preview still contains sample data.
 
 Sessions and server order survive restarting the app. Select a saved server,
@@ -133,11 +133,67 @@ independently confirmed certificate fingerprint, and account/invite details.
 Keep credentials out of screenshots and reports. A second installed client
 and an audible participant are necessary for actual call acceptance.
 
-Until T-076 lands, report the build identity, OS, devices, reproduction steps,
-expected/actual behavior and whether the result was observed or measured.
-Do not label network RTT or device estimates as measured mouth-to-ear latency.
-Guided test runs and sanitized evidence ZIP exports are planned, not yet in
-this package. Recording remains off by default and requires explicit consent.
+Open **Guided tests** from the app, choose a checklist and **Start run**. The
+available checks cover PTT/fullscreen/focus, devices/permission/recovery,
+controlled listening trials and calibrated acoustic measurements. Connect and
+configure audio first. Close the panel to exercise voice controls, system settings
+and other apps; collection continues. Reopen it to enter outcomes and notes,
+then **Finish run → Preview sanitized bundle → Export ZIP to Downloads**.
+The path is shown in the app (`Downloads/SocialSpeak reports`). Share the ZIP
+only when you choose. No network upload is performed.
+
+Each step defaults to **not-run**. Only the tester can mark pass or fail; automatic
+statistics never establish hearing quality, game pass-through or recovery success.
+Record failures and reproduction conditions, including approximate recovery time.
+The initial server is retained as the event source across reconnects. Start a new
+run when testing another server, preset or condition. New runs replace the in-memory
+run; export first. Closing the app loses unexported evidence.
+
+Runs stop after 30 minutes and retain the last 500 events, with dropped-event
+counts, monotonic receipt offsets and UTC start/end timestamps. Event payloads
+are capped at 4096 characters and statistics at 32 speakers with omission counts.
+Webview suspension can delay delivery; timing is diagnostic, not real-time proof.
+Statistics originate in the voice core at 500 ms cadence. RTT is smoothed QUIC
+network round-trip, jitter delay is applied receiver buffering, processing latency
+is a chain estimate, and ring/loss/PLC/over-budget counters are cumulative for the
+current worker/track (they reset on reopen). RMS is linear mixed-output amplitude.
+Local transmit indicators use the native 40 ms speaking observation; they do not
+prove remote audibility. Negotiated device format/buffer sizes are currently
+unavailable and explicitly labelled. Device backend selection is a request, not
+confirmation of the actual opened route. Missing statistics carry a reason.
+
+The ZIP contains `report.json`, the versioned `schema.json`, `diagnostics.log`
+(allowlisted semantic events only), and `notes.txt`. Full T-075 build identity,
+settings at start/end, settings changes, permission/device/connection events,
+configured shortcut actions and human observations are included. Server addresses,
+user IDs, credentials, chat contents and arbitrary keys are never collected.
+Identifying device details are omitted by default. Common credential patterns,
+URLs, email and IPv4 addresses are redacted from text; inspect the preview because
+unlabelled secrets or identifying prose cannot be reliably recognized. Do not
+paste messages, passwords, tokens or invites into notes.
+
+Controlled trials record preset/condition IDs and per-listener quality, effort
+and delay scores (1 worst, 5 best). IDs do not apply settings automatically: apply
+the desired settings before each run. Use one report per listener/condition with
+consistent passage, room/noise, devices and volume. T-018 still requires at least
+three people and its independent group go/no-go.
+
+The app does not record audio. Optional externally recorded WAV evidence (up to
+10 MiB) requires an explicit participant-consent checkbox before attachment and
+a separate **Include the consented WAV in this export** choice, off by default.
+Revoking consent clears the attachment. Audio and WAV metadata can identify people
+and are not redacted; inspect the original before including it. The native exporter
+also enforces both choices. Export size is limited to 16 MiB.
+
+For acoustic latency, use a two-channel recorder sharing one clock: channel A at
+the sending microphone, channel B at the receiving output. First capture the same
+impulse on both channels to calibrate channel skew. Record routing, distances,
+sample rate and calibration. Send several impulses through the call, preserve
+failures, and locate departure/arrival sample indices in the original waveform.
+Enter rate, indices, skew and an evidence reference per trial; the report calculates
+`(arrival - departure - skew) / sampleRate × 1000` ms and labels it human supplied,
+not independently verified. Without complete calibrated evidence, mouth-to-ear
+latency stays unmeasured. Do not substitute network RTT or device estimates.
 
 ## Acceptance record
 

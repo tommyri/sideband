@@ -296,6 +296,7 @@ async fn drive(app: tauri::AppHandle, mut rx: tokio::sync::mpsc::Receiver<(u64, 
                     let allowed=!manager.inhibited.load(Ordering::Acquire)&&rt.generation==generation&&rt.handle.is_some()&&!rt.password&&!rt.capturing;
                     if allowed {record(&mut rt,event.to_string());} allowed};
                 if !allowed {continue;}
+                let _ = app.emit("ss://test-shortcut", event.to_string());
                 match event {
                     PttEvent::Pressed|PttEvent::Released=>{
                         let state=app.state::<AppState>();

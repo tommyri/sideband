@@ -1,6 +1,6 @@
 # T-076 — Guided voice tests and local evidence bundles
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-075, T-043, T-044, T-051, T-058
@@ -42,3 +42,33 @@ person reproduce or diagnose a result without guessing the build or settings.
   unresolved failures. T-018 retains its independent group go/no-go.
 
 ## Notes from implementation
+
+
+Implemented (2026-11-03): guided PTT/focus, device recovery, controlled listening
+and acoustic-measurement checklists; version-1 JSON schema; bounded local semantic
+recorder; human outcomes/notes/scores; full build identity; start/end settings,
+permissions and unavailable-field reasons; preview with default device omission
+and redaction; local ZIP export. The installed app needs no terminal to make a
+report. T-063 can reuse `features/testing/report.ts`, the schema and native ZIP
+export command.
+
+Recording is an explicitly consented external WAV attachment, not an in-app
+microphone recorder. Attachment and export are separate choices; native validation
+enforces both. No recordings or reports are uploaded automatically. Actual device
+format/buffer sizes are not exposed by the current audio API and are reported as
+unavailable; backend selection is labelled requested. Webview receipt timestamps
+and 40 ms transmit indicators are not acoustic or hardware-precision measurements.
+
+Validation: frontend tests cover schema version/outcomes, ordering/retention,
+missing measurements, seeded secret redaction, event allowlisting, acoustic
+calibration and the finish/preview/export UI. Native tests check ZIP CRC/layout,
+path restrictions, future schema rejection and recording consent/export gates.
+Packaged macOS UI smoke created a ZIP in Downloads; Python independently verified
+its CRCs, expected files, full build identity, omitted device details, unmeasured
+acoustic latency and not-run outcomes. No microphone/Input Monitoring permission
+was granted and no hearing/game acceptance was inferred from this smoke test.
+
+Remaining acceptance: collect real Windows, macOS and Linux reports with a second
+participant, including fullscreen/focus and device/sleep/reconnect failures. Keep
+this task in-progress until those reports are collected; T-011/T-012/T-019 and
+T-048/T-049/T-050/T-058 retain their own acceptance, and T-018 its group release gate.

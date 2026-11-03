@@ -5,6 +5,7 @@ mod input;
 mod onboarding;
 mod persistence;
 mod state;
+mod testing;
 mod types;
 mod voice;
 mod voice_view;
@@ -28,6 +29,8 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            testing::test_build_identity,
+            testing::export_test_report,
             commands::connect,
             commands::approve_fingerprint,
             commands::disconnect,

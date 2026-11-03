@@ -7,7 +7,8 @@ the `Status:` line in each task file in sync. Sizes: S / M / L (see
 Current priority: [installable testing app](../05-testing-app.md).
 T-075 packaging, essential T-043 onboarding, T-044 voice UI, T-051 audio settings
 and T-058 global shortcuts are implemented; platform acceptance remains open.
-Next: T-076 guided testing and evidence.
+T-076 guided testing and evidence export are implemented. Next: collect real
+cross-OS acceptance reports with the installed app; T-018 remains the release gate.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -81,7 +82,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | in-progress |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
 | [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | in-progress |
-| [T-076](T-076-guided-voice-testing.md) | Guided voice tests and local evidence bundles | M | T-075, T-043, T-044, T-051, T-058 | todo |
+| [T-076](T-076-guided-voice-testing.md) | Guided voice tests and local evidence bundles | M | T-075, T-043, T-044, T-051, T-058 | in-progress |
 
 ## Phase 4 — Hardening
 

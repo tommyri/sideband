@@ -22,7 +22,7 @@ pub(crate) fn about() -> AboutMetadata<'static> {
     )))
     .expect("build.rs generated valid build identity");
     let details = format!(
-        "Channel: {}\nCommit: {}\nSource: {} ({})\nTarget: {}\nProfile: {}\nReport schema: {}\n\nTesting scaffold; voice UI and guided tests are still in development.",
+        "Channel: {}\nCommit: {}\nSource: {} ({})\nTarget: {}\nProfile: {}\nReport schema: {}\n\nTesting build with voice UI and guided evidence export. Cross-platform acceptance remains open.",
         build.channel,
         build.commit,
         if build.dirty {

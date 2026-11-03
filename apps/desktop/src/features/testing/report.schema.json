@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://socialspeak.local/schemas/voice-report-v1.json",
+  "title": "SocialSpeak voice test report v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "testId",
+    "acceptanceTasks",
+    "startedAt",
+    "endedAt",
+    "build",
+    "context",
+    "finalContext",
+    "events",
+    "droppedEvents",
+    "steps",
+    "notes",
+    "trial",
+    "acoustic",
+    "acousticResult",
+    "recording",
+    "measurementNotes",
+    "privacy"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string"
+    },
+    "testId": {
+      "enum": ["ptt-focus", "device-recovery", "listening-trial", "acoustic-latency"]
+    },
+    "acceptanceTasks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "endedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "channel",
+        "version",
+        "commit",
+        "dirty",
+        "target",
+        "origin",
+        "profile"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        }
+      }
+    },
+    "context": {
+      "type": "object"
+    },
+    "finalContext": {
+      "type": "object"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": ["sequence", "offsetMs", "kind", "data"],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offsetMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string"
+          },
+          "data": {}
+        }
+      }
+    },
+    "droppedEvents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["instruction", "outcome", "observation"],
+        "properties": {
+          "instruction": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": ["pass", "fail", "not-run"]
+          },
+          "observation": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "trial": {
+      "type": "object",
+      "required": ["presetId", "conditionId", "quality", "effort", "delay"],
+      "properties": {
+        "presetId": {
+          "type": "string"
+        },
+        "conditionId": {
+          "type": "string"
+        },
+        "quality": {
+          "enum": [null, 1, 2, 3, 4, 5]
+        },
+        "effort": {
+          "enum": [null, 1, 2, 3, 4, 5]
+        },
+        "delay": {
+          "enum": [null, 1, 2, 3, 4, 5]
+        }
+      }
+    },
+    "acoustic": {
+      "type": "object",
+      "required": [
+        "sampleRateHz",
+        "departureSample",
+        "arrivalSample",
+        "skewSamples",
+        "calibration",
+        "evidence"
+      ],
+      "properties": {
+        "sampleRateHz": {
+          "type": ["number", "null"]
+        },
+        "departureSample": {
+          "type": ["number", "null"]
+        },
+        "arrivalSample": {
+          "type": ["number", "null"]
+        },
+        "skewSamples": {
+          "type": ["number", "null"]
+        },
+        "calibration": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    },
+    "acousticResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["value", "reason"],
+          "properties": {
+            "value": {
+              "type": "null"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["value", "unit", "origin"],
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "unit": {
+              "const": "ms"
+            },
+            "origin": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "recording": {
+      "type": "object",
+      "required": ["capturedByApp", "included"],
+      "properties": {
+        "capturedByApp": {
+          "const": false
+        },
+        "included": {
+          "type": "boolean"
+        },
+        "participantConsent": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "provenance": {
+          "type": "string"
+        }
+      }
+    },
+    "measurementNotes": {
+      "type": "object"
+    },
+    "privacy": {
+      "type": "object"
+    }
+  }
+}

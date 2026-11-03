@@ -1,3 +1,4 @@
+import { observe, record } from '../features/testing/report'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { AppEvent } from './bindings'
 import { useAppStore } from '../store/app-store'
@@ -13,6 +14,7 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
     subscription = isTauri()
       ? Promise.all([
           listen<AppEvent>('ss://event', ({ payload }) => {
+            observe(payload, useVoiceStore.getState().active?.serverId)
             useAppStore.getState().receiveEvent(payload)
             if (payload.event.kind === 'voiceStats') {
               const stats = payload.event.stats
@@ -54,7 +56,17 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
                 .catch(() => undefined)
             }
           }),
+          listen<string>('ss://test-shortcut', ({ payload }) =>
+            record('configured-shortcut', { action: payload }),
+          ),
           listen<SpeakingView>('ss://speaking', ({ payload }) => {
+            const voice = useVoiceStore.getState()
+            const own = voice.views[payload.serverId]?.ownUserId
+            if (voice.active?.serverId === payload.serverId && own) {
+              const before = voice.speaking[payload.serverId]?.includes(own) ?? false
+              const after = payload.userIds.includes(own)
+              if (before !== after) record('local-transmit-indicator', { active: after })
+            }
             useVoiceStore.setState((s) => ({
               speaking: { ...s.speaking, [payload.serverId]: payload.userIds },
             }))
