@@ -3,7 +3,8 @@
 `socialspeak-shell-concept.png` is the reference composition for the scaffold.
 
 - Graphite surfaces (`#0d1116` through `#1b222b`) with hairline separators.
-- Coral (`#ff5b55`) is reserved for identity, selection, and primary actions.
+- The Sideband offset-bands mark is teal (`#00b79c`); app icons use warm white
+  on charcoal. Coral (`#ff5b55`) remains the UI selection/action accent.
 - Compact system type, 14px base, with restrained 18px section headings.
 - Desktop layout: 72px server rail, 248px channels, flexible conversation,
   208px members, and an optional 340px debug drawer.

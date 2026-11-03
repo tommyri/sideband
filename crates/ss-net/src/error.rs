@@ -2,7 +2,7 @@
 
 use crate::tls::Fingerprint;
 
-/// Failure to configure or establish a SocialSpeak connection.
+/// Failure to configure or establish a Sideband connection.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {

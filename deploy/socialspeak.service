@@ -1,5 +1,5 @@
 [Unit]
-Description=SocialSpeak server
+Description=Sideband server
 After=network-online.target
 Wants=network-online.target
 

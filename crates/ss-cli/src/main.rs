@@ -20,7 +20,7 @@ use ss_net::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "Headless SocialSpeak client")]
+#[command(version, about = "Headless Sideband client")]
 struct Args {
     #[command(subcommand)]
     command: Command,

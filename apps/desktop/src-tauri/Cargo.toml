@@ -1,6 +1,6 @@
 [package]
 name = "socialspeak-desktop"
-description = "SocialSpeak desktop shell"
+description = "Sideband desktop shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

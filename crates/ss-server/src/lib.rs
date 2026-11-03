@@ -137,7 +137,7 @@ impl Server {
             msg: Some(server_envelope::Msg::Welcome(v1::Welcome {
                 user: Some(user),
                 server_info: Some(v1::ServerInfo {
-                    name: "SocialSpeak voice spike".into(),
+                    name: "Sideband voice spike".into(),
                     version: env!("CARGO_PKG_VERSION").into(),
                     features: vec!["unauthenticated-voice-spike".into()],
                 }),

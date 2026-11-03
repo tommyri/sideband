@@ -1,6 +1,6 @@
 [package]
 name = "ss-server"
-description = "SocialSpeak server. One process, one SQLite database."
+description = "Sideband server. One process, one SQLite database."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

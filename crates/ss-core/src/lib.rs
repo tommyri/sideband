@@ -1,4 +1,4 @@
-//! Shared domain primitives for SocialSpeak.
+//! Shared domain primitives for Sideband.
 //!
 //! Ids, permissions, channel and user kinds, voice profiles, and timestamps
 //! live here. Parsing failures are [`CoreError`]. This crate does not perform

@@ -1,19 +1,23 @@
 # Sideband naming and logo exploration
 
-Exploratory concepts, not an adopted product identity. The app and package names
-remain SocialSpeak. Generated with the built-in image generation tool.
+Offset bands (concept 01) was selected for the Sideband working identity on
+2026-11-03. The user chose to proceed with this name and defer domain decisions.
+These original exploration boards were generated with the built-in image
+generation tool; the production vector master is in `../../public/brand/`.
+Internal package names and the existing application identifier remain stable.
 
 ## Name check — 2026-11-03
 
-Recommendation: reconsider Sideband before public branding. There is direct
-category overlap with an existing messaging and telephony app.
+The initial research found direct category overlap with an existing messaging
+and telephony app. This finding remains recorded; it does not change the selected
+working name. No domain work is planned.
 
-| Check | Finding | Source |
-| --- | --- | --- |
-| Messaging/voice software | Existing Sideband LXMF messaging and LXST telephony client on multiple desktop/mobile platforms | [markqvist/Sideband](https://github.com/markqvist/Sideband) |
-| Other social software / .io | Sideband One offers sharing with friends and communities; sideband.io is in use | [Sideband](https://sideband.io/) |
-| .com | Listed for resale, not ordinary unregistered-domain availability; no purchase made | [GoDaddy listing](https://forsale.godaddy.com/forsale/sideband.com) |
-| .app | Could not verify registration availability; an inaccessible website does not imply an available domain | — |
+| Check                       | Finding                                                                                                | Source                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Messaging/voice software    | Existing Sideband LXMF messaging and LXST telephony client on multiple desktop/mobile platforms        | [markqvist/Sideband](https://github.com/markqvist/Sideband)         |
+| Other social software / .io | Sideband One offers sharing with friends and communities; sideband.io is in use                        | [Sideband](https://sideband.io/)                                    |
+| .com                        | Listed for resale, not ordinary unregistered-domain availability; no purchase made                     | [GoDaddy listing](https://forsale.godaddy.com/forsale/sideband.com) |
+| .app                        | Could not verify registration availability; an inaccessible website does not imply an available domain | —                                                                   |
 
 This is an existing-use and domain-web check, not trademark clearance. Trademark
 registers and account-specific repository/organization handles were not cleared.

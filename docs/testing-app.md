@@ -1,4 +1,4 @@
-# SocialSpeak testing builds
+# Sideband testing builds
 
 These are internal test builds, not stable releases. T-018's voice comparison
 is still a release gate. Packages now include server onboarding (T-043): add
@@ -135,8 +135,8 @@ Only install artifacts from a build/source you trust.
 
 | OS | Installation | Permissions and caveats |
 |---|---|---|
-| Windows x64 | Run the NSIS setup .exe; launch SocialSpeak from Start. | Unsigned test installers may trigger SmartScreen. Follow your machine's approved installation policy. WebView2 is required; the installer may need network access to install it. |
-| macOS 13+, Apple Silicon | Open the DMG and copy SocialSpeak to Applications, or expand the app ZIP and move the app there. Quit an older copy first. | Test builds are ad-hoc signed, not notarized. Gatekeeper may require an explicit approval through System Settings → Privacy & Security. Do not disable Gatekeeper or reset TCC. |
+| Windows x64 | Run the NSIS setup .exe; launch Sideband from Start. | Unsigned test installers may trigger SmartScreen. Follow your machine's approved installation policy. WebView2 is required; the installer may need network access to install it. |
+| macOS 13+, Apple Silicon | Open the DMG and copy Sideband to Applications, or expand the app ZIP and move the app there. Quit an older copy first. | Test builds are ad-hoc signed, not notarized. Gatekeeper may require an explicit approval through System Settings → Privacy & Security. Do not disable Gatekeeper or reset TCC. |
 | Linux x64, Ubuntu 24.04 or compatible | Prefer `sudo apt install ./<package>.deb`. Alternatively mark the AppImage executable and run it. | Test Linux builds have an Ubuntu 24.04 runtime baseline, not the project's eventual glibc 2.31 distribution target. PipeWire, ALSA, WebKitGTK 4.1 and tray libraries must be available. AppImage portability and FUSE/runtime requirements still need laptop validation. |
 
 The application identifier remains com.socialspeak.desktop across builds.
@@ -169,7 +169,7 @@ controlled listening trials and calibrated acoustic measurements. Connect and
 configure audio first. Close the panel to exercise voice controls, system settings
 and other apps; collection continues. Reopen it to enter outcomes and notes,
 then **Finish run → Preview sanitized bundle → Export ZIP to Downloads**.
-The path is shown in the app (`Downloads/SocialSpeak reports`). Share the ZIP
+The path is shown in the app (`Downloads/Sideband reports`). Share the ZIP
 only when you choose. No network upload is performed.
 
 Each step defaults to **not-run**. Only the tester can mark pass or fail; automatic

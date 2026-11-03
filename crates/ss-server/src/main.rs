@@ -8,7 +8,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 #[derive(Parser)]
 #[command(
     version,
-    about = "SocialSpeak server. The default listener is the unauthenticated voice spike.",
+    about = "Sideband server. The default listener is the unauthenticated voice spike.",
     args_conflicts_with_subcommands = true
 )]
 struct Args {

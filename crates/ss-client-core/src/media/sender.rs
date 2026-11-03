@@ -1,4 +1,4 @@
-//! Capture/encode integration with SocialSpeak video groups.
+//! Capture/encode integration with Sideband video groups.
 
 use tokio::sync::broadcast;
 

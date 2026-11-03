@@ -337,7 +337,7 @@ async fn establish(
             .control()
             .request(Msg::Hello(v1::Hello {
                 protocol_version: ss_proto::PROTOCOL_VERSION,
-                client_name: "SocialSpeak".into(),
+                client_name: "Sideband".into(),
                 client_version: env!("CARGO_PKG_VERSION").into(),
                 os: std::env::consts::OS.into(),
                 auth: Some(auth),

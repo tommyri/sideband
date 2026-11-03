@@ -36,7 +36,7 @@ pub(crate) fn about() -> AboutMetadata<'static> {
         build.schema_version,
     );
     AboutMetadata {
-        name: Some("SocialSpeak — test build".to_owned()),
+        name: Some("Sideband — test build".to_owned()),
         version: Some(build.version),
         short_version: Some(build.channel),
         comments: Some(details.clone()),

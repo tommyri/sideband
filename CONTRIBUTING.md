@@ -1,6 +1,6 @@
 # Contributing
 
-SocialSpeak is under active development. Start with the [task index](docs/plan/tasks/INDEX.md)
+Sideband is under active development. Start with the [task index](docs/plan/tasks/INDEX.md)
 and discuss substantial work in an issue before opening a large pull request.
 An implemented feature can still have outstanding manual acceptance; preserve
 that distinction in documentation and reports.

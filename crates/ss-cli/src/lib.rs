@@ -1,4 +1,4 @@
-//! Headless SocialSpeak client.
+//! Headless Sideband client.
 //!
 //! `ss-cli connect` places a voice call against the spike server, measures
 //! mouth-to-ear latency, and can impair or multiply the send path.

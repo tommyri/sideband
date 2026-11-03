@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 
-/// A SocialSpeak identifier.
+/// A Sideband identifier.
 ///
 /// Text form is 26-character Crockford base32. [`Id::as_bytes`] is the
 /// 16-byte big-endian form stored in SQLite. Ordering is ULID byte order,

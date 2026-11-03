@@ -66,13 +66,13 @@ jobs:
           if ! rustc -vV | grep -qx 'host: ${{ matrix.target }}'; then
             bundle_root="target/${{ matrix.target }}"
           fi
-          app_bundle="$bundle_root/release/bundle/macos/SocialSpeak.app"
+          app_bundle="$bundle_root/release/bundle/macos/Sideband.app"
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
           /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app_bundle/Contents/Info.plist"
           codesign -d --entitlements :- "$app_bundle"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: socialspeak-test-${{ matrix.target }}-${{ github.sha }}
+          name: sideband-test-${{ matrix.target }}-${{ github.sha }}
           path: ${{ steps.packages.outputs.artifact_directory }}
           if-no-files-found: error
           retention-days: 30

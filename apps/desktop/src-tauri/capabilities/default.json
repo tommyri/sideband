@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimum permissions for the SocialSpeak main window",
+  "description": "Minimum permissions for the Sideband main window",
   "windows": ["main"],
   "permissions": [
     "core:default",

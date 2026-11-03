@@ -147,7 +147,7 @@ pub async fn export_test_report(
             .path()
             .download_dir()
             .map_err(error)?
-            .join("SocialSpeak reports");
+            .join("Sideband reports");
         std::fs::create_dir_all(&folder).map_err(error)?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

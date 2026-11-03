@@ -56,7 +56,7 @@ impl Incoming {
 }
 
 impl Endpoint {
-    /// Binds with SocialSpeak ALPN, datagrams, and future video stream capacity.
+    /// Binds with Sideband ALPN, datagrams, and future video stream capacity.
     pub fn bind(addr: SocketAddr, tls: TlsConfig) -> Result<Self, Error> {
         Self::bind_resolver(addr, Arc::new(CertResolver::new(tls)?))
     }

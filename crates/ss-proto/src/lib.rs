@@ -1,10 +1,10 @@
-//! Control-stream schema and framing for SocialSpeak protocol v1.
+//! Control-stream schema and framing for Sideband protocol v1.
 //!
 //! Protobuf messages, the length-prefixed control-stream codec, and protocol
 //! version checks live here. The wire rules are specified in
 //! [docs/plan/02-protocol.md](../../../docs/plan/02-protocol.md).
 //!
-//! This crate depends on `ss-core` only among SocialSpeak crates. It does not
+//! This crate depends on `ss-core` only among Sideband crates. It does not
 //! convert to `ss_core::Id` or `ss_core::Permissions`; those types arrive in
 //! T-003. Until then, check 16-byte ids and permission bitsets with
 //! [`validate_id`] and [`validate_permissions`].

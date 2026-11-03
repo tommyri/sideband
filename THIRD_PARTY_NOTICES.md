@@ -1,6 +1,6 @@
 # Third-party material
 
-SocialSpeak's source license does not replace the licenses of its dependencies
+Sideband's source license does not replace the licenses of its dependencies
 or separately attributed assets.
 
 ## Checked-in speech fixture

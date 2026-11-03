@@ -44,7 +44,7 @@ export function ServerHome() {
       <button className="button secondary" onClick={() => setSettings(true)}>
         Audio settings
       </button>
-      <p className="eyebrow">SocialSpeak · Testing app</p>
+      <p className="eyebrow">Sideband · Testing app</p>
       <h1>{server?.label ?? 'A place for your people'}</h1>
       {!server ? (
         <>

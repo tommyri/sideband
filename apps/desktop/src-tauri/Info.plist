@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>SocialSpeak uses your microphone when you join voice chat or explicitly run an audio test.</string>
+    <string>Sideband uses your microphone when you join voice chat or explicitly run an audio test.</string>
 </dict>
 </plist>

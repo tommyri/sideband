@@ -1,4 +1,4 @@
-//! Headless SocialSpeak client.
+//! Headless Sideband client.
 //!
 //! Connection management, the mirrored server state, and the voice session
 //! live here. The desktop shell and `ss-cli` are both thin wrappers over

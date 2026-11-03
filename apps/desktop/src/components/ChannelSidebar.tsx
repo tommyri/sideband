@@ -12,7 +12,7 @@ export function ChannelSidebar() {
     <aside className="channel-sidebar">
       <button className="server-heading">
         <span>
-          <strong>{server?.label ?? 'SocialSpeak'}</strong>
+          <strong>{server?.label ?? 'Sideband'}</strong>
           <small>{server?.host ?? 'Choose a server'}</small>
         </span>
         <ChevronDown size={17} />

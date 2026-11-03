@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://socialspeak.local/schemas/voice-report-v1.json",
-  "title": "SocialSpeak voice test report v1",
+  "title": "Sideband voice test report v1",
   "type": "object",
   "required": [
     "schemaVersion",

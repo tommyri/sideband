@@ -1,6 +1,6 @@
 # Security reporting
 
-SocialSpeak is a development preview. No version currently carries a production
+Sideband is a development preview. No version currently carries a production
 security-support commitment. See [security design and known gaps](docs/security.md).
 
 Please do not disclose exploitable vulnerabilities, credentials, private server

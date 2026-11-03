@@ -45,7 +45,7 @@ impl RawWindow {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 w!("STATIC"),
-                w!("SocialSpeak raw input"),
+                w!("Sideband raw input"),
                 WINDOW_STYLE::default(),
                 0,
                 0,

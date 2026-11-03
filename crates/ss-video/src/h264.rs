@@ -1,4 +1,4 @@
-//! Minimal Annex-B inspection used to place SocialSpeak group boundaries.
+//! Minimal Annex-B inspection used to place Sideband group boundaries.
 
 /// Whether an Annex-B access unit contains an H.264 IDR slice.
 pub(crate) fn is_idr(bytes: &[u8]) -> bool {

@@ -1,6 +1,6 @@
 # ss-proto
 
-Control-message schema for SocialSpeak protocol v1. `.proto` files live under
+Control-message schema for Sideband protocol v1. `.proto` files live under
 `proto/socialspeak/v1/`. `prost` types are generated at build time, along with
 the length-prefixed framing codec and protocol-version helpers. The schema is
 the public API that bots will use later. Wire rules:

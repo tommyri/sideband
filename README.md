@@ -1,4 +1,9 @@
-# SocialSpeak
+# Sideband
+
+<img src="apps/desktop/public/brand/sideband-mark.svg" alt="Sideband offset-bands logo" width="96" />
+
+Previously developed as SocialSpeak. Sideband is the working product name;
+internal `ss-*` crates, existing data locations and application IDs remain stable.
 
 Self-hosted voice and text chat for a friend group, built with Rust, QUIC,
 SQLite, and a Tauri desktop client for Windows, macOS, and Linux.

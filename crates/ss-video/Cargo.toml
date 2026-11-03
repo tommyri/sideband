@@ -1,6 +1,6 @@
 [package]
 name = "ss-video"
-description = "Cross-platform screen capture and low-latency H.264 encoding for SocialSpeak"
+description = "Cross-platform screen capture and low-latency H.264 encoding for Sideband"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

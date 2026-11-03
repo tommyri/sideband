@@ -1,6 +1,6 @@
 # Security
 
-What a self-hosted SocialSpeak server protects, from whom, and how. Written
+What a self-hosted Sideband server protects, from whom, and how. Written
 for T-061 against the server at the end of phase 2 (T-020 to T-034).
 
 > **Review status:** the acceptance criterion "reviewed by a second person"

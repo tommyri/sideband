@@ -51,7 +51,7 @@ allow = ["MPL-2.0"]
 
 # Tauri's HTML/CSS parsing stack and directory helper use these MPL-2.0
 # crates unmodified. MPL is file-level copyleft; any changes to those crate
-# sources must remain MPL, but it does not apply to SocialSpeak's source.
+# sources must remain MPL, but it does not apply to Sideband's source.
 [[licenses.exceptions]]
 name = "cssparser"
 allow = ["MPL-2.0"]

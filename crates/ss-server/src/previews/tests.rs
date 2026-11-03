@@ -217,7 +217,7 @@ async fn open_graph_is_cached_and_angle_brackets_suppress_it() {
     .await
     .unwrap();
     assert_eq!(title_of(&mut events).await, "Hello");
-    assert!(server.agent.lock().expect("agent").contains("SocialSpeak/"));
+    assert!(server.agent.lock().expect("agent").contains("Sideband/"));
     let second = world.say(&format!("again {url}")).await;
     enrich(
         &world.pool,

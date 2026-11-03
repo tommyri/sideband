@@ -11,7 +11,7 @@ beforeEach(() => {
   vi.mocked(invokeBridge).mockImplementation(async (command) => {
     if (command === 'test_build_identity')
       return { commit: 'full-sha', target: 'test-target', profile: 'debug' }
-    if (command === 'export_test_report') return '/Downloads/SocialSpeak reports/test.zip'
+    if (command === 'export_test_report') return '/Downloads/Sideband reports/test.zip'
     throw new Error('Unavailable test environment')
   })
 })

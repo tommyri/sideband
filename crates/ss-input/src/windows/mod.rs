@@ -87,7 +87,7 @@ impl Listener for WinListener {
         };
         if let Some(application) = native::elevated_foreground() {
             caps.limitations.push(format!(
-                "Push-to-talk cannot see input while {application} runs as administrator unless SocialSpeak also runs as administrator."
+                "Push-to-talk cannot see input while {application} runs as administrator unless Sideband also runs as administrator."
             ));
         }
         caps

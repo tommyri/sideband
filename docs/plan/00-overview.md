@@ -1,4 +1,4 @@
-# SocialSpeak — Implementation Plan
+# Sideband — Implementation Plan
 
 Self-hosted voice + text chat for a friend group. TeamSpeak-class voice quality,
 Discord-class features, one server binary, native desktop clients for Windows,

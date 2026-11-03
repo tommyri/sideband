@@ -110,9 +110,8 @@ export function ShortcutSettings({ close }: { close: () => void }) {
       </header>
       <div className="audio-body">
         <p>
-          Shortcuts work outside SocialSpeak when your platform permits it. Nothing listens until
-          you save a binding or enable system-managed shortcuts. Capture may request input
-          permission.
+          Shortcuts work outside Sideband when your platform permits it. Nothing listens until you
+          save a binding or enable system-managed shortcuts. Capture may request input permission.
         </p>
         {error && (
           <p role="alert" className="form-error">

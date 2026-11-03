@@ -28,7 +28,7 @@ pub struct CodecInfo {
     pub description: Bytes,
 }
 
-/// One H.264 Annex-B access unit ready for SocialSpeak transport.
+/// One H.264 Annex-B access unit ready for Sideband transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedFrame {
     /// Timestamp on the shared 48 kHz media clock.

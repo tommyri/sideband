@@ -172,10 +172,10 @@ impl Auth {
         self.resume(token).await
     }
 
-    /// Display name from settings, or `SocialSpeak` when the row is missing.
+    /// Display name from settings, or `Sideband` when the row is missing.
     pub(crate) async fn server_name(&self) -> String {
         let Ok(mut conn) = self.pool.read().await else {
-            return "SocialSpeak".to_owned();
+            return "Sideband".to_owned();
         };
         settings::get(&mut conn, settings::NAME)
             .await
@@ -183,7 +183,7 @@ impl Auth {
             .flatten()
             .map(|setting| setting.value)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "SocialSpeak".to_owned())
+            .unwrap_or_else(|| "Sideband".to_owned())
     }
 
     fn limit(&self, peer: IpAddr) -> Result<(), Error> {

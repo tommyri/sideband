@@ -20,7 +20,7 @@ pub use packet::OpusPacket;
 
 /// Codec sample rate for all voice profiles.
 pub const SAMPLE_RATE: u32 = 48_000;
-/// Maximum Opus payload in SocialSpeak's media envelope (protocol §4).
+/// Maximum Opus payload in Sideband's media envelope (protocol §4).
 /// Kept here without importing the networking layer.
 pub const MAX_PACKET_BYTES: usize = 1150;
 

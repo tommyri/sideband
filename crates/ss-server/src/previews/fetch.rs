@@ -18,7 +18,7 @@ use super::guard::{host_allowed, is_loopback, is_public};
 
 const MAX_BODY: usize = 1024 * 1024;
 const MAX_REDIRECTS: u8 = 3;
-const USER_AGENT: &str = concat!("SocialSpeak/", env!("CARGO_PKG_VERSION"), " (link-preview)");
+const USER_AGENT: &str = concat!("Sideband/", env!("CARGO_PKG_VERSION"), " (link-preview)");
 
 /// How hostnames become addresses. Tests supply a fixed map.
 pub(crate) enum Lookup {

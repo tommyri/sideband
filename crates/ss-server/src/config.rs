@@ -17,14 +17,14 @@ use figment::{
 use serde::{Deserialize, Serialize};
 
 /// Comments written the first time the data directory is prepared.
-pub const TEMPLATE: &str = r#"# SocialSpeak. SS_SERVER_NAME, SS_BIND_QUIC, SS_BIND_HTTP, SS_PUBLIC_HOST,
+pub const TEMPLATE: &str = r#"# Sideband. SS_SERVER_NAME, SS_BIND_QUIC, SS_BIND_HTTP, SS_PUBLIC_HOST,
 # SS_TLS_MODE, SS_TLS_CERT, SS_TLS_KEY, SS_ACME_EMAIL, SS_ACME_DIRECTORY,
 # SS_TLS_CHALLENGE, SS_HTTP_REDIRECT, SS_UPLOAD_MAX_BYTES, SS_LINK_PREVIEWS,
 # SS_LINK_PREVIEW_ALLOW, SS_LINK_PREVIEW_DENY, SS_INTERNAL_BIND, and SS_LOG_JSON
 # override this file.
 
 [server]
-name = "SocialSpeak"
+name = "Sideband"
 bind_quic = "0.0.0.0:443"
 bind_http = "0.0.0.0:4430"
 public_host = "localhost"
@@ -217,7 +217,7 @@ pub struct LoggingConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            name: "SocialSpeak".to_owned(),
+            name: "Sideband".to_owned(),
             bind_quic: SocketAddr::from(([0, 0, 0, 0], 443)),
             bind_http: SocketAddr::from(([0, 0, 0, 0], 4430)),
             public_host: "localhost".to_owned(),
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn the_template_loads_and_a_typo_is_rejected() {
         let config = parse(TEMPLATE).unwrap();
-        assert_eq!(config.server.name, "SocialSpeak");
+        assert_eq!(config.server.name, "Sideband");
         assert_eq!(config.tls.mode, TlsMode::SelfSigned);
         assert_eq!(config.tls.challenge, AcmeChallenge::Http01);
         assert_eq!(config.tls.acme_directory, ACME_DIRECTORY);

@@ -72,7 +72,7 @@ pub fn run() {
             let app_menu = Menu::default(app.handle())?;
             app_menu.append(&Submenu::with_items(app, "Build", true, &[&about])?)?;
             app.set_menu(app_menu)?;
-            let show = MenuItem::with_id(app, "show", "Show SocialSpeak", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Show Sideband", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let mute =
                 CheckMenuItem::with_id(app, "mute", "Mute microphone", false, false, None::<&str>)?;
@@ -111,5 +111,5 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("failed to run SocialSpeak desktop");
+        .expect("failed to run Sideband desktop");
 }

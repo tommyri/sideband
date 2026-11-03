@@ -197,8 +197,8 @@ export function AudioSettings({ close }: { close: () => void }) {
                 </label>
               ))}
               <p>
-                Microphone permission: {env.microphone}. If denied, enable SocialSpeak in your
-                system’s microphone privacy settings.
+                Microphone permission: {env.microphone}. If denied, enable Sideband in your system’s
+                microphone privacy settings.
               </p>
               <button
                 onClick={() =>

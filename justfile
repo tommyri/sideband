@@ -1,4 +1,4 @@
-# SocialSpeak task runner. `just check` is what CI runs.
+# Sideband task runner. `just check` is what CI runs.
 
 check: fmt-check clippy test
 

@@ -40,7 +40,7 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Json<Value>,
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_default();
-    let name = name.map_or_else(|| "SocialSpeak".to_owned(), |setting| setting.value);
+    let name = name.map_or_else(|| "Sideband".to_owned(), |setting| setting.value);
     let registration = mode.map_or_else(
         || db::REGISTRATION_INVITE.to_owned(),
         |setting| setting.value,

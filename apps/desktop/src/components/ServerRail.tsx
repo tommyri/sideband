@@ -1,4 +1,4 @@
-import { Plus, Radio } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 
 function initials(label: string) {
@@ -18,8 +18,8 @@ export function ServerRail() {
 
   return (
     <nav className="server-rail" aria-label="Servers">
-      <div className="brand-mark" aria-label="SocialSpeak">
-        <Radio size={24} strokeWidth={2.3} />
+      <div className="brand-mark" aria-label="Sideband">
+        <img src="/brand/sideband-mark.svg" width={32} height={32} alt="" />
       </div>
       <div className="rail-rule" />
       <div className="server-buttons">

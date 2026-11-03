@@ -1,4 +1,4 @@
-# SocialSpeak desktop
+# Sideband desktop
 
 The desktop client is a Tauri 2 shell around `ss-client-core`. React owns only
 presentation and local UI state; connections, certificates, session storage,

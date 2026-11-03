@@ -1,4 +1,4 @@
-# Installing SocialSpeak
+# Installing Sideband
 
 Two ways onto a VPS: a static binary with the systemd unit, or
 `docker compose up`. Both listen for QUIC on UDP 443. A fresh machine
@@ -152,11 +152,11 @@ The volume keeps the database.
 
 ## Next to TeamSpeak
 
-TeamSpeak's default voice port is UDP 9987. SocialSpeak's is UDP 443.
+TeamSpeak's default voice port is UDP 9987. Sideband's is UDP 443.
 They can share a host. If 443 is already taken, set `bind_quic` (or
 `SS_BIND_QUIC`) to another UDP port, publish that port, and open it in
 the firewall. Point clients at the port you chose. Do not move
-SocialSpeak onto 9987 just to share a number; the protocols are not
+Sideband onto 9987 just to share a number; the protocols are not
 interchangeable.
 
 ## Smoke test
