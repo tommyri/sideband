@@ -24,3 +24,8 @@ test('identity preserves exact source provenance without including status paths'
   assert.equal(makeIdentity({ ...input, status: '', ci: true }).dirty, false)
   assert.throws(() => makeIdentity({ ...input, commit: 'unknown' }))
 })
+
+test('installer version override is validated without changing the target selection', () => {
+  assert.equal(parseOptions(['--version', '0.0.1'], 'aarch64-apple-darwin', 'darwin').version, '0.0.1')
+  assert.throws(() => parseOptions(['--version'], 'aarch64-apple-darwin', 'darwin'))
+})

@@ -1,7 +1,21 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=SS_BUILD_IDENTITY");
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
     let target = std::env::var("TARGET").expect("Cargo provides TARGET");
-    let version = std::env::var("CARGO_PKG_VERSION").expect("Cargo provides package version");
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("tauri.conf.json").expect("read Tauri config"),
+    )
+    .expect("valid Tauri config");
+    let overrides: serde_json::Value =
+        serde_json::from_str(&std::env::var("TAURI_CONFIG").unwrap_or_else(|_| "{}".to_owned()))
+            .expect("valid Tauri config overrides");
+    // Installer versions can change independently of internal workspace crates.
+    let version = overrides
+        .get("version")
+        .or_else(|| config.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .expect("Tauri config supplies the application version");
     let identity = std::env::var("SS_BUILD_IDENTITY").map_or_else(
         |_| {
             serde_json::json!({

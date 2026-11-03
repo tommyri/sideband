@@ -29,7 +29,9 @@ this is **not end-to-end encryption against the server operator**.
 
 ## Try a testing build
 
-See [testing builds and installation](docs/testing-app.md). The manually dispatched
+Download development installers from [GitHub Releases](https://github.com/tommyri/sideband/releases).
+Use [manual releases](docs/desktop-releases.md) to select operating systems and
+publish or replace a version. See [testing builds and installation](docs/testing-app.md). The manually dispatched
 **Desktop test builds** GitHub Actions workflow produces Windows x64 installers,
 macOS Apple Silicon packages, and Linux x64 deb/AppImage packages. Download an
 artifact only from a build/source you trust. Test builds are unsigned or ad-hoc

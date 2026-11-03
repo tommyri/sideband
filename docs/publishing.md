@@ -23,8 +23,9 @@ Before the first push:
    the hosted Windows, macOS and Linux jobs. Locally passing checks do
    not establish that every hosted runner or installed package works.
 
-All workflows are manual-only (`workflow_dispatch`); pushes, pull requests and
-schedules do not start them. The server release workflow publishes only when
+All workflows start manually (`workflow_dispatch`); the desktop packaging
+workflow can also be called by the manual installer release workflow. See
+[desktop releases](desktop-releases.md) for OS selection and version replacement. Pushes, pull requests and schedules do not start them. The server release workflow publishes only when
 manually dispatched against a `server-v*` tag. Select a release tag only when
 intentionally publishing binaries. Desktop test packages remain
 unsigned/ad-hoc signed; signing, updating and complete binary dependency notices

@@ -1,0 +1,76 @@
+name: Release desktop installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (X.Y.Z); existing selected-platform assets will be replaced
+        required: true
+        default: "0.0.1"
+        type: string
+      windows:
+        description: Windows x64 installer
+        type: boolean
+        default: true
+      macos:
+        description: macOS Apple Silicon DMG and app ZIP
+        type: boolean
+        default: true
+      linux:
+        description: Linux x64 deb and AppImage
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Serialize publication, including reruns of the same version.
+concurrency:
+  group: desktop-releases
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.selection.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Validate version and selected platforms
+        id: selection
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_WINDOWS: ${{ inputs.windows }}
+          RELEASE_MACOS: ${{ inputs.macos }}
+          RELEASE_LINUX: ${{ inputs.linux }}
+        run: node scripts/release-desktop.mjs select
+      - name: Release tooling tests
+        run: node --test scripts/build-test-desktop.test.mjs scripts/release-desktop.test.mjs
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/test-desktop.yml
+    with:
+      matrix: ${{ needs.prepare.outputs.matrix }}
+      version: ${{ inputs.version }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sideband-test-*
+          path: release-input
+      - name: Publish or replace development installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/release-desktop.mjs publish release-input

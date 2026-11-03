@@ -1,5 +1,9 @@
 # Sideband testing builds
 
+For downloadable versioned installers, use the manual
+[desktop release workflow](desktop-releases.md). It supports OS selection and
+replacement of an existing development version.
+
 These are internal test builds, not stable releases. T-018's voice comparison
 is still a release gate. Packages now include server onboarding (T-043): add
 an address, compare and trust its certificate fingerprint, register with an

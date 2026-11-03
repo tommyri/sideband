@@ -18,6 +18,7 @@ export function parseOptions(args, host, os) {
   let target = host
   let bundles
   let debug = false
+  let version
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--target': target = args[++i]; break
@@ -25,8 +26,9 @@ export function parseOptions(args, host, os) {
         if (!args[i + 1]) throw new Error('--bundles requires a format list')
         bundles = args[++i].split(',')
         break
+      case '--version': version = validateVersion(args[++i]); break
       case '--debug': debug = true; break
-      default: throw new Error('Usage: node scripts/build-test-desktop.mjs [--target TRIPLE] [--bundles app,dmg|nsis|deb,appimage] [--debug]')
+      default: throw new Error('Usage: node scripts/build-test-desktop.mjs [--target TRIPLE] [--bundles app,dmg|nsis|deb,appimage] [--debug] [--version X.Y.Z]')
     }
   }
   const platform = platforms[target]
@@ -35,7 +37,15 @@ export function parseOptions(args, host, os) {
   if (!bundles.length || bundles.some((bundle) => !platform.bundles.includes(bundle))) {
     throw new Error('Unsupported bundle format for target')
   }
-  return { target, bundles: [...new Set(bundles)], debug }
+  return { target, bundles: [...new Set(bundles)], debug, ...(version ? { version } : {}) }
+}
+
+export function validateVersion(version) {
+  if (typeof version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) ||
+      version.split('.').some((part) => Number(part) > 65535)) {
+    throw new Error('Version must be X.Y.Z with components between 0 and 65535')
+  }
+  return version
 }
 
 export function makeIdentity({ version, commit, status, target, debug, ci }) {
@@ -77,7 +87,7 @@ async function main() {
   const config = JSON.parse(await readFile(path.join(desktop, 'src-tauri', 'tauri.conf.json'), 'utf8'))
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
   const identity = makeIdentity({
-    version: config.version, commit: git('rev-parse', 'HEAD'),
+    version: options.version ?? config.version, commit: git('rev-parse', 'HEAD'),
     status: git('status', '--porcelain'), target: options.target,
     debug: options.debug, ci: process.env.GITHUB_ACTIONS === 'true',
   })
@@ -89,6 +99,7 @@ async function main() {
     '--bundles', options.bundles.join(',')]
   // Native builds reuse Cargo's normal cache; cross-architecture builds have a target subdirectory.
   if (options.target !== host) args.push('--target', options.target)
+  if (options.version) args.push('--config', JSON.stringify({ version: options.version }))
   if (options.debug) args.push('--debug')
   args.push('--', '--locked')
   const env = { ...process.env, CI: 'true', CARGO_TARGET_DIR: targetDir, SS_BUILD_IDENTITY: JSON.stringify(identity) }
