@@ -340,7 +340,18 @@ impl State {
             }
         }
         if deleted {
-            cache.remove(key);
+            if cache.get(key).is_some()
+                && self.own_user.as_ref().is_some_and(|own| {
+                    message
+                        .author
+                        .as_ref()
+                        .is_some_and(|author| author.id == own.id)
+                })
+            {
+                cache.tombstone(key, message.clone());
+            } else {
+                cache.remove(key);
+            }
         } else {
             cache.upsert(message.clone(), created)?;
         }
@@ -592,6 +603,47 @@ mod tests {
             message.content = content.into();
             assert!(!mentions_user(&message, &wire(own)));
         }
+    }
+
+    #[test]
+    fn deleted_own_messages_keep_only_markers_and_never_resurrect_from_history() {
+        let own = Id::generate();
+        let channel = Id::generate();
+        let key = Id::generate();
+        let mut state = State {
+            own_user: Some(v1::User {
+                id: wire(own),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        state.channels.insert(
+            channel,
+            v1::Channel {
+                id: wire(channel),
+                ..Default::default()
+            },
+        );
+        let message = v1::Message {
+            id: wire(key),
+            channel_id: wire(channel),
+            author: state.own_user.clone(),
+            content: "erase this body".into(),
+            ..Default::default()
+        };
+        state.message(Some(message.clone()), false, true).unwrap();
+        state.message(Some(message.clone()), true, false).unwrap();
+        let cache = state.messages.get_mut(&channel).unwrap();
+        assert_eq!(cache.deleted().len(), 1);
+        assert_eq!(cache.deleted()[0].content, "");
+        cache.load(vec![message.clone()]).unwrap();
+        assert_eq!(cache.ordered().len(), 0);
+        let mut other = message;
+        other.id = wire(Id::generate());
+        other.author.as_mut().unwrap().id = wire(Id::generate());
+        state.message(Some(other.clone()), false, true).unwrap();
+        state.message(Some(other), true, false).unwrap();
+        assert_eq!(state.messages[&channel].deleted().len(), 1);
     }
 
     fn channel(key: Id, position: i32) -> v1::Channel {

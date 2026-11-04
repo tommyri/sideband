@@ -655,6 +655,9 @@ async fn https_history_uses_session_bearer_and_exact_quic_pin() {
     assert_eq!(page[0].id, wire(first));
     assert_eq!(page[0].content, "history one");
     assert_eq!(fresh.state().read().messages[&channel].history_len(), 1);
+    let around = fresh.load_around(channel, second).await.unwrap();
+    assert!(around.iter().any(|m| m.id == wire(second)));
+    assert_eq!(fresh.state().read().messages[&channel].history_len(), 2);
     let (wrong_port, wrong_task) = https(&world, true).await;
     let mut address = world.address.clone();
     address.https_port = wrong_port;
@@ -668,6 +671,10 @@ async fn https_history_uses_session_bearer_and_exact_quic_pin() {
     .unwrap();
     assert!(matches!(
         wrong.load_older(channel, None).await,
+        Err(Error::Http(_))
+    ));
+    assert!(matches!(
+        wrong.load_around(channel, second).await,
         Err(Error::Http(_))
     ));
     task.abort();

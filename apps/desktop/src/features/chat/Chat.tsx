@@ -1,7 +1,12 @@
+import { RichMessage } from './RichMessage'
+import { canonicalId, messageLink } from './rich-model'
+import { draftKey, getDraft, saveDraft, useChatNavigation } from './navigation'
+import { useTyping } from './useTyping'
+import { useVoiceStore } from '../voice/store'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
-import { chatAction, errorText } from './api'
+import { chatAction, errorText, messageContext } from './api'
 import { useChat } from './useChat'
 import { atBottom, canEdit, day, grouped } from './model'
 import { Composer } from './Composer'
@@ -21,6 +26,17 @@ export function Chat({
 }) {
   const { view, error, setError, loading, hasOlder, load, refresh } = useChat(server, channel)
   const messages = view?.messages ?? empty
+  const serverView = useVoiceStore((s) => s.views[server])
+  const own = view?.ownUserId ?? serverView?.ownUserId ?? null
+  const members = useMemo(
+    () => new Map((serverView?.members ?? []).map((m) => [canonicalId(m.id) ?? m.id, m])),
+    [serverView?.members],
+  )
+  const draftId = draftKey(server, own ?? '', channel)
+  const typing = useTyping(server, channel, own)
+  const navigation = useChatNavigation((s) => s.request)
+  const [pendingJump, setPendingJump] = useState<string | null>(null)
+  const [focusedMessage, setFocusedMessage] = useState<string | null>(null)
   const scroll = useRef<HTMLDivElement>(null)
   const initialRead = useRef<string | null | undefined>(undefined)
   const readSent = useRef<string | null>(null)
@@ -32,7 +48,6 @@ export function Chat({
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [notice, setNotice] = useState('')
-  const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const getItemKey = useCallback((index: number) => messages[index]!.id, [messages])
   // This app does not enable React Compiler; keep the mutable virtualizer local.
@@ -64,7 +79,7 @@ export function Chat({
   // Read only what is actually visible in the foreground at the latest edge.
   // A delayed ack must not suppress the next message arriving while it is pending.
   const markRead = useCallback(async () => {
-    const last = messages.at(-1)?.id
+    const last = [...messages].reverse().find((m) => !m.deleted)?.id
     if (
       !connected ||
       !last ||
@@ -99,16 +114,61 @@ export function Chat({
       document.removeEventListener('visibilitychange', markRead)
     }
   }, [markRead])
-  const jump = (id: string) => {
-    const index = messages.findIndex((m) => m.id === id)
-    if (index < 0) {
-      setNotice('That message is not loaded. Load older messages to find it.')
-      return
+  const focusComposer = () =>
+    scroll.current?.closest('.chat')?.querySelector<HTMLTextAreaElement>('textarea')?.focus()
+  const focusMessage = useCallback(
+    (id: string) => {
+      const index = messages.findIndex((m) => m.id === id)
+      if (index < 0) return
+      setFocusedMessage(id)
+      virtual.scrollToIndex(index, { align: 'auto' })
+      let tries = 0
+      const focus = () => {
+        if (!scroll.current) return
+        const row = scroll.current.querySelector<HTMLElement>(`[data-message-id="${id}"]`)
+        if (row) row.focus({ preventScroll: true })
+        else if (++tries < 10) requestAnimationFrame(focus)
+      }
+      requestAnimationFrame(focus)
+    },
+    [messages, virtual],
+  )
+  const jump = useCallback(
+    async (id: string) => {
+      setPendingJump(id)
+      if (messages.some((m) => m.id === id)) return
+      try {
+        await messageContext(server, channel, id)
+        await refresh()
+      } catch (e) {
+        setError(errorText(e))
+        setPendingJump(null)
+      }
+    },
+    [messages, server, channel, refresh, setError],
+  )
+  useEffect(() => {
+    if (navigation?.server === server && navigation.channel === channel)
+      void jump(navigation.message)
+    // A navigation request is consumed once, not again for each cache refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation?.sequence, server, channel])
+  useLayoutEffect(() => {
+    if (pendingJump && byId.has(pendingJump)) {
+      focusMessage(pendingJump)
+      setBottom(false)
+      setPendingJump(null)
+      setNotice('Message loaded. Press Escape to return to the composer.')
     }
-    virtual.scrollToIndex(index, { align: 'center' })
-    setBottom(false)
-    setNotice(`Jumped to message by ${messages[index]!.authorName ?? 'Unknown author'}.`)
-  }
+  }, [pendingJump, byId, focusMessage])
+  const copy = (value: string, label: string) =>
+    void navigator.clipboard.writeText(value).then(
+      () => {
+        setNotice(`${label} copied.`)
+        focusComposer()
+      },
+      (e) => setError(errorText(e)),
+    )
   const remove = async () => {
     if (!deleting || deleteBusy) return
     setDeleteBusy(true)
@@ -116,6 +176,7 @@ export function Chat({
       await chatAction(server, { kind: 'delete', message: deleting })
       setDeleting(null)
       await refresh()
+      focusComposer()
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -175,6 +236,41 @@ export function Chat({
         ref={scroll}
         tabIndex={0}
         aria-label="Message history"
+        onKeyDown={(e) => {
+          const element = e.target as HTMLElement
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            focusComposer()
+            return
+          }
+          if (element !== e.currentTarget && element.getAttribute('role') !== 'listitem') return
+          const index = messages.findIndex((m) => m.id === focusedMessage)
+          const page = Math.max(1, Math.floor((scroll.current?.clientHeight ?? 120) / 120))
+          const next =
+            e.key === 'Home'
+              ? 0
+              : e.key === 'End'
+                ? messages.length - 1
+                : e.key === 'ArrowDown'
+                  ? index + 1
+                  : e.key === 'ArrowUp'
+                    ? index < 0
+                      ? messages.length - 1
+                      : index - 1
+                    : e.key === 'PageDown'
+                      ? index + page
+                      : e.key === 'PageUp'
+                        ? index - page
+                        : null
+          if (next !== null && messages.length) {
+            e.preventDefault()
+            focusMessage(messages[Math.max(0, Math.min(messages.length - 1, next))]!.id)
+          }
+          if (e.key === 'Enter' && element !== e.currentTarget) {
+            e.preventDefault()
+            element.querySelector<HTMLButtonElement>('button')?.focus()
+          }
+        }}
         onScroll={() => {
           if (scroll.current) setBottom(atBottom(scroll.current))
           void markRead()
@@ -199,9 +295,11 @@ export function Chat({
                 aria-setsize={messages.length}
                 key={row.key}
                 data-index={row.index}
+                data-message-id={message.id}
+                onFocus={() => setFocusedMessage(message.id)}
                 ref={virtual.measureElement}
                 className={`chat-message ${group ? 'grouped' : ''}`}
-                tabIndex={0}
+                tabIndex={focusedMessage === message.id ? 0 : -1}
                 style={{
                   position: 'absolute',
                   top: 0,
@@ -228,54 +326,60 @@ export function Chat({
                   </header>
                 )}
                 {message.replyTo && (
-                  <button className="chat-reply" onClick={() => jump(message.replyTo!)}>
+                  <button className="chat-reply" onClick={() => void jump(message.replyTo!)}>
                     ↳{' '}
                     {byId.get(message.replyTo)?.content.slice(0, 100) ??
                       'Reply to an earlier message'}
                   </button>
                 )}
-                <p className="chat-body">
-                  {message.content}
-                  {message.editedAt !== null && <small> (edited)</small>}
-                </p>
+                {message.deleted ? (
+                  <p className="chat-deleted">Message deleted</p>
+                ) : (
+                  <div className="chat-body">
+                    <RichMessage content={message.content} members={members} own={own} />
+                    {message.editedAt !== null && <small> (edited)</small>}
+                  </div>
+                )}
                 {message.attachmentCount > 0 && (
                   <small>
                     {message.attachmentCount} attachment(s) · Viewing attachments is coming in a
                     later build.
                   </small>
                 )}
-                <div className="chat-actions">
-                  <button
-                    disabled={sending || !connected || !view?.canSend}
-                    onClick={() => setTarget({ kind: 'reply', message })}
-                  >
-                    Reply
-                  </button>
-                  {canEdit(message, view?.ownUserId ?? null) && (
+                {!message.deleted && (
+                  <div className="chat-actions">
                     <button
-                      disabled={sending || !connected}
-                      onClick={() => setTarget({ kind: 'edit', message })}
+                      disabled={sending || !connected || !view?.canSend}
+                      onClick={() => {
+                        setTarget({ kind: 'reply', message })
+                        focusComposer()
+                      }}
                     >
-                      Edit
+                      Reply
                     </button>
-                  )}
-                  {((message.authorId !== null && message.authorId === view?.ownUserId) ||
-                    view?.canManage) && (
-                    <button disabled={!connected} onClick={() => setDeleting(message.id)}>
-                      Delete
+                    {canEdit(message, view?.ownUserId ?? null) && (
+                      <button
+                        disabled={sending || !connected}
+                        onClick={() => setTarget({ kind: 'edit', message })}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {((message.authorId !== null && message.authorId === view?.ownUserId) ||
+                      view?.canManage) && (
+                      <button disabled={!connected} onClick={() => setDeleting(message.id)}>
+                        Delete
+                      </button>
+                    )}
+                    <button onClick={() => copy(message.content, 'Message')}>Copy</button>
+                    <button onClick={() => copy(message.id, 'Message ID')}>Copy ID</button>
+                    <button
+                      onClick={() => copy(messageLink(server, channel, message.id), 'Message link')}
+                    >
+                      Copy link
                     </button>
-                  )}
-                  <button
-                    onClick={() =>
-                      void navigator.clipboard.writeText(message.content).then(
-                        () => setNotice('Message copied.'),
-                        (e) => setError(errorText(e)),
-                      )
-                    }
-                  >
-                    Copy
-                  </button>
-                </div>
+                  </div>
+                )}
               </article>
             )
           })}
@@ -294,22 +398,43 @@ export function Chat({
           <button
             className="button secondary"
             disabled={deleteBusy}
-            onClick={() => setDeleting(null)}
+            onClick={() => {
+              setDeleting(null)
+              focusComposer()
+            }}
           >
             Cancel
           </button>
         </div>
       )}
+      {typing.length > 0 && connected && (
+        <p role="status" className="chat-typing">
+          {typing
+            .slice(0, 3)
+            .map((id) => members.get(id)?.displayName || members.get(id)?.username || 'Someone')
+            .join(', ')}{' '}
+          {typing.length === 1 ? 'is' : 'are'} typing…
+        </p>
+      )}
       <Composer
-        key={target?.kind === 'edit' ? target.message.id : 'new'}
-        initialDraft={draft}
-        saveDraft={setDraft}
+        key={`${draftId}:${target?.kind === 'edit' ? target.message.id : 'new'}`}
+        initialDraft={getDraft(draftId)}
+        draftIdentity={draftId}
+        saveDraft={(value) => saveDraft(draftId, value)}
+        members={serverView?.members ?? []}
+        editLast={() => {
+          const last = [...messages].reverse().find((m) => !m.deleted && canEdit(m, own))
+          if (last) setTarget({ kind: 'edit', message: last })
+        }}
         onBusy={setSending}
         server={server}
         channel={channel}
         disabled={sending || !connected || !view?.canSend}
         target={target}
-        cancel={() => setTarget(null)}
+        cancel={() => {
+          setTarget(null)
+          requestAnimationFrame(focusComposer)
+        }}
         sent={() => {
           void refresh()
           virtual.scrollToEnd()

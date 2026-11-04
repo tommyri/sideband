@@ -1,7 +1,9 @@
+import { draftNonce, clearDraftNonce } from './navigation'
+import { completeOptions, completionAt, wrapSelection, type ChatMember } from './rich-model'
 import { useEffect, useRef, useState } from 'react'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 import { sendMessage } from '../../lib/api'
-import { chatAction, errorText } from './api'
+import { chatAction, errorText, notifyTyping } from './api'
 
 export function Composer({
   server,
@@ -13,6 +15,9 @@ export function Composer({
   initialDraft = '',
   saveDraft,
   onBusy,
+  members = [],
+  editLast,
+  draftIdentity = JSON.stringify([server, channel]),
 }: {
   server: string
   channel: string
@@ -23,6 +28,9 @@ export function Composer({
   initialDraft?: string
   saveDraft?: (draft: string) => void
   onBusy?: (busy: boolean) => void
+  members?: ChatMember[]
+  editLast?: () => void
+  draftIdentity?: string
 }) {
   const [draft, setDraft] = useState(
     target?.kind === 'edit' ? target.message.content : initialDraft,
@@ -30,11 +38,62 @@ export function Composer({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
+  const [cursor, setCursor] = useState(initialDraft.length)
+  const [activeOption, setActiveOption] = useState(0)
+  const [dismissed, setDismissed] = useState(false)
+  const completion = completionAt(draft, cursor)
+  const options =
+    !dismissed && !disabled && !busy && completion
+      ? completeOptions(completion.kind, completion.query, members)
+      : []
+  const change = (value: string, position: number) => {
+    setDraft(value)
+    setCursor(position)
+    setDismissed(false)
+    setActiveOption(0)
+    if (target?.kind !== 'edit') saveDraft?.(value)
+    if (value.trim() && !disabled && target?.kind !== 'edit') notifyTyping(server, channel)
+  }
+  const insertTrigger = (trigger: string) => {
+    const start = input.current?.selectionStart ?? cursor
+    const end = input.current?.selectionEnd ?? cursor
+    const token = (start > 0 && !/\s/.test(draft[start - 1]!) ? ' ' : '') + trigger
+    if (draft.length + token.length > 4000) return
+    change(draft.slice(0, start) + token + draft.slice(end), start + token.length)
+    requestAnimationFrame(() => {
+      input.current?.focus()
+      input.current?.setSelectionRange(start + token.length, start + token.length)
+    })
+  }
+
+  const selectOption = (index: number) => {
+    const option = options[index]
+    if (!option || !completion) return
+    const value = draft.slice(0, completion.start) + option.value + draft.slice(completion.end)
+    if (value.length > 4000) return
+    const position = completion.start + option.value.length
+    change(value, position)
+    setDismissed(true)
+    requestAnimationFrame(() => {
+      input.current?.focus()
+      input.current?.setSelectionRange(position, position)
+    })
+  }
+  const format = (marker: string) => {
+    const element = input.current
+    if (!element) return
+    const next = wrapSelection(draft, element.selectionStart, element.selectionEnd, marker)
+    if (next.value.length > 4000) return
+    change(next.value, next.end)
+    requestAnimationFrame(() => {
+      element.focus()
+      element.setSelectionRange(next.start, next.end)
+    })
+  }
   useEffect(() => {
     input.current?.focus()
   }, [])
   // Keep the same nonce when retrying an unchanged draft after an uncertain ack.
-  const attempt = useRef<{ content: string; nonce: string } | null>(null)
   const submit = async () => {
     if (busy || disabled || !draft.trim()) return
     setBusy(true)
@@ -45,20 +104,20 @@ export function Composer({
         await chatAction(server, { kind: 'edit', message: target.message.id, content: draft })
       } else {
         const identity = JSON.stringify([draft, target?.message.id ?? null])
-        if (attempt.current?.content !== identity)
-          attempt.current = { content: identity, nonce: crypto.randomUUID() }
         await sendMessage({
           serverId: server,
           channelId: channel,
           content: draft,
           replyTo: target?.message.id ?? null,
           attachmentIds: [],
-          nonce: attempt.current.nonce,
+          nonce: draftNonce(draftIdentity, identity),
         })
       }
       setDraft('')
+      setCursor(0)
+      setDismissed(true)
       if (target?.kind !== 'edit') saveDraft?.('')
-      attempt.current = null
+      clearDraftNonce(draftIdentity)
       cancel()
       sent()
       input.current?.focus()
@@ -89,6 +148,73 @@ export function Composer({
           </button>
         </div>
       )}
+      <div className="chat-format-tools" aria-label="Message formatting">
+        <button
+          type="button"
+          disabled={disabled || busy}
+          title="Bold (Ctrl/Cmd+B)"
+          onClick={() => format('**')}
+        >
+          Bold
+        </button>
+        <button
+          type="button"
+          disabled={disabled || busy}
+          title="Italic (Ctrl/Cmd+I)"
+          onClick={() => format('*')}
+        >
+          Italic
+        </button>
+        <button
+          type="button"
+          disabled={disabled || busy}
+          title="Code (Ctrl/Cmd+E)"
+          onClick={() => format('`')}
+        >
+          Code
+        </button>
+        <button
+          type="button"
+          disabled={disabled || busy}
+          onClick={() => {
+            insertTrigger('@')
+          }}
+        >
+          Mention
+        </button>
+        <button
+          type="button"
+          disabled={disabled || busy}
+          onClick={() => {
+            insertTrigger(':')
+          }}
+        >
+          Emoji
+        </button>
+      </div>
+      {options.length > 0 && (
+        <div
+          role="listbox"
+          id={`completion-${channel}`}
+          aria-label="Message completions"
+          className="chat-completions"
+        >
+          {options.map((option, index) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === activeOption}
+              id={`completion-${channel}-${index}`}
+              tabIndex={-1}
+              key={option.value}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => selectOption(index)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
       <label className="sr-only" htmlFor={`compose-${channel}`}>
         Message
       </label>
@@ -96,16 +222,47 @@ export function Composer({
         id={`compose-${channel}`}
         ref={input}
         value={draft}
+        aria-autocomplete="list"
+        aria-controls={options.length ? `completion-${channel}` : undefined}
+        aria-activedescendant={options.length ? `completion-${channel}-${activeOption}` : undefined}
+        onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
         rows={3}
         maxLength={4000}
         disabled={disabled || busy}
         placeholder={disabled ? 'You cannot send messages right now' : 'Write a message…'}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          if (target?.kind !== 'edit') saveDraft?.(e.target.value)
-        }}
+        onChange={(e) => change(e.target.value, e.target.selectionStart)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (e.nativeEvent.isComposing) return
+          if ((e.ctrlKey || e.metaKey) && ['b', 'i', 'e'].includes(e.key.toLowerCase())) {
+            e.preventDefault()
+            format(e.key.toLowerCase() === 'b' ? '**' : e.key.toLowerCase() === 'i' ? '*' : '`')
+            return
+          }
+          if (options.length) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault()
+              setActiveOption(
+                (old) => (old + (e.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length,
+              )
+              return
+            }
+            if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+              e.preventDefault()
+              selectOption(activeOption)
+              return
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              setDismissed(true)
+              return
+            }
+          }
+          if (e.key === 'ArrowUp' && !draft && !target && editLast) {
+            e.preventDefault()
+            editLast()
+            return
+          }
+          if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
             void submit()
           }

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub struct MessageCache {
     recent: BTreeMap<Id, v1::Message>,
     history: BTreeMap<Id, v1::Message>,
+    deleted: BTreeMap<Id, v1::Message>,
 }
 impl MessageCache {
     /// All loaded messages in ascending ULID order, without duplicate echoes.
@@ -37,12 +38,28 @@ impl MessageCache {
     pub(super) fn newest(&self) -> Option<&v1::Message> {
         self.ordered().last().copied()
     }
+    /// Own-message deletion markers observed in this session, with bodies/files erased.
+    pub fn deleted(&self) -> Vec<&v1::Message> {
+        self.deleted.values().collect()
+    }
+    pub(super) fn tombstone(&mut self, key: Id, mut message: v1::Message) {
+        self.remove(key);
+        message.content.clear();
+        message.attachments.clear();
+        message.link_previews.clear();
+        message.mentions.clear();
+        message.reply_to = None;
+        self.deleted.insert(key, message);
+    }
     pub(super) fn remove(&mut self, key: Id) {
         self.recent.remove(&key);
         self.history.remove(&key);
     }
     pub(super) fn upsert(&mut self, message: v1::Message, created: bool) -> Result<(), Error> {
         let key = id(&message.id)?;
+        if self.deleted.contains_key(&key) {
+            return Ok(());
+        }
         if let Some(old) = self.history.get_mut(&key) {
             *old = message.clone();
         }
@@ -61,7 +78,7 @@ impl MessageCache {
             .map(|message| Ok((id(&message.id)?, message)))
             .collect();
         for (key, message) in page? {
-            if !self.recent.contains_key(&key) {
+            if !self.recent.contains_key(&key) && !self.deleted.contains_key(&key) {
                 self.history.insert(key, message);
             }
         }

@@ -20,6 +20,7 @@ import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 vi.mock('../../lib/tauri', () => ({ invokeBridge: vi.fn() }))
 vi.mock('../../lib/api', () => ({ sendMessage: vi.fn() }))
 const message: BridgeMessage = {
+  deleted: false,
   id: '01',
   channelId: 'channel',
   authorId: 'owner',
@@ -43,7 +44,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 beforeEach(() => {
-  vi.mocked(invokeBridge).mockReset()
+  vi.mocked(invokeBridge).mockReset().mockResolvedValue(undefined)
   vi.mocked(sendMessage).mockReset()
 })
 

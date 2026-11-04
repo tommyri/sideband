@@ -279,6 +279,7 @@ pub struct HistoryRequest {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct BridgeMessage {
+    pub deleted: bool,
     pub id: String,
     pub channel_id: String,
     pub author_name: Option<String>,

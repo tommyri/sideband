@@ -10,8 +10,9 @@ and T-058 global shortcuts are implemented; platform acceptance remains open.
 T-076 guided testing and evidence export are implemented. Next: collect real
 cross-OS acceptance reports with the installed app; T-018 remains the release gate.
 While hands-on testing is deferred, implementation proceeds through the T-045
-text-chat increments. T-045A adds usable live conversations; rich text/composer
-completion and attachments remain separately tracked in T-045B and T-045C.
+text-chat increments. T-045A adds usable live conversations; T-045B implements
+rich text/composer completion with hardware performance acceptance still open.
+Attachment UI remains in T-045C.
 T-063 live diagnostics and operator inspection are implemented; real-call and
 dashboard deployment acceptance remain open.
 T-018 gates voice-quality release approval, not UI development or test builds.
@@ -73,7 +74,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-044](T-044-channel-voice-ui.md) | Channel sidebar and voice UI | M | T-042, T-041 | in-progress |
 | [T-045](T-045-text-chat-ui.md) | Text chat UI (split into A–C) | L | T-042, T-027, T-029 | in-progress |
 | [T-045A](T-045A-live-text-chat.md) | Live text chat foundation | M | T-042, T-026 | done |
-| [T-045B](T-045B-rich-chat-composer.md) | Rich text and composer completion | M | T-045A | todo |
+| [T-045B](T-045B-rich-chat-composer.md) | Rich text and composer completion | M | T-045A | in-progress |
 | [T-045C](T-045C-chat-attachments.md) | Chat attachments and previews | M | T-045A, T-027, T-029 | todo |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045A, T-028 | done |
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |

@@ -610,6 +610,7 @@ impl Runner {
                     channel,
                     None,
                     Some(cursor),
+                    None,
                 )
                 .await
                 {

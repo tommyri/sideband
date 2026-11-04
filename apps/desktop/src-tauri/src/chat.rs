@@ -22,6 +22,7 @@ fn display(bytes: &[u8]) -> Result<String, ApiError> {
 }
 pub(crate) fn message_view(message: &v1::Message) -> Result<BridgeMessage, ApiError> {
     Ok(BridgeMessage {
+        deleted: false,
         id: display(&message.id)?,
         channel_id: display(&message.channel_id)?,
         author_name: message
@@ -85,7 +86,20 @@ async fn snapshot_for(
         messages: view
             .messages
             .get(&channel)
-            .map(|cache| cache.ordered().into_iter().map(message_view).collect())
+            .map(|cache| {
+                let mut messages = cache
+                    .ordered()
+                    .into_iter()
+                    .map(message_view)
+                    .collect::<Result<Vec<_>, _>>()?;
+                for message in cache.deleted() {
+                    let mut row = message_view(message)?;
+                    row.deleted = true;
+                    messages.push(row);
+                }
+                messages.sort_by(|a, b| a.id.cmp(&b.id));
+                Ok::<_, ApiError>(messages)
+            })
             .transpose()?
             .unwrap_or_default(),
         own_user_id: view.own_user.as_ref().map(|u| display(&u.id)).transpose()?,
@@ -103,6 +117,7 @@ async fn snapshot_for(
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub enum ChatAction {
+    Typing { channel: String },
     Edit { message: String, content: String },
     Delete { message: String },
     Read { channel: String, message: String },
@@ -122,6 +137,13 @@ async fn action_for(state: &AppState, server_id: &str, action: ChatAction) -> Re
         .get(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     match action {
+        ChatAction::Typing { channel } => {
+            client
+                .typing(v1::Typing {
+                    channel_id: id(&channel)?.as_bytes().to_vec().into(),
+                })
+                .await
+        }
         ChatAction::Edit { message, content } => {
             client
                 .edit_message(v1::EditMessage {
@@ -149,9 +171,74 @@ async fn action_for(state: &AppState, server_id: &str, action: ChatAction) -> Re
     .map_err(api_error)
 }
 
+#[tauri::command]
+pub async fn message_context(
+    state: State<'_, AppState>,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<(), ApiError> {
+    let server = parse_server_id(&server_id)?;
+    let clients = state.clients.lock().await;
+    let client = clients
+        .get(&server)
+        .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
+    let message_id = id(&message_id)?.to_string();
+    let messages = client
+        .load_around(id(&channel_id)?, id(&message_id)?)
+        .await
+        .map_err(api_error)?;
+    if !messages
+        .iter()
+        .any(|m| display(&m.id).is_ok_and(|key| key == message_id))
+    {
+        return Err(ApiError::new(
+            "not_found",
+            "This message was deleted or is not available in this channel.",
+        ));
+    }
+    Ok(())
+}
+fn external_url(value: &str) -> Result<reqwest::Url, ApiError> {
+    let url =
+        reqwest::Url::parse(value).map_err(|_| ApiError::new("invalid_url", "Invalid link."))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(ApiError::new(
+            "invalid_url",
+            "Only HTTP and HTTPS links without credentials can be opened.",
+        ));
+    }
+    Ok(url)
+}
+#[tauri::command]
+pub fn open_chat_link(app: tauri::AppHandle, url: String) -> Result<(), ApiError> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = external_url(&url)?;
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|e| ApiError::new("open_link", e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_links_only_allow_web_urls_without_credentials() {
+        for url in [
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///tmp/file",
+            "https://user:pass@example.com",
+            "sideband://message/x",
+        ] {
+            assert!(external_url(url).is_err());
+        }
+        assert!(external_url("https://example.com/path?q=hello").is_ok());
+    }
     #[tokio::test]
     async fn live_bridge_tracks_send_edit_read_and_delete() {
         use ss_client_core::{Client, Credentials, ServerAddr};
@@ -266,7 +353,10 @@ mod tests {
         )
         .await
         .unwrap();
-        wait_for(&state, key.as_str(), &channel, |v| v.messages.is_empty()).await;
+        wait_for(&state, key.as_str(), &channel, |v| {
+            v.messages.len() == 1 && v.messages[0].deleted && v.messages[0].content.is_empty()
+        })
+        .await;
         assert!(
             snapshot_for(&state, key.as_str(), &Id::generate().to_string())
                 .await

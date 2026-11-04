@@ -23,6 +23,7 @@ use tauri::{
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -44,6 +45,8 @@ pub fn run() {
             commands::load_history,
             chat::chat_snapshot,
             chat::chat_action,
+            chat::message_context,
+            chat::open_chat_link,
             dm::dm_action,
             onboarding::probe_server,
             onboarding::remove_server,

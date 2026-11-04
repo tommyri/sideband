@@ -18,6 +18,20 @@ impl Client {
         channel: Id,
         before: Option<Id>,
     ) -> Result<Vec<v1::Message>, Error> {
+        self.load_page(channel, before, None).await
+    }
+
+    /// Load the authorized history window around a reply/link target over pinned HTTPS.
+    pub async fn load_around(&self, channel: Id, around: Id) -> Result<Vec<v1::Message>, Error> {
+        self.load_page(channel, None, Some(around)).await
+    }
+
+    async fn load_page(
+        &self,
+        channel: Id,
+        before: Option<Id>,
+        around: Option<Id>,
+    ) -> Result<Vec<v1::Message>, Error> {
         let revision = {
             let state = self.store.read();
             if state.connection != ConnectionState::Connected {
@@ -33,6 +47,7 @@ impl Client {
             channel,
             before,
             None,
+            around,
         )
         .await?;
         self.store.history(channel, revision, page.clone())?;
@@ -48,6 +63,7 @@ pub(crate) async fn fetch_page(
     channel: Id,
     before: Option<Id>,
     after: Option<Id>,
+    around: Option<Id>,
 ) -> Result<Vec<v1::Message>, Error> {
     let key = address.id()?;
     let pin = tokio::task::spawn_blocking(move || pins.get(&key))
@@ -66,10 +82,14 @@ pub(crate) async fn fetch_page(
     } else {
         address.host.clone()
     };
-    let url = format!(
+    let mut url = format!(
         "https://{host}:{}/api/v1/channels/{channel}/messages",
         address.https_port
     );
+    if let Some(around) = around {
+        url.push_str("/around/");
+        url.push_str(&around.to_string());
+    }
     let mut request = http.get(url).bearer_auth(token).query(&[("limit", "50")]);
     if let Some(before) = before {
         request = request.query(&[("before", before.to_string())]);

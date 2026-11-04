@@ -26,3 +26,16 @@ export function errorText(error: unknown): string {
     ? String(error.message)
     : 'The request failed. Please try again.'
 }
+
+export const messageContext = (serverId: string, channelId: string, messageId: string) =>
+  invokeBridge<void>('message_context', { serverId, channelId, messageId })
+export const openChatLink = (url: string) => invokeBridge<void>('open_chat_link', { url })
+
+const typingSent = new Map<string, number>()
+export function notifyTyping(server: string, channel: string) {
+  const key = JSON.stringify([server, channel])
+  const now = Date.now()
+  if (now - (typingSent.get(key) ?? -Infinity) < 5000) return
+  typingSent.set(key, now)
+  void chatAction(server, { kind: 'typing', channel }).catch(() => {})
+}

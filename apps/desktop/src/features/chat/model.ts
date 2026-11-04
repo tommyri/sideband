@@ -5,6 +5,8 @@ export function day(timestamp: number) {
 export function grouped(previous: BridgeMessage | undefined, message: BridgeMessage) {
   return Boolean(
     previous &&
+    !previous.deleted &&
+    !message.deleted &&
     message.authorId &&
     previous.authorId === message.authorId &&
     !message.replyTo &&
@@ -14,7 +16,12 @@ export function grouped(previous: BridgeMessage | undefined, message: BridgeMess
   )
 }
 export function canEdit(message: BridgeMessage, own: string | null, now = Date.now()) {
-  return own !== null && message.authorId === own && now - message.createdAt < 7 * 86400_000
+  return (
+    !message.deleted &&
+    own !== null &&
+    message.authorId === own &&
+    now - message.createdAt < 7 * 86400_000
+  )
 }
 export function atBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 8
