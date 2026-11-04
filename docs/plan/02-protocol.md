@@ -244,7 +244,7 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/attachments/{id}/{filename}` | Download (auth required, signed URL variant for previews) |
 | GET | `/api/v1/users/{id}/avatar` | |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
-| GET | `/api/v1/audit-log?before=&limit=` | admins |
+| GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
 | GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
 | GET | `/metrics` | internal listener only |
 
@@ -257,6 +257,15 @@ certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
 the public port is refused; only the loopback health/metrics listener remains
 unencrypted. ACME HTTP-01 uses TCP 80 for challenges and redirects every other
 request to this HTTPS listener.
+
+Audit pages are ordered by creation time and ID descending. The optional `before`
+ULID is exclusive; an unknown cursor produces an empty page. The default limit is
+50, at most 100 (zero returns an empty page). Optional `actor` (ULID) and `action`
+(1–128 bytes) are exact matches. `since` is inclusive and `until` exclusive, both
+Unix milliseconds; when both are present, `since` must be earlier. Filters combine
+with AND before pagination. Response IDs are base64, `createdAt` is a decimal
+string, and `details` is JSON data. The desktop requests 50 rows, caps responses at
+1 MiB and uses a ten-second timeout over pinned HTTPS.
 
 Invite pages are newest-first by ULID with a default limit of 50 (allowed 1–100).
 `MANAGE_SERVER` grants all records; otherwise `CREATE_INVITES` grants only records

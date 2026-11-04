@@ -1,6 +1,7 @@
 mod admin;
 mod attachments;
 mod audio;
+mod audit;
 mod build_identity;
 mod chat;
 mod commands;
@@ -50,6 +51,7 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            audit::audit_page,
             admin::create_server_invite,
             admin::revoke_server_invite,
             attachments::attachment_transfer,

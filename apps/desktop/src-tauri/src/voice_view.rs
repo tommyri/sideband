@@ -63,6 +63,7 @@ pub struct ActiveVoiceView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct ServerView {
+    pub can_view_audit_log: bool,
     pub can_create_invites: bool,
     pub can_manage_invites: bool,
     pub own_user_id: String,
@@ -228,6 +229,7 @@ pub fn snapshot(
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     Ok(ServerView {
+        can_view_audit_log: allowed(Permissions::VIEW_AUDIT_LOG),
         can_create_invites: allowed(Permissions::CREATE_INVITES),
         can_manage_invites: allowed(Permissions::MANAGE_SERVER),
         own_user_id: own_id.to_string(),

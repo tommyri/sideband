@@ -43,6 +43,35 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>) -> Router {
 struct PageQuery {
     before: Option<String>,
     limit: Option<u32>,
+    actor: Option<String>,
+    action: Option<String>,
+    since: Option<i64>,
+    until: Option<i64>,
+}
+
+impl PageQuery {
+    fn filter(&self) -> Result<audit_log::Filter, HttpError> {
+        if self
+            .action
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 128)
+        {
+            return Err(HttpError::BadRequest("action must be 1 to 128 bytes"));
+        }
+        if self
+            .since
+            .zip(self.until)
+            .is_some_and(|(since, until)| since >= until)
+        {
+            return Err(HttpError::BadRequest("since must be earlier than until"));
+        }
+        Ok(audit_log::Filter {
+            actor: self.actor.as_deref().map(parse_id).transpose()?,
+            action: self.action.clone(),
+            since: self.since,
+            until: self.until,
+        })
+    }
 }
 
 async fn page(
@@ -60,13 +89,14 @@ async fn page(
     }
     let before = query.before.as_deref().map(parse_id).transpose()?;
     let limit = page_limit(query.limit)?;
+    let filter = query.filter()?;
     let mut conn = state
         .perms
         .pool()
         .read()
         .await
         .map_err(|_| HttpError::Internal)?;
-    let rows = audit_log::page(&mut conn, before, limit)
+    let rows = audit_log::filtered_page(&mut conn, before, limit, &filter)
         .await
         .map_err(|_| HttpError::Internal)?;
     Ok(Json(rows.iter().map(entry_json).collect()))

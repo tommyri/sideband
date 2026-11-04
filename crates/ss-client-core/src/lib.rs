@@ -33,12 +33,14 @@ mod tests {
 }
 
 pub mod attachments;
+mod audit;
 mod commands;
 pub mod connection;
 mod error;
 pub mod events;
 mod history;
 mod http;
+pub use audit::{AuditEntry, AuditFilter};
 mod invites;
 pub mod state;
 pub mod storage;

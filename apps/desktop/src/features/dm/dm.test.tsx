@@ -49,6 +49,7 @@ const conversation: DmView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canViewAuditLog: false,
   canCreateInvites: false,
   canManageInvites: false,
   channels: [],

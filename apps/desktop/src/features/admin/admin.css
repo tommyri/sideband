@@ -88,3 +88,33 @@
 .invite-confirm button {
   margin-right: 8px;
 }
+.audit-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+.audit-filters label {
+  display: grid;
+  gap: 6px;
+}
+.audit-tools {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.audit-dialog table {
+  table-layout: fixed;
+  min-width: 560px;
+}
+.audit-dialog td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.audit-dialog pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}

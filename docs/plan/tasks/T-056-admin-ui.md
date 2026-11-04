@@ -9,9 +9,10 @@ Paths: `apps/desktop/src/features/admin/`
 ## Goal
 Everything an admin needs without touching the CLI.
 
-First increment: [T-056A](T-056A-invite-management.md) delivers invite management.
+Completed increments: [T-056A](T-056A-invite-management.md) delivers invite management;
+[T-056B](T-056B-audit-log.md) adds the filterable audit-log viewer.
 The parent remains open for server settings, roles, members/moderation, channel
-overrides, webhooks and audit-log UI, including permission-model acceptance.
+overrides and webhooks, including permission-model acceptance.
 
 ## Scope
 - Server settings: name, description, icon (attachment), registration

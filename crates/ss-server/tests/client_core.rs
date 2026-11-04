@@ -902,3 +902,110 @@ async fn assert_invite_rest_metadata(world: &World) {
         }
     }
 }
+
+#[tokio::test]
+async fn audit_pages_filter_over_pinned_https_and_enforce_permissions() {
+    use ss_client_core::AuditFilter;
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let all = owner
+        .audit_page(None, &AuditFilter::default())
+        .await
+        .unwrap();
+    assert!(!all.is_empty());
+    let selected = &all[0];
+    let filter = AuditFilter {
+        actor: selected.actor_id,
+        action: Some(selected.action.clone()),
+        since: Some(selected.created_at),
+        until: Some(selected.created_at + 1),
+    };
+    let rows = owner.audit_page(None, &filter).await.unwrap();
+    assert!(rows.iter().any(|row| row.id == selected.id));
+    assert!(rows.iter().all(|row| row.action == selected.action
+        && row.actor_id == selected.actor_id
+        && row.created_at == selected.created_at));
+    let older = owner.audit_page(Some(rows[0].id), &filter).await.unwrap();
+    assert_eq!(older.len(), rows.len() - 1);
+    assert!(
+        guest
+            .audit_page(None, &AuditFilter::default())
+            .await
+            .is_err()
+    );
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some((Permissions::EVERYONE | Permissions::VIEW_AUDIT_LOG).bits()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!guest.audit_page(None, &filter).await.unwrap().is_empty());
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some(Permissions::EVERYONE.bits()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(guest.audit_page(None, &filter).await.is_err());
+    assert_audit_query_validation(&world).await;
+    let (wrong_port, wrong_task) = https(&world, true).await;
+    let mut address = world.address.clone();
+    address.https_port = wrong_port;
+    let wrong = Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong.audit_page(None, &filter).await,
+        Err(Error::Http(_))
+    ));
+    task.abort();
+    wrong_task.abort();
+}
+
+async fn assert_audit_query_validation(world: &World) {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let token = world
+        .storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    for (query, authenticated, expected) in [
+        ("", false, StatusCode::UNAUTHORIZED),
+        ("limit=1", true, StatusCode::OK),
+        ("actor=invalid", true, StatusCode::BAD_REQUEST),
+        ("action=", true, StatusCode::BAD_REQUEST),
+        ("since=invalid", true, StatusCode::BAD_REQUEST),
+        ("since=20&until=10", true, StatusCode::BAD_REQUEST),
+        ("since=20&until=20", true, StatusCode::BAD_REQUEST),
+        ("limit=101", true, StatusCode::BAD_REQUEST),
+        ("before=invalid", true, StatusCode::BAD_REQUEST),
+    ] {
+        let mut request = Request::builder().uri(format!("/api/v1/audit-log?{query}"));
+        if authenticated {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = world
+            .server
+            .public_routes()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{query}");
+    }
+}

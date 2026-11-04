@@ -1,3 +1,4 @@
+import { AuditLog } from '../admin/AuditLog'
 import { InviteManager } from '../admin/InviteManager'
 import { DmList } from '../dm/DmList'
 import { DmDialog, type DmMode } from '../dm/DmDialog'
@@ -41,6 +42,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
   const [invitesOpen, setInvitesOpen] = useState(false)
   const [dmDialog, setDmDialog] = useState<DmMode | null>(null)
   const [dmWarning, setDmWarning] = useState('')
@@ -135,6 +137,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           close={() => setInvitesOpen(false)}
         />
       )}
+      {auditOpen && view.canViewAuditLog && (
+        <AuditLog
+          key={`${server}:${view.ownUserId}`}
+          server={server}
+          view={view}
+          connected={connected}
+          close={() => setAuditOpen(false)}
+        />
+      )}
       {audioSettings && <AudioSettings close={() => setAudioSettings(false)} />}
       <aside className="live-channels" aria-label="Channel tree">
         <header>
@@ -145,6 +156,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           <button className="button secondary" onClick={() => setDetails(true)}>
             Server details
           </button>
+          {view.canViewAuditLog && (
+            <button
+              className="button secondary"
+              disabled={!connected}
+              onClick={() => setAuditOpen(true)}
+            >
+              Audit log
+            </button>
+          )}
           {(view.canCreateInvites || view.canManageInvites) && (
             <button
               className="button secondary"
