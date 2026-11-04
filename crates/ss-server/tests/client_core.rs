@@ -1009,3 +1009,167 @@ async fn assert_audit_query_validation(world: &World) {
         assert_eq!(response.status(), expected, "{query}");
     }
 }
+
+#[tokio::test]
+async fn webhook_management_lists_metadata_and_revokes_the_created_url() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let channel = named(&owner.state().read(), "general", v1::ChannelKind::Text);
+    let command = v1::CreateWebhook {
+        channel_id: wire(channel),
+        name: "Builds".into(),
+    };
+    assert!(guest.create_webhook_url(command.clone()).await.is_err());
+    assert!(guest.list_webhooks(None).await.is_err());
+    let created = owner.create_webhook_url(command.clone()).await.unwrap();
+    let url = reqwest::Url::parse(&created.url).unwrap();
+    assert_eq!(url.scheme(), "https");
+    assert_eq!(url.host_str(), Some("127.0.0.1"));
+    assert_eq!(url.port(), Some(port));
+    assert!(
+        url.path()
+            .starts_with(&format!("/api/v1/webhooks/{}/", created.id))
+    );
+    let second = owner.create_webhook_url(command).await.unwrap();
+    let rows = owner.list_webhooks(None).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, second.id);
+    assert_eq!(rows[1].id, created.id);
+    assert_eq!(rows[0].name, "Builds");
+    assert_eq!(rows[0].channel_id, channel);
+    assert!(rows[0].revoked_at.is_none());
+    let older = owner.list_webhooks(Some(second.id)).await.unwrap();
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].id, created.id);
+    assert_webhook_metadata(&world, &url).await;
+    assert_webhook_post(&world, url.path(), axum::http::StatusCode::OK).await;
+    assert!(
+        guest
+            .delete_webhook(v1::DeleteWebhook {
+                webhook_id: wire(created.id)
+            })
+            .await
+            .is_err()
+    );
+    owner
+        .delete_webhook(v1::DeleteWebhook {
+            webhook_id: wire(created.id),
+        })
+        .await
+        .unwrap();
+    assert_webhook_post(&world, url.path(), axum::http::StatusCode::NOT_FOUND).await;
+    let rows = owner.list_webhooks(None).await.unwrap();
+    assert!(
+        rows.iter()
+            .find(|row| row.id == created.id)
+            .unwrap()
+            .revoked_at
+            .is_some()
+    );
+    assert_webhook_permission_loss(&owner, &guest).await;
+    let (wrong_port, wrong_task) = https(&world, true).await;
+    let mut address = world.address.clone();
+    address.https_port = wrong_port;
+    let wrong = Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong.list_webhooks(None).await,
+        Err(Error::Http(_))
+    ));
+    task.abort();
+    wrong_task.abort();
+}
+async fn assert_webhook_permission_loss(owner: &Client, guest: &Client) {
+    for allowed in [true, false] {
+        owner
+            .update_role(v1::UpdateRole {
+                role_id: wire(db::EVERYONE_ROLE_ID),
+                permissions: Some(
+                    if allowed {
+                        Permissions::EVERYONE | Permissions::MANAGE_SERVER
+                    } else {
+                        Permissions::EVERYONE
+                    }
+                    .bits(),
+                ),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(guest.list_webhooks(None).await.is_ok(), allowed);
+    }
+}
+async fn assert_webhook_post(world: &World, path: &str, expected: axum::http::StatusCode) {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let response = world
+        .server
+        .public_routes()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"content":"build passed"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), expected);
+}
+async fn assert_webhook_metadata(world: &World, url: &reqwest::Url) {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let token = world
+        .storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    for (query, authenticated, expected) in [
+        ("", false, StatusCode::UNAUTHORIZED),
+        ("limit=1", true, StatusCode::OK),
+        ("limit=0", true, StatusCode::BAD_REQUEST),
+        ("limit=101", true, StatusCode::BAD_REQUEST),
+        ("before=invalid", true, StatusCode::BAD_REQUEST),
+    ] {
+        let mut request = Request::builder().uri(format!("/api/v1/webhooks?{query}"));
+        if authenticated {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = world
+            .server
+            .public_routes()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(rows.len(), 1);
+            for field in ["token", "tokenHash", "token_hash", "url"] {
+                assert!(rows[0].get(field).is_none());
+            }
+            let credential = url.path_segments().unwrap().next_back().unwrap();
+            assert!(
+                !String::from_utf8(bytes.to_vec())
+                    .unwrap()
+                    .contains(credential)
+            );
+        }
+    }
+}

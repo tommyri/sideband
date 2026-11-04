@@ -36,7 +36,7 @@ Outgoing webhooks, full bot API (T-080).
   fail once messages point at the webhook. A wrong, unknown, or revoked
   token is the same 404.
 - Posts are `POST /api/v1/webhooks/{id}/{token}` with no bearer. The listener
-  is still not bound. Content is the payload `content`, else up to three
+  is bound by the server HTTPS runtime. Content is the payload `content`, else up to three
   embed titles and descriptions, else a GitHub push line, else a Grafana
   title. `avatar_url` is accepted and ignored. Empty or over 2000 characters
   is 400. The 31st valid post in a minute is 429. Mentions are not parsed.

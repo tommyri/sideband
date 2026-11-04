@@ -401,6 +401,12 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         ),
     ),
     (
+        "http/webhook_admin.rs",
+        "get",
+        "/api/v1/webhooks",
+        perms_and(&["MANAGE_SERVER"], &["caller("]),
+    ),
+    (
         "http/webhooks.rs",
         "post",
         "/api/v1/webhooks/{webhook_id}/{token}",

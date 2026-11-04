@@ -42,6 +42,8 @@ mod history;
 mod http;
 pub use audit::{AuditEntry, AuditFilter};
 mod invites;
+mod webhooks;
+pub use webhooks::{CreatedWebhookUrl, WebhookMetadata};
 pub mod state;
 pub mod storage;
 pub mod voice;

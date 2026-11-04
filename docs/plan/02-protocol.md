@@ -243,6 +243,7 @@ publisher, not promises that the server filters or re-encodes frames.
 | POST | `/api/v1/attachments` | multipart upload → `{attachment_id, url, mime, size, width?, height?}` |
 | GET | `/api/v1/attachments/{id}/{filename}` | Download (auth required, signed URL variant for previews) |
 | GET | `/api/v1/users/{id}/avatar` | |
+| GET | `/api/v1/webhooks?before=&limit=` | Metadata only; requires `MANAGE_SERVER` |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
 | GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
 | GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
@@ -257,6 +258,15 @@ certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
 the public port is refused; only the loopback health/metrics listener remains
 unencrypted. ACME HTTP-01 uses TCP 80 for challenges and redirects every other
 request to this HTTPS listener.
+
+Webhook metadata pages are newest-first by ULID with an exclusive `before` cursor
+and default limit 50 (allowed 1–100). Rows contain `id`, `channelId`, `name`,
+`createdBy`, `createdAt` and nullable `revokedAt`. IDs are base64 and timestamps
+are decimal strings. Tokens, token hashes and posting URLs are never included.
+CreateWebhook still reveals its token only in the acknowledgement. The desktop
+constructs the HTTPS posting URL from its connected server address and keeps it
+only in the open creation panel. Metadata requests use the same pin as QUIC,
+a ten-second timeout and a 256 KiB response cap.
 
 Audit pages are ordered by creation time and ID descending. The optional `before`
 ULID is exclusive; an unknown cursor produces an empty page. The default limit is

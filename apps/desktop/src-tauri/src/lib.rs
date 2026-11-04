@@ -15,6 +15,7 @@ mod testing;
 mod types;
 mod voice;
 mod voice_view;
+mod webhooks;
 
 use state::AppState;
 use std::sync::atomic::Ordering;
@@ -51,6 +52,9 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            webhooks::webhook_page,
+            webhooks::create_server_webhook,
+            webhooks::revoke_server_webhook,
             audit::audit_page,
             admin::create_server_invite,
             admin::revoke_server_invite,

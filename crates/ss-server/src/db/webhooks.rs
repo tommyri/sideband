@@ -67,6 +67,18 @@ pub async fn get_by_token_hash(
     Ok(row.map(WebhookRow::into_webhook))
 }
 
+/// Newest webhook metadata rows, strictly before the optional ULID cursor.
+pub async fn page(
+    conn: &mut SqliteConnection,
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<Webhook>, Error> {
+    let rows = db(sqlx::query_as::<_, WebhookRow>(
+        "SELECT id, channel_id, name, token_hash, created_by, created_at, revoked_at FROM webhooks WHERE (?1 IS NULL OR id < ?1) ORDER BY id DESC LIMIT ?2",
+    ).bind(before).bind(i64::from(limit)).fetch_all(&mut *conn).await)?;
+    Ok(rows.into_iter().map(WebhookRow::into_webhook).collect())
+}
+
 /// Sets `revoked_at`.
 pub async fn revoke(
     conn: &mut SqliteConnection,
