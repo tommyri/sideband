@@ -1,3 +1,4 @@
+import { RoleManager } from '../admin/RoleManager'
 import { ChannelManager } from '../admin/ChannelManager'
 import { WebhookManager } from '../admin/WebhookManager'
 import { AuditLog } from '../admin/AuditLog'
@@ -44,6 +45,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
+  const [rolesOpen, setRolesOpen] = useState(false)
   const [channelsOpen, setChannelsOpen] = useState(false)
   const [webhooksOpen, setWebhooksOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
@@ -141,6 +143,14 @@ export function ChannelWorkspace({ server }: { server: string }) {
           close={() => setInvitesOpen(false)}
         />
       )}
+      {rolesOpen && (view.canManageRoles || view.canManageChannels) && (
+        <RoleManager
+          server={server}
+          view={view}
+          connected={connected}
+          close={() => setRolesOpen(false)}
+        />
+      )}
       {channelsOpen && view.canManageChannels && (
         <ChannelManager
           server={server}
@@ -176,6 +186,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           <button className="button secondary" onClick={() => setDetails(true)}>
             Server details
           </button>
+          {(view.canManageRoles || view.canManageChannels) && (
+            <button
+              className="button secondary"
+              disabled={!connected}
+              onClick={() => setRolesOpen(true)}
+            >
+              Roles and permissions
+            </button>
+          )}
           {view.canManageChannels && (
             <button
               className="button secondary"

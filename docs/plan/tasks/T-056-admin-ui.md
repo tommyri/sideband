@@ -12,9 +12,10 @@ Everything an admin needs without touching the CLI.
 Completed increments: [T-056A](T-056A-invite-management.md) delivers invite management;
 [T-056B](T-056B-audit-log.md) adds the filterable audit-log viewer;
 [T-056C](T-056C-webhook-management.md) adds webhook management;
-[T-056D](T-056D-channel-management.md) adds channel creation, settings, ordering and deletion.
-The parent remains open for server settings, roles, members/moderation, channel
-overrides, including permission-model acceptance.
+[T-056D](T-056D-channel-management.md) adds channel creation, settings, ordering and deletion;
+[T-056E](T-056E-roles-permissions.md) adds roles, assignments, permission-model tests
+and channel permission overrides. The parent remains open for server settings and
+broader member moderation.
 
 ## Scope
 - Server settings: name, description, icon (attachment), registration

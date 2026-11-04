@@ -44,6 +44,7 @@ pub use audit::{AuditEntry, AuditFilter};
 mod invites;
 mod webhooks;
 pub use webhooks::{CreatedWebhookUrl, WebhookMetadata};
+pub mod role_admin;
 pub mod state;
 pub mod storage;
 pub mod voice;

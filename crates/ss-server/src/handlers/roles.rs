@@ -104,6 +104,9 @@ impl Roles {
         msg: &v1::client_envelope::Msg,
     ) -> Option<Result<CommandReply, Error>> {
         match msg {
+            v1::client_envelope::Msg::MoveRole(command) => {
+                Some(self.move_role(actor, command).await)
+            }
             v1::client_envelope::Msg::CreateRole(command) => {
                 Some(self.create(actor, command).await)
             }
@@ -201,9 +204,13 @@ impl Roles {
                 id,
                 RoleUpdate {
                     name,
-                    color: command
-                        .color
-                        .map_or(current.color, |color| Some(i64::from(color))),
+                    color: if command.clear_color {
+                        None
+                    } else {
+                        command
+                            .color
+                            .map_or(current.color, |color| Some(i64::from(color)))
+                    },
                     permissions,
                     position,
                 },
@@ -232,11 +239,72 @@ impl Roles {
         })
     }
 
+    /// Atomically moves a role in highest-first order, preserving all other ordering.
+    pub async fn move_role(
+        &self,
+        actor: Id,
+        command: &v1::MoveRole,
+    ) -> Result<CommandReply, Error> {
+        self.require(actor, Permissions::MANAGE_ROLES)?;
+        let id = required_id(&command.role_id)?;
+        let before = command
+            .before_role_id
+            .as_ref()
+            .map(required_id)
+            .transpose()?;
+        let mut guard = self.perms.pool().write().await;
+        let mut tx = guard.begin().await.map_err(db::Error::from)?;
+        let mut listed = roles::list(&mut tx).await?;
+        // Normalization must not split equal ranks outside this actor's authority.
+        if !self.perms.is_administrator(actor)
+            && listed.windows(2).any(|pair| {
+                pair[0].position == pair[1].position
+                    && pair[0].position >= self.perms.highest_role_position(actor)
+            })
+        {
+            return Err(Error::Forbidden(
+                "an administrator must resolve equal protected ranks first",
+            ));
+        }
+        let index = listed
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(Error::NotFound("role not found"))?;
+        self.ensure_can_edit(actor, &listed[index])?;
+        if before == Some(id) {
+            return Err(Error::Invalid("cannot move before itself"));
+        }
+        if let Some(target) = before {
+            let target = listed
+                .iter()
+                .find(|r| r.id == target)
+                .ok_or(Error::NotFound("role not found"))?;
+            self.ensure_can_edit(actor, target)?;
+        }
+        let role = listed.remove(index);
+        let destination = before.map_or(Ok(0), |target| {
+            listed
+                .iter()
+                .position(|r| r.id == target)
+                .map(|i| i + 1)
+                .ok_or(Error::NotFound("role not found"))
+        })?;
+        listed.insert(destination, role);
+        let events = reorder(&mut tx, &listed).await?;
+        audit(&mut tx, actor, "role.move", "role", Some(id), "{}").await?;
+        tx.commit().await.map_err(db::Error::from)?;
+        self.perms.reload().await?;
+        Ok(CommandReply {
+            ack: ack::Result::Empty(v1::Empty::default()),
+            events,
+        })
+    }
+
     /// Deletes a role, clears its grants and overrides, then compacts positions.
     pub async fn delete(&self, actor: Id, command: &v1::DeleteRole) -> Result<CommandReply, Error> {
         self.require(actor, Permissions::MANAGE_ROLES)?;
         let id = required_id(&command.role_id)?;
-        let role = {
+        let (role, mut events) = {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
             let role = roles::get(&mut tx, id)
@@ -249,18 +317,22 @@ impl Roles {
             roles::clear_assignments(&mut tx, id).await?;
             channels::clear_role_overrides(&mut tx, id).await?;
             roles::delete(&mut tx, id).await?;
-            compact(&mut tx).await?;
+            let events = compact(&mut tx).await?;
             audit(&mut tx, actor, "role.delete", "role", Some(id), "{}").await?;
             tx.commit().await.map_err(db::Error::from)?;
             self.perms.reload().await?;
-            role
+            (role, events)
         };
         tracing::info!(%actor, role_id = %role.id, "role deleted");
+        events.insert(
+            0,
+            server_envelope::Msg::RoleDeleted(v1::RoleDeleted {
+                role: Some(wire_role(&role)?),
+            }),
+        );
         Ok(CommandReply {
             ack: ack::Result::Empty(v1::Empty::default()),
-            events: vec![server_envelope::Msg::RoleDeleted(v1::RoleDeleted {
-                role: Some(wire_role(&role)?),
-            })],
+            events,
         })
     }
 
@@ -419,26 +491,36 @@ impl Roles {
     }
 }
 
-async fn compact(conn: &mut sqlx::SqliteConnection) -> Result<(), db::Error> {
+async fn compact(conn: &mut sqlx::SqliteConnection) -> Result<Vec<server_envelope::Msg>, Error> {
     let listed = roles::list(conn).await?;
+    reorder(conn, &listed).await
+}
+async fn reorder(
+    conn: &mut sqlx::SqliteConnection,
+    listed: &[db::Role],
+) -> Result<Vec<server_envelope::Msg>, Error> {
+    let mut events = Vec::new();
     for (index, role) in listed.iter().enumerate() {
-        let position = i64::try_from(index).map_err(|_| db::Error::Corrupt("role position"))?;
-        if role.position == position {
+        let position = i32::try_from(index).map_err(|_| Error::Invalid("too many roles"))?;
+        if role.position == i64::from(position) {
             continue;
         }
-        roles::update(
+        let updated = roles::update(
             conn,
             role.id,
             RoleUpdate {
                 name: role.name.clone(),
                 color: role.color,
                 permissions: role.permissions,
-                position,
+                position: i64::from(position),
             },
         )
         .await?;
+        events.push(server_envelope::Msg::RoleUpdated(v1::RoleUpdated {
+            role: Some(wire_role(&updated)?),
+        }));
     }
-    Ok(())
+    Ok(events)
 }
 
 async fn audit(

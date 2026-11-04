@@ -46,6 +46,14 @@ message UpdateRole {
   optional uint64 permissions = 4;
   // New hierarchy position. Absent means unchanged.
   optional int32 position = 5;
+  // Clear color explicitly; takes precedence over color when true.
+  bool clear_color = 6;
+}
+
+// Move immediately before a role in highest-first order; absent means bottom.
+message MoveRole {
+  bytes role_id = 1;
+  optional bytes before_role_id = 2;
 }
 
 // Delete a role.

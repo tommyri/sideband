@@ -289,6 +289,13 @@ const COMMANDS: &[(&str, Command)] = &[
         )]),
     ),
     (
+        "MoveRole",
+        Command::Handled(&[(
+            "handlers/roles.rs",
+            perms_and(&["MANAGE_ROLES"], &["ensure_can_edit("]),
+        )]),
+    ),
+    (
         "SetUserRoles",
         Command::Handled(&[(
             "handlers/roles.rs",
@@ -399,6 +406,12 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
             &["MANAGE_SERVER", "CREATE_INVITES"],
             &["caller(", "(!manager).then_some(user)"],
         ),
+    ),
+    (
+        "http/role_admin.rs",
+        "get",
+        "/api/v1/channels/{channel_id}/overrides",
+        perms_and(&["MANAGE_CHANNELS", "VIEW_CHANNEL"], &["caller("]),
     ),
     (
         "http/webhook_admin.rs",

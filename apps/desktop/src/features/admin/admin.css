@@ -161,3 +161,101 @@
 .channel-delete-label {
   margin-bottom: 12px;
 }
+
+.role-fields {
+  display: grid;
+  gap: 1rem;
+  border: 0;
+  padding: 0;
+}
+.permission-choice {
+  display: flex;
+  align-items: start;
+  gap: 0.7rem;
+  padding: 0.5rem;
+}
+.permission-choice input {
+  width: auto;
+  margin-top: 0.25rem;
+}
+.permission-choice small,
+.override-choice small {
+  display: block;
+  opacity: 0.75;
+  font-weight: normal;
+}
+.override-choice {
+  display: grid;
+  grid-template-columns: 1fr minmax(100px, 150px);
+  gap: 1rem;
+  align-items: center;
+  padding: 0.65rem;
+}
+.role-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+.role-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+}
+.role-list li > strong {
+  overflow-wrap: anywhere;
+}
+.role-list li > small {
+  opacity: 0.75;
+}
+.role-list .channel-tools {
+  margin-left: auto;
+}
+.role-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  flex: none;
+}
+.role-fields > label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.role-fields > fieldset {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+  padding: 0.5rem 0;
+}
+.role-fields legend {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.role-fields input[type='color'] {
+  width: 3rem;
+  height: 2.25rem;
+  padding: 0.25rem;
+}
+@media (max-width: 700px) {
+  .role-fields > fieldset {
+    grid-template-columns: 1fr;
+  }
+}
+.role-dialog section > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 1rem 0.75rem 0;
+}
+.role-dialog section > label select {
+  max-width: 240px;
+}
+.role-dialog form > button,
+.role-dialog form > fieldset > button {
+  margin: 0.5rem 0.5rem 0.5rem 0;
+}

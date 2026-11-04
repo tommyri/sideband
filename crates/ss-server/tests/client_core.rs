@@ -1173,3 +1173,100 @@ async fn assert_webhook_metadata(world: &World, url: &reqwest::Url) {
         }
     }
 }
+
+#[tokio::test]
+async fn channel_override_reads_require_visible_guild_channels_and_management() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let channel = named(&owner.state().read(), "general", v1::ChannelKind::Text);
+    assert!(guest.channel_overrides(channel).await.is_err());
+    owner
+        .set_channel_override(v1::SetChannelOverride {
+            channel_id: wire(channel),
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            allow: Permissions::ATTACH_FILES.bits(),
+            deny: Permissions::SEND_MESSAGES.bits(),
+        })
+        .await
+        .unwrap();
+    let rows = owner.channel_overrides(channel).await.unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.role_id == db::EVERYONE_ROLE_ID.to_string())
+        .unwrap();
+    assert_eq!(row.allow, Permissions::ATTACH_FILES.bits().to_string());
+    assert_eq!(row.deny, Permissions::SEND_MESSAGES.bits().to_string());
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some((Permissions::EVERYONE | Permissions::MANAGE_CHANNELS).bits()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(guest.channel_overrides(channel).await.is_ok());
+    owner
+        .set_channel_override(v1::SetChannelOverride {
+            channel_id: wire(channel),
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            allow: 0,
+            deny: Permissions::VIEW_CHANNEL.bits(),
+        })
+        .await
+        .unwrap();
+    assert!(guest.channel_overrides(channel).await.is_err());
+    let guest_id = id_from_bytes(&guest.state().read().own_user.as_ref().unwrap().id).unwrap();
+    let dm = owner
+        .create_dm(v1::CreateDm {
+            user_ids: vec![wire(guest_id)],
+        })
+        .await
+        .unwrap();
+    assert!(
+        owner
+            .channel_overrides(id_from_bytes(&dm.id).unwrap())
+            .await
+            .is_err()
+    );
+    assert!(owner.channel_overrides(Id::generate()).await.is_err());
+    let response = world
+        .server
+        .public_routes()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/channels/{channel}/overrides"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let (wrong_port, wrong_task) = https(&world, true).await;
+    let mut address = world.address.clone();
+    address.https_port = wrong_port;
+    let wrong = Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong.channel_overrides(channel).await,
+        Err(Error::Http(_))
+    ));
+    wrong.close().await;
+    guest.close().await;
+    owner.close().await;
+    wrong_task.abort();
+    task.abort();
+}

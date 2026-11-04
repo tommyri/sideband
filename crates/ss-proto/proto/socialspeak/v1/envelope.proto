@@ -65,6 +65,7 @@ message ClientEnvelope {
     DeleteWebhook delete_webhook = 38;
     StartStream start_stream = 39;
     StopStream stop_stream = 40;
+    MoveRole move_role = 41;
   }
 }
 

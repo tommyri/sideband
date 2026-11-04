@@ -693,6 +693,7 @@ async fn role_edits_show_up_on_the_next_check() {
         .update(
             world.admin,
             &v1::UpdateRole {
+                clear_color: false,
                 role_id: id_to_bytes(EVERYONE_ROLE_ID),
                 name: None,
                 color: None,
@@ -876,6 +877,7 @@ async fn apply(
                 .update(
                     actor,
                     &v1::UpdateRole {
+                        clear_color: false,
                         role_id: id_to_bytes(world.role(role)),
                         name: name.map(str::to_owned),
                         color: None,
@@ -976,4 +978,74 @@ async fn audit_rows(world: &World) -> Vec<(String, Option<Id>)> {
 
 async fn position(conn: &mut sqlx::SqliteConnection, id: Id) -> i64 {
     roles::get(conn, id).await.unwrap().unwrap().position
+}
+
+#[tokio::test]
+async fn atomic_role_move_respects_hierarchy_and_reports_all_changed_positions() {
+    let world = world().await;
+    let command = v1::MoveRole {
+        role_id: id_to_bytes(world.helper),
+        before_role_id: Some(id_to_bytes(world.senior_role)),
+    };
+    assert!(
+        world
+            .roles_handler
+            .move_role(world.manager, &command)
+            .await
+            .is_err()
+    );
+    assert!(
+        world
+            .roles_handler
+            .move_role(world.member, &command)
+            .await
+            .is_err()
+    );
+    let reply = world
+        .roles_handler
+        .move_role(world.admin, &command)
+        .await
+        .unwrap();
+    let mut conn = world.pool.write().await;
+    let ordered = roles::list(&mut conn).await.unwrap();
+    assert_eq!(ordered.last().unwrap().id, world.helper);
+    assert!(reply.events.len() >= 2);
+    for event in reply.events {
+        let server_envelope::Msg::RoleUpdated(event) = event else {
+            panic!("expected updated role")
+        };
+        let role = event.role.unwrap();
+        let id = Id::try_from(role.id.as_ref()).unwrap();
+        assert_eq!(
+            roles::get(&mut conn, id).await.unwrap().unwrap().position,
+            i64::from(role.position)
+        );
+    }
+    drop(conn);
+    let reply = world
+        .roles_handler
+        .update(
+            world.admin,
+            &v1::UpdateRole {
+                role_id: id_to_bytes(world.helper),
+                color: Some(0x12_34_56),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(reply.ack, ack::Result::Role(r) if r.color==Some(0x12_34_56)));
+    let reply = world
+        .roles_handler
+        .update(
+            world.admin,
+            &v1::UpdateRole {
+                role_id: id_to_bytes(world.helper),
+                clear_color: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(reply.ack, ack::Result::Role(r) if r.color.is_none()));
 }

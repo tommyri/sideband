@@ -17,6 +17,7 @@ const row: WebhookView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canManageRoles: false,
   canManageChannels: false,
   canManageWebhooks: true,
   canViewAuditLog: false,

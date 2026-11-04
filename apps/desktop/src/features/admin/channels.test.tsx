@@ -47,6 +47,7 @@ const snapshot: ChannelAdminSnapshot = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canManageRoles: false,
   canManageChannels: true,
   canManageWebhooks: false,
   canViewAuditLog: false,

@@ -77,9 +77,10 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `UnbanUser` | `user_id` | |
 | `MoveUser` | `user_id`, `channel_id` | Move into another voice channel |
 | `ServerMuteUser` | `user_id`, `muted` | |
-| `CreateRole` / `UpdateRole` / `DeleteRole` | `Role{name,color,permissions(u64),position}` | |
+| `CreateRole` / `UpdateRole` / `DeleteRole` | `Role{name,color,permissions(u64),position}` | `UpdateRole.clear_color` explicitly removes color; omitted color otherwise retains it |
+| `MoveRole` | `role_id`, optional `before_role_id` | Atomic highest-first reorder; absent target means bottom; requires MANAGE_ROLES and editable source/target |
 | `SetUserRoles` | `user_id`, `role_ids[]` | |
-| `SetChannelOverride` | `channel_id`, `role_id`, `allow(u64)`, `deny(u64)` | Table exists in MVP; UI may come later |
+| `SetChannelOverride` | `channel_id`, `role_id`, `allow(u64)`, `deny(u64)` | Roles/permissions UI reads saved masks before editing |
 | `UpdateProfile` | `display_name`, `avatar_attachment_id` | |
 | `SetPresence` | `status`, `activity` | Online, idle, or do-not-disturb. Offline is the last disconnect |
 | `StartStream` / `StopStream` | `kind` (VIDEO/SCREEN), `codec` / — | One published video track per connection; requires voice membership and STREAM |
@@ -243,6 +244,7 @@ publisher, not promises that the server filters or re-encodes frames.
 | POST | `/api/v1/attachments` | multipart upload → `{attachment_id, url, mime, size, width?, height?}` |
 | GET | `/api/v1/attachments/{id}/{filename}` | Download (auth required, signed URL variant for previews) |
 | GET | `/api/v1/users/{id}/avatar` | |
+| GET | `/api/v1/channels/{channel_id}/overrides` | Requires MANAGE_CHANNELS and VIEW_CHANNEL; guild-only rows `{roleId: ULID, allow: decimal-u64, deny: decimal-u64}` |
 | GET | `/api/v1/webhooks?before=&limit=` | Metadata only; requires `MANAGE_SERVER` |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
 | GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
@@ -299,3 +301,10 @@ for 60 s or open for 10 minutes is closed, so clients must reconnect.
 `Hello.protocol_version = 1`. Server supports a range; mismatch → `Error
 PROTOCOL_VERSION` with `min`/`max`. Protobuf fields are only ever added; never
 renumbered. Datagram header version bits allow one future header change.
+
+### Role management compatibility
+
+Servers advertise `role-management-v2` in Welcome server features for `MoveRole`
+and explicit color clearing. Clients disable those additions on older servers.
+Role moves and deletion compaction emit `RoleUpdated` for every changed position.
+Override reads use the session bearer and the approved HTTPS certificate pin.

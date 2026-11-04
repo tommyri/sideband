@@ -19,7 +19,8 @@ this is not a production-ready release or a claim of measured quality parity.
 - Desktop: onboarding, voice channels and controls, audio settings, global PTT,
   rich channel chat and per-server DMs (Markdown, mentions, typing indicators,
   history, replies, edits/deletes, drafts, attachments, media viewing, link previews,
-  unread state and group membership), invite, webhook and channel management, filtered audit history,
+  unread state and group membership), invite, webhook and channel management, roles,
+  member role assignments, channel permission overrides, filtered audit history,
   guided tests, diagnostics and redacted local evidence exports.
 - Still to build: notifications, full admin UI,
   production distribution/updating, and the finished screen-sharing experience.

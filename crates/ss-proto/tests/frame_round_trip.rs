@@ -266,7 +266,7 @@ fn client_envelope(selector: u32, sample: &Sample) -> ClientEnvelope {
 }
 
 fn client_msg(selector: u32, sample: &Sample) -> Option<client_envelope::Msg> {
-    let which = selector % 38;
+    let which = selector % 39;
     if which == 0 {
         return None;
     }
@@ -393,6 +393,7 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
             color: sample.flag.then_some(sample.pick),
             permissions: sample.flag.then_some(sample.bits),
             position: sample.flag.then_some(code(sample.extra, 10_000)),
+            clear_color: sample.flag,
         }),
         25 => client_envelope::Msg::DeleteRole(DeleteRole {
             role_id: sample.blob.clone(),
@@ -437,6 +438,10 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
         }),
         37 => client_envelope::Msg::DeleteWebhook(ss_proto::v1::DeleteWebhook {
             webhook_id: sample.blob.clone(),
+        }),
+        38 => client_envelope::Msg::MoveRole(ss_proto::v1::MoveRole {
+            role_id: sample.blob.clone(),
+            before_role_id: opt_blob(sample),
         }),
         _ => client_envelope::Msg::SetPreferredQuality(SetPreferredQuality {
             track_id: sample.pick,
@@ -698,7 +703,7 @@ fn every_variant_round_trips() {
         .expect("runtime");
     for flag in [false, true] {
         let sample = fixed_sample(flag);
-        for selector in 0..34 {
+        for selector in 0..39 {
             let message = client_envelope(selector, &sample);
             assert_sync_round_trip(&message);
             runtime.block_on(assert_async_round_trip(&message));

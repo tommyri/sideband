@@ -21,7 +21,7 @@ empty_commands! {
     update_channel: UpdateChannel, delete_channel: DeleteChannel, move_channel: MoveChannel,
     revoke_invite: RevokeInvite, kick_user: KickUser, ban_user: BanUser, unban_user: UnbanUser,
     move_user: MoveUser, server_mute_user: ServerMuteUser, delete_role: DeleteRole,
-    set_user_roles: SetUserRoles, set_channel_override: SetChannelOverride,
+    move_role: MoveRole, set_user_roles: SetUserRoles, set_channel_override: SetChannelOverride,
     subscribe_track: SubscribeTrack, unsubscribe_track: UnsubscribeTrack, stop_stream: StopStream,
     request_keyframe: RequestKeyframe, set_preferred_quality: SetPreferredQuality,
     set_presence: SetPresence, delete_webhook: DeleteWebhook,

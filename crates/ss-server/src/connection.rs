@@ -169,6 +169,10 @@ impl Server {
                 Arc::clone(&auth),
                 Arc::clone(&perms),
             ))
+            .merge(crate::http::role_admin::router(
+                Arc::clone(&auth),
+                Arc::clone(&perms),
+            ))
             .merge(crate::http::webhook_admin::router(
                 Arc::clone(&auth),
                 Arc::clone(&perms),
@@ -513,6 +517,7 @@ fn welcome_envelope(
                 features: vec![
                     "auth".into(),
                     "roles".into(),
+                    "role-management-v2".into(),
                     "moderation".into(),
                     "channels".into(),
                     "presence".into(),

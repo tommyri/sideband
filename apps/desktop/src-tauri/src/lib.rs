@@ -11,6 +11,7 @@ mod dm;
 mod input;
 mod onboarding;
 mod persistence;
+mod role_admin;
 mod state;
 mod testing;
 mod types;
@@ -53,6 +54,9 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            role_admin::role_admin_snapshot,
+            role_admin::role_admin_action,
+            role_admin::role_overrides,
             channel_admin::channel_admin_snapshot,
             channel_admin::channel_admin_action,
             webhooks::webhook_page,
