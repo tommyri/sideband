@@ -191,12 +191,6 @@ fn id_bytes(value: &str) -> Result<bytes::Bytes, ApiError> {
     Ok(id(value)?.as_bytes().to_vec().into())
 }
 
-fn display_id(value: &[u8]) -> Result<String, ApiError> {
-    ss_core::Id::try_from(value)
-        .map(|id| id.to_string())
-        .map_err(|error| ApiError::new("invalid_id", error.to_string()))
-}
-
 #[tauri::command]
 pub async fn connect(
     app: AppHandle,
@@ -419,21 +413,7 @@ pub async fn load_history(
         .await
         .map_err(api_error)?
         .into_iter()
-        .map(|message| {
-            let author_name = message
-                .author
-                .map(|author| author.display_name)
-                .or(message.webhook_name);
-            Ok(BridgeMessage {
-                id: display_id(&message.id)?,
-                channel_id: display_id(&message.channel_id)?,
-                author_name,
-                content: message.content,
-                created_at: message.created_at,
-                edited_at: message.edited_at,
-                attachment_count: message.attachments.len().try_into().unwrap_or(u32::MAX),
-            })
-        })
+        .map(|message| crate::chat::message_view(&message))
         .collect()
 }
 

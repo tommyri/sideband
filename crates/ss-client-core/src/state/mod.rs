@@ -115,6 +115,15 @@ impl StateStore {
     pub fn read(&self) -> RwLockReadGuard<'_, State> {
         self.0.read()
     }
+    /// Retain the current live window as explicitly loaded history for a host
+    /// displaying this channel. Call before reading a presentation snapshot.
+    /// Other channels retain the normal bounded live window. Edits/deletions
+    /// still update this cache in control-stream order.
+    pub fn retain_loaded_messages(&self, channel: Id) {
+        if let Some(cache) = self.0.write().messages.get_mut(&channel) {
+            cache.retain_loaded();
+        }
+    }
     /// Owned copy for hosts that cannot retain a read guard.
     pub fn snapshot(&self) -> State {
         self.0.read().clone()

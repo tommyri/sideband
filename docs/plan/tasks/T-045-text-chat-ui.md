@@ -1,6 +1,6 @@
 # T-045 — Text chat UI
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: L
 Depends on: T-042, T-027, T-029
@@ -10,9 +10,12 @@ Paths: `apps/desktop/src/features/chat/`
 Discord-grade text chat: fast scrolling, markdown, mentions, replies,
 attachments, link cards, unread handling.
 
-Split suggestion for sub-agents: (a) message list + virtualization +
-history loading, (b) composer + markdown + mentions, (c) attachments +
-previews + lightbox. Create sub-task files if splitting.
+Split into separately tracked increments:
+- [T-045A](T-045A-live-text-chat.md): live plain-text conversations and history.
+- [T-045B](T-045B-rich-chat-composer.md): rich rendering and composer completion.
+- [T-045C](T-045C-chat-attachments.md): attachments, previews, and lightbox.
+
+The parent remains in progress until all increments and manual acceptance pass.
 
 ## Scope
 - Message list: virtualized (`@tanstack/virtual`), grouped consecutive

@@ -1,3 +1,4 @@
+import { Chat } from '../chat/Chat'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/app-store'
 import type { ChannelView } from '../../lib/generated/ChannelView'
@@ -214,7 +215,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
           {view.channels.length === 0 && <p>No channels are visible to your account.</p>}
         </div>
       </aside>
-      <main className="live-channel-main">
+      <main className={`live-channel-main ${current?.kind === 2 ? 'text-workspace' : ''}`}>
         <header>
           <p className="eyebrow">{current?.kind === 3 ? 'Voice channel' : 'Your community'}</p>
           <h1>{current?.name ?? 'Choose a channel'}</h1>
@@ -270,12 +271,16 @@ export function ChannelWorkspace({ server }: { server: string }) {
                 })}
             </div>
           </>
+        ) : current?.kind === 2 ? (
+          <Chat
+            key={`${server}:${current.id}`}
+            server={server}
+            channel={current.id}
+            name={current.name}
+            connected={connected}
+          />
         ) : (
-          <p>
-            {current
-              ? 'Text messaging is coming in the next test build.'
-              : 'Select a voice channel to see its members and join the conversation.'}
-          </p>
+          <p>Select a channel to join the conversation.</p>
         )}
         <details className="voice-ui-settings">
           <summary>Interaction settings</summary>

@@ -9,6 +9,9 @@ T-075 packaging, essential T-043 onboarding, T-044 voice UI, T-051 audio setting
 and T-058 global shortcuts are implemented; platform acceptance remains open.
 T-076 guided testing and evidence export are implemented. Next: collect real
 cross-OS acceptance reports with the installed app; T-018 remains the release gate.
+While hands-on testing is deferred, implementation proceeds through the T-045
+text-chat increments. T-045A adds usable live conversations; rich text/composer
+completion and attachments remain separately tracked in T-045B and T-045C.
 T-063 live diagnostics and operator inspection are implemented; real-call and
 dashboard deployment acceptance remain open.
 T-018 gates voice-quality release approval, not UI development or test builds.
@@ -68,7 +71,10 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-042](T-042-tauri-app-scaffold.md) | Tauri app scaffold and bridge | M | T-040 | done |
 | [T-043](T-043-onboarding-ui.md) | Onboarding UI | M | T-042 | in-progress |
 | [T-044](T-044-channel-voice-ui.md) | Channel sidebar and voice UI | M | T-042, T-041 | in-progress |
-| [T-045](T-045-text-chat-ui.md) | Text chat UI | L | T-042, T-027, T-029 | todo |
+| [T-045](T-045-text-chat-ui.md) | Text chat UI (split into A–C) | L | T-042, T-027, T-029 | in-progress |
+| [T-045A](T-045A-live-text-chat.md) | Live text chat foundation | M | T-042, T-026 | done |
+| [T-045B](T-045B-rich-chat-composer.md) | Rich text and composer completion | M | T-045A | todo |
+| [T-045C](T-045C-chat-attachments.md) | Chat attachments and previews | M | T-045A, T-027, T-029 | todo |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045, T-028 | todo |
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | in-progress |

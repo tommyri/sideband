@@ -1,3 +1,4 @@
+import { receiveChatEvent } from '../features/chat/api'
 import { observe, record } from '../features/testing/report'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { AppEvent } from './bindings'
@@ -14,6 +15,7 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
     subscription = isTauri()
       ? Promise.all([
           listen<AppEvent>('ss://event', ({ payload }) => {
+            receiveChatEvent(payload)
             observe(payload, useVoiceStore.getState().active?.serverId)
             useAppStore.getState().receiveEvent(payload)
             if (payload.event.kind === 'voiceStats') {

@@ -282,6 +282,9 @@ pub struct BridgeMessage {
     pub id: String,
     pub channel_id: String,
     pub author_name: Option<String>,
+    pub author_id: Option<String>,
+    pub username: Option<String>,
+    pub reply_to: Option<String>,
     pub content: String,
     #[ts(type = "number")]
     pub created_at: i64,

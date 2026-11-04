@@ -18,6 +18,11 @@ impl MessageCache {
         merged.extend(self.recent.iter());
         merged.into_values().collect()
     }
+    /// Retain messages explicitly requested by a presentation host alongside
+    /// loaded history, so the rolling live window cannot create visible gaps.
+    pub(super) fn retain_loaded(&mut self) {
+        self.history.extend(self.recent.clone());
+    }
     /// Number retained from live traffic (at most 200).
     pub fn recent_len(&self) -> usize {
         self.recent.len()
@@ -58,5 +63,33 @@ impl MessageCache {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayed_messages_survive_live_eviction_but_follow_edits_and_deletes() {
+        let mut cache = MessageCache::default();
+        let message = |value: u128| v1::Message {
+            id: value.to_be_bytes().to_vec().into(),
+            content: value.to_string(),
+            ..Default::default()
+        };
+        cache.upsert(message(1), true).unwrap();
+        cache.retain_loaded();
+        for value in 2..=202 {
+            cache.upsert(message(value), true).unwrap();
+        }
+        assert_eq!(cache.recent_len(), 200);
+        assert_eq!(cache.ordered()[0].content, "1");
+        let mut edited = message(1);
+        edited.content = "edited".into();
+        cache.upsert(edited, false).unwrap();
+        assert_eq!(cache.ordered()[0].content, "edited");
+        cache.remove(Id::from_bytes(1_u128.to_be_bytes()));
+        assert!(cache.ordered().iter().all(|m| m.content != "edited"));
     }
 }

@@ -1,5 +1,6 @@
 mod audio;
 mod build_identity;
+mod chat;
 mod commands;
 mod diagnostics;
 mod input;
@@ -40,6 +41,8 @@ pub fn run() {
             commands::send_message,
             commands::create_channel,
             commands::load_history,
+            chat::chat_snapshot,
+            chat::chat_action,
             onboarding::probe_server,
             onboarding::remove_server,
             onboarding::reorder_servers,

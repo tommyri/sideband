@@ -17,8 +17,9 @@ this is not a production-ready release or a claim of measured quality parity.
 - Server: authentication, invitations, roles/permissions, channels, voice routing,
   text/history, attachments, DMs, moderation, link previews and incoming webhooks.
 - Desktop: onboarding, voice channels and controls, audio settings, global PTT,
+  live plain-text channel chat (history, replies, edits/deletes and unread state),
   guided tests, diagnostics and redacted local evidence exports.
-- Still to build: the desktop text/DM experience, notifications, full admin UI,
+- Still to build: rich text, mentions, attachment UI, DMs, notifications, full admin UI,
   production distribution/updating, and the finished screen-sharing experience.
 - Automated tests and local macOS package checks exist. Cross-platform installed
   app acceptance, real group listening tests and production readiness remain open.
