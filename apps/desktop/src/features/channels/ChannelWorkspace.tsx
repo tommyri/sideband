@@ -1,3 +1,4 @@
+import { ChannelManager } from '../admin/ChannelManager'
 import { WebhookManager } from '../admin/WebhookManager'
 import { AuditLog } from '../admin/AuditLog'
 import { InviteManager } from '../admin/InviteManager'
@@ -43,6 +44,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
+  const [channelsOpen, setChannelsOpen] = useState(false)
   const [webhooksOpen, setWebhooksOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [invitesOpen, setInvitesOpen] = useState(false)
@@ -139,6 +141,14 @@ export function ChannelWorkspace({ server }: { server: string }) {
           close={() => setInvitesOpen(false)}
         />
       )}
+      {channelsOpen && view.canManageChannels && (
+        <ChannelManager
+          server={server}
+          view={view}
+          connected={connected}
+          close={() => setChannelsOpen(false)}
+        />
+      )}
       {webhooksOpen && view.canManageWebhooks && (
         <WebhookManager
           server={server}
@@ -166,6 +176,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           <button className="button secondary" onClick={() => setDetails(true)}>
             Server details
           </button>
+          {view.canManageChannels && (
+            <button
+              className="button secondary"
+              disabled={!connected}
+              onClick={() => setChannelsOpen(true)}
+            >
+              Manage channels
+            </button>
+          )}
           {view.canManageWebhooks && (
             <button
               className="button secondary"

@@ -3,6 +3,7 @@ mod attachments;
 mod audio;
 mod audit;
 mod build_identity;
+mod channel_admin;
 mod chat;
 mod commands;
 mod diagnostics;
@@ -52,6 +53,8 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            channel_admin::channel_admin_snapshot,
+            channel_admin::channel_admin_action,
             webhooks::webhook_page,
             webhooks::create_server_webhook,
             webhooks::revoke_server_webhook,

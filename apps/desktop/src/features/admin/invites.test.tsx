@@ -18,6 +18,7 @@ const row: InviteView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canManageChannels: false,
   canManageWebhooks: false,
   canViewAuditLog: false,
   canCreateInvites: true,

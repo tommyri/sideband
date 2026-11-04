@@ -63,6 +63,7 @@ pub struct ActiveVoiceView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct ServerView {
+    pub can_manage_channels: bool,
     pub can_manage_webhooks: bool,
     pub can_view_audit_log: bool,
     pub can_create_invites: bool,
@@ -230,6 +231,7 @@ pub fn snapshot(
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     Ok(ServerView {
+        can_manage_channels: allowed(Permissions::MANAGE_CHANNELS),
         can_manage_webhooks: allowed(Permissions::MANAGE_SERVER),
         can_view_audit_log: allowed(Permissions::VIEW_AUDIT_LOG),
         can_create_invites: allowed(Permissions::CREATE_INVITES),

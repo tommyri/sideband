@@ -18,6 +18,7 @@ const row: AuditEntryView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canManageChannels: false,
   canManageWebhooks: false,
   canViewAuditLog: true,
   canCreateInvites: false,
