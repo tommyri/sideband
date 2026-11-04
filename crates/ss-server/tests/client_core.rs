@@ -756,3 +756,149 @@ async fn attachment_roundtrip(world: &World, fresh: &Client, owner: &Client, cha
     );
     file
 }
+
+#[tokio::test]
+async fn invite_metadata_is_scoped_paginated_and_never_returns_codes() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let server_invite = owner
+        .create_invite(v1::CreateInvite {
+            max_uses: Some(3),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let guest_invite = guest
+        .create_invite(v1::CreateInvite::default())
+        .await
+        .unwrap();
+    assert_invite_rest_metadata(&world).await;
+    let page = guest.list_invites(None).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, guest_invite.id);
+    assert_eq!(page[0].code, "");
+    let all = owner.list_invites(None).await.unwrap();
+    assert!(all.iter().any(|i| i.id == guest_invite.id));
+    assert!(
+        all.iter()
+            .any(|i| i.id == server_invite.id && i.max_uses == Some(3))
+    );
+    assert!(all.iter().all(|i| i.code.is_empty()));
+    let before = id_from_bytes(&all[1].id).unwrap();
+    let older = owner.list_invites(Some(before)).await.unwrap();
+    assert!(older.iter().all(|i| id_from_bytes(&i.id).unwrap() < before));
+    assert_eq!(older.len(), all.len() - 2);
+    assert!(
+        guest
+            .revoke_invite(v1::RevokeInvite {
+                invite_id: server_invite.id.clone()
+            })
+            .await
+            .is_err()
+    );
+    guest
+        .revoke_invite(v1::RevokeInvite {
+            invite_id: guest_invite.id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        guest.list_invites(None).await.unwrap()[0]
+            .revoked_at
+            .is_some()
+    );
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some(
+                Permissions::EVERYONE
+                    .difference(Permissions::CREATE_INVITES)
+                    .bits(),
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(guest.list_invites(None).await.is_err());
+    assert!(
+        guest
+            .create_invite(v1::CreateInvite::default())
+            .await
+            .is_err()
+    );
+    let (wrong_port, wrong_task) = https(&world, true).await;
+    let mut address = world.address.clone();
+    address.https_port = wrong_port;
+    let wrong = Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wrong.list_invites(None).await,
+        Err(Error::Http(_))
+    ));
+    task.abort();
+    wrong_task.abort();
+}
+
+async fn assert_invite_rest_metadata(world: &World) {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let unauthenticated = world
+        .server
+        .public_routes()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/invites")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    let token = world
+        .storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    for (query, expected) in [
+        ("limit=1", StatusCode::OK),
+        ("limit=0", StatusCode::BAD_REQUEST),
+        ("limit=101", StatusCode::BAD_REQUEST),
+        ("before=invalid", StatusCode::BAD_REQUEST),
+    ] {
+        let response = world
+            .server
+            .public_routes()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/invites?{query}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].get("code").is_none());
+            assert!(rows[0].get("codeHash").is_none());
+            assert!(rows[0].get("code_hash").is_none());
+        }
+    }
+}

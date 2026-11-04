@@ -86,7 +86,7 @@ fn entry_json(entry: &db::AuditEntry) -> Value {
     })
 }
 
-async fn caller(state: &AuditState, headers: &HeaderMap) -> Result<Id, HttpError> {
+pub(super) async fn caller(state: &AuditState, headers: &HeaderMap) -> Result<Id, HttpError> {
     let Some(token) = bearer(headers) else {
         return Err(HttpError::Unauthorized);
     };
@@ -123,7 +123,7 @@ fn b64(id: &Id) -> String {
     base64::engine::general_purpose::STANDARD.encode(id.as_bytes())
 }
 
-enum HttpError {
+pub(super) enum HttpError {
     Unauthorized,
     Forbidden,
     BadRequest(&'static str),

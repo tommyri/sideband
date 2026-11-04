@@ -49,6 +49,8 @@ const conversation: DmView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canCreateInvites: false,
+  canManageInvites: false,
   channels: [],
   directMessages: [conversation],
   members: ['own', 'alice', 'bob', 'carol'].map(member),

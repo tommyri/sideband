@@ -1,6 +1,6 @@
 # T-056 — Admin UI: server settings, roles, members, invites, channels, audit log
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-042, T-030, T-023, T-031
@@ -8,6 +8,10 @@ Paths: `apps/desktop/src/features/admin/`
 
 ## Goal
 Everything an admin needs without touching the CLI.
+
+First increment: [T-056A](T-056A-invite-management.md) delivers invite management.
+The parent remains open for server settings, roles, members/moderation, channel
+overrides, webhooks and audit-log UI, including permission-model acceptance.
 
 ## Scope
 - Server settings: name, description, icon (attachment), registration

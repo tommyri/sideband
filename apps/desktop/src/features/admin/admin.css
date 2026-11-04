@@ -1,0 +1,90 @@
+.admin-dialog {
+  margin: auto;
+  width: min(920px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 24px;
+  background: var(--panel, #151b22);
+  color: var(--text, #f5f7f9);
+  border: 1px solid var(--border, #28313b);
+  border-radius: 12px;
+}
+.admin-dialog::backdrop {
+  background: #000a;
+}
+.admin-dialog header,
+.invite-list-tools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.admin-dialog h2,
+.admin-dialog h3 {
+  margin: 0;
+}
+.invite-create,
+.invite-code {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin: 20px 0;
+}
+.invite-create label,
+.invite-code label {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 150px;
+}
+.invite-create small {
+  flex-basis: 100%;
+  color: var(--muted, #929eaa);
+}
+.admin-dialog input,
+.admin-dialog select {
+  background: var(--bg, #0d1116);
+  color: inherit;
+  border: 1px solid var(--border, #28313b);
+  border-radius: 5px;
+  padding: 9px;
+  min-width: 0;
+}
+.invite-code {
+  border: 1px solid #9cb6cb;
+  padding: 12px;
+  border-radius: 8px;
+}
+.invite-code input {
+  font-family: monospace;
+}
+.invite-table-wrap {
+  overflow: auto;
+  margin: 12px 0;
+}
+.admin-dialog table {
+  width: 100%;
+  text-align: left;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admin-dialog th,
+.admin-dialog td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border, #28313b);
+}
+.admin-dialog td small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--muted, #929eaa);
+}
+.invite-confirm {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #ff655f;
+  border-radius: 8px;
+}
+.invite-confirm button {
+  margin-right: 8px;
+}

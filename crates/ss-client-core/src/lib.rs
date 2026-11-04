@@ -38,6 +38,8 @@ pub mod connection;
 mod error;
 pub mod events;
 mod history;
+mod http;
+mod invites;
 pub mod state;
 pub mod storage;
 pub mod voice;

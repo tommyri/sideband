@@ -392,6 +392,15 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         perms_and(&["VIEW_AUDIT_LOG"], &["caller("]),
     ),
     (
+        "http/invites.rs",
+        "get",
+        "/api/v1/invites",
+        perms_and(
+            &["MANAGE_SERVER", "CREATE_INVITES"],
+            &["caller(", "(!manager).then_some(user)"],
+        ),
+    ),
+    (
         "http/webhooks.rs",
         "post",
         "/api/v1/webhooks/{webhook_id}/{token}",

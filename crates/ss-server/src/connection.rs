@@ -165,6 +165,10 @@ impl Server {
                 Arc::clone(&auth),
                 Arc::clone(&perms),
             ))
+            .merge(crate::http::invites::router(
+                Arc::clone(&auth),
+                Arc::clone(&perms),
+            ))
             .merge(crate::http::attachments::router(
                 auth,
                 perms,

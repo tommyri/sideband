@@ -56,6 +56,19 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<Invite>, 
     Ok(row.map(InviteRow::into_invite))
 }
 
+/// Newest-first metadata page, restricted to a creator unless the caller manages the server.
+pub async fn page(
+    conn: &mut SqliteConnection,
+    creator: Option<Id>,
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<Invite>, Error> {
+    let rows = db(sqlx::query_as::<_, InviteRow>(
+        "SELECT id, created_by, max_uses, uses, expires_at, revoked_at, created_at FROM invites WHERE (? IS NULL OR created_by = ?) AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?"
+    ).bind(creator).bind(creator).bind(before).bind(before).bind(i64::from(limit)).fetch_all(conn).await)?;
+    Ok(rows.into_iter().map(InviteRow::into_invite).collect())
+}
+
 /// Loads an invite by code.
 pub async fn get_by_code(conn: &mut SqliteConnection, code: &str) -> Result<Option<Invite>, Error> {
     let row = db(sqlx::query_as::<_, InviteRow>(BY_CODE_HASH)

@@ -63,6 +63,8 @@ pub struct ActiveVoiceView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct ServerView {
+    pub can_create_invites: bool,
+    pub can_manage_invites: bool,
     pub own_user_id: String,
     pub channels: Vec<ChannelView>,
     pub direct_messages: Vec<crate::dm::DmView>,
@@ -226,6 +228,8 @@ pub fn snapshot(
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     Ok(ServerView {
+        can_create_invites: allowed(Permissions::CREATE_INVITES),
+        can_manage_invites: allowed(Permissions::MANAGE_SERVER),
         own_user_id: own_id.to_string(),
         channels,
         direct_messages: crate::dm::views(state)?,

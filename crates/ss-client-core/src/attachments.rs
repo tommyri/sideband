@@ -1,46 +1,17 @@
 //! Bounded, authenticated file transfers to the approved server only.
-use crate::{Client, ConnectionState, Error};
+use crate::{Client, Error, http::read_bounded};
 use base64::Engine;
 use serde::Deserialize;
 use ss_core::Id;
-use std::time::Duration;
 
 /// Desktop transfer ceiling; server policy may impose a lower limit.
 pub const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
-/// A short-lived transfer session. Credentials never cross the native boundary.
-pub struct AttachmentSession {
-    http: reqwest::Client,
-    base: reqwest::Url,
-    token: String,
-}
+/// Pinned session used for attachment transfers.
+pub type AttachmentSession = crate::http::HttpSession;
 impl Client {
-    /// Capture the authenticated server and approved certificate for a transfer.
+    /// Capture an authenticated session for file transfers.
     pub async fn attachment_session(&self) -> Result<AttachmentSession, Error> {
-        if self.store.read().connection != ConnectionState::Connected {
-            return Err(Error::Disconnected);
-        }
-        let token = self.auth.read().clone().ok_or(Error::Disconnected)?;
-        let pins = self.pins.clone();
-        let key = self.address.id()?;
-        let pin = tokio::task::spawn_blocking(move || pins.get(&key))
-            .await
-            .map_err(|e| Error::Storage(e.to_string()))??
-            .ok_or(Error::Protocol("missing approved HTTPS pin"))?;
-        let http = reqwest::Client::builder()
-            .use_preconfigured_tls(ss_net::client::pinned_tls_config(pin)?)
-            .https_only(true)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(120))
-            .build()?;
-        let host = if self.address.host.contains(':') {
-            format!("[{}]", self.address.host)
-        } else {
-            self.address.host.clone()
-        };
-        let base = reqwest::Url::parse(&format!("https://{host}:{}/", self.address.https_port))
-            .map_err(|_| Error::Protocol("invalid attachment origin"))?;
-        Ok(AttachmentSession { http, base, token })
+        self.http_session().await
     }
 }
 impl AttachmentSession {
@@ -83,21 +54,4 @@ impl AttachmentSession {
 #[serde(rename_all = "camelCase")]
 struct Uploaded {
     attachment_id: String,
-}
-async fn read_bounded(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, Error> {
-    let mut response = response.error_for_status()?;
-    if !response.status().is_success() {
-        return Err(Error::Protocol("attachment redirect rejected"));
-    }
-    if response.content_length().is_some_and(|n| n > limit as u64) {
-        return Err(Error::Protocol("attachment response is too large"));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len().saturating_add(chunk.len()) > limit {
-            return Err(Error::Protocol("attachment response is too large"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }

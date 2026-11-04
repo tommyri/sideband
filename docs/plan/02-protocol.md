@@ -245,6 +245,7 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/users/{id}/avatar` | |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
 | GET | `/api/v1/audit-log?before=&limit=` | admins |
+| GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
 | GET | `/metrics` | internal listener only |
 
 History JSON uses camelCase fields, base64 bytes, decimal strings for 64-bit
@@ -256,6 +257,13 @@ certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
 the public port is refused; only the loopback health/metrics listener remains
 unencrypted. ACME HTTP-01 uses TCP 80 for challenges and redirects every other
 request to this HTTPS listener.
+
+Invite pages are newest-first by ULID with a default limit of 50 (allowed 1–100).
+`MANAGE_SERVER` grants all records; otherwise `CREATE_INVITES` grants only records
+created by the caller. Records use protobuf-JSON identifiers/timestamps and include
+creator, uses, optional maximum uses, creation/expiry/revocation timestamps. Neither
+plaintext codes nor hashes are returned. A plaintext code is available only in the
+successful `CreateInvite` control response; it is not recoverable from history.
 
 Every public response carries `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a
