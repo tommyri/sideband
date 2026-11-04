@@ -64,3 +64,13 @@ Multi-server failover.
   and exactly-once queued sends. CI explicitly runs the ignored two-minute
   in-process chaos test with random 1–10 second outages and asserts one restored
   voice seat plus one stored row per queued message.
+
+### Control-stream close-reason regression — 2026-11-04
+
+Full-suite validation for T-056A exposed a disconnect race: control I/O cleanup
+called Quinn `close()` after a remote close, replacing its reconnect code with
+`LocalClosed`. Whether control I/O or the datagram task finished first therefore
+determined whether the server retained the voice seat. Control teardown now closes
+only an open connection, preserving terminal peer/transport reasons. A deterministic
+loopback regression covers reads and writes after a non-zero peer close; the
+original voice-resume integration test also passes without weakening its timing.

@@ -114,6 +114,14 @@ impl<Out: ControlMessage, In: Message + Default> ControlStream<Out, In> {
     }
 }
 
+// Quinn's close() replaces even an existing remote close reason with LocalClosed.
+// Preserve terminal peer/transport reasons so hosts can decide whether to resume.
+fn close_if_open(connection: &quinn::Connection, code: u32, reason: &[u8]) {
+    if connection.close_reason().is_none() {
+        connection.close(code.into(), reason);
+    }
+}
+
 /// One typed writer. A partial frame is retained across cancellation.
 pub struct ControlSender<M> {
     stream: quinn::SendStream,
@@ -142,7 +150,7 @@ impl<M: ControlMessage> ControlSender<M> {
             match self.stream.write(&bytes[*offset..]).await {
                 Ok(written) => *offset += written,
                 Err(error) => {
-                    self.connection.close(2_u32.into(), b"control write failed");
+                    close_if_open(&self.connection, 2, b"control write failed");
                     return Err(ControlError::Write(Arc::new(error)));
                 }
             }
@@ -164,8 +172,7 @@ impl<M: Message + Default> ControlReceiver<M> {
     pub async fn recv(&mut self) -> Result<M, ControlError> {
         let result = self.read_frame().await;
         if result.is_err() {
-            self.connection
-                .close(2_u32.into(), b"invalid control frame");
+            close_if_open(&self.connection, 2, b"invalid control frame");
         }
         result
     }
@@ -316,8 +323,7 @@ impl ClientControl {
 impl Drop for ClientControl {
     fn drop(&mut self) {
         self.pending.lock().fail(&ControlError::Closed);
-        self.connection
-            .close(0_u32.into(), b"control owner dropped");
+        close_if_open(&self.connection, 0, b"control owner dropped");
         for worker in &self.workers {
             worker.abort();
         }
@@ -353,9 +359,7 @@ async fn write_requests(
                 let _ = reply.send(Err(ControlError::IdsExhausted));
             }
             pending.lock().fail(&ControlError::IdsExhausted);
-            sender
-                .connection
-                .close(2_u32.into(), b"request ids exhausted");
+            close_if_open(&sender.connection, 2, b"request ids exhausted");
             break;
         };
         let envelope = ClientEnvelope {
@@ -422,7 +426,5 @@ async fn read_responses(
         }
     };
     pending.lock().fail(&error);
-    receiver
-        .connection
-        .close(2_u32.into(), b"control reader stopped");
+    close_if_open(&receiver.connection, 2, b"control reader stopped");
 }

@@ -730,3 +730,44 @@ async fn video_frame_reads_resume_after_cancellation_and_bound_lengths() {
         assert!(within(reader.next_frame()).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn control_io_preserves_the_peers_reconnect_close_code() {
+    let mut server = Server::new().await;
+    let mut client = within(client::connect(
+        "127.0.0.1",
+        server.addr().port(),
+        server.pins(),
+    ))
+    .await
+    .unwrap();
+    let mut stream = client.open_control().await.unwrap();
+    stream
+        .send(&ClientEnvelope {
+            request_id: 1,
+            msg: Some(ping(0)),
+        })
+        .await
+        .unwrap();
+    let mut peer = server.next().await;
+    let mut incoming = within(peer.accept_control()).await.unwrap();
+    incoming.recv().await.unwrap();
+    peer.close(73, b"reconnect");
+    within(client.quic().closed()).await;
+    assert!(stream.recv().await.is_err());
+    assert!(
+        matches!(client.quic().close_reason(), Some(quinn::ConnectionError::ApplicationClosed(close)) if close.error_code == 73_u32.into())
+    );
+    assert!(
+        stream
+            .send(&ClientEnvelope {
+                request_id: 2,
+                msg: Some(ping(0))
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        matches!(client.quic().close_reason(), Some(quinn::ConnectionError::ApplicationClosed(close)) if close.error_code == 73_u32.into())
+    );
+}
