@@ -169,6 +169,11 @@ impl Server {
                 Arc::clone(&auth),
                 Arc::clone(&perms),
             ))
+            .merge(crate::http::server_settings::router(
+                Arc::clone(&auth),
+                Arc::clone(&perms),
+                self.files.clone(),
+            ))
             .merge(crate::http::role_admin::router(
                 Arc::clone(&auth),
                 Arc::clone(&perms),

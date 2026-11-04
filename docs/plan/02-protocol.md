@@ -238,6 +238,8 @@ publisher, not promises that the server filters or re-encodes frames.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/v1/server` | Public: name, version, cert fingerprint, registration mode |
+| GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, registrationMode and revision; stale PUT returns 409 |
+| POST | `/api/v1/server/icon` | MANAGE_SERVER raw raster upload, up to 2 MiB; returns iconId, applied only by settings PUT |
 | GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order |
 | GET | `/api/v1/channels/{id}/messages/around/{message_id}` | Jump to message |
 | GET | `/api/v1/channels/{id}/search?q=` | Phase 4 |
@@ -308,3 +310,16 @@ Servers advertise `role-management-v2` in Welcome server features for `MoveRole`
 and explicit color clearing. Clients disable those additions on older servers.
 Role moves and deletion compaction emit `RoleUpdated` for every changed position.
 Override reads use the session bearer and the approved HTTPS certificate pin.
+
+### Server settings
+
+Settings GET returns `name`, `description`, nullable `iconId`, `registrationMode`,
+opaque `revision`, nullable `iconFilename` and `iconMime`. PUT sends only the five
+editable/profile fields, including the revision from the last read. Updates are
+atomic and audited. Names are 1–100 visible characters, descriptions at most 2048.
+Icons are PNG/JPEG/WebP, at most 2 MiB and 4096×4096 pixels. A new icon must be an
+unattached upload owned by the caller. A null iconId clears the icon.
+
+Registration modes are `invite` and `closed`; closed stops new accounts without
+invalidating sessions or invites. Password login and session resumption remain
+available. Both settings routes and uploads use session bearer authentication.

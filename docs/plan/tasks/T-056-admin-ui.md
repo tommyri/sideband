@@ -14,8 +14,8 @@ Completed increments: [T-056A](T-056A-invite-management.md) delivers invite mana
 [T-056C](T-056C-webhook-management.md) adds webhook management;
 [T-056D](T-056D-channel-management.md) adds channel creation, settings, ordering and deletion;
 [T-056E](T-056E-roles-permissions.md) adds roles, assignments, permission-model tests
-and channel permission overrides. The parent remains open for server settings and
-broader member moderation.
+and channel permission overrides; [T-056F](T-056F-server-settings.md) adds server settings.
+The parent remains open for broader member administration/moderation.
 
 ## Scope
 - Server settings: name, description, icon (attachment), registration

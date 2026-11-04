@@ -12,6 +12,7 @@ mod input;
 mod onboarding;
 mod persistence;
 mod role_admin;
+mod server_settings;
 mod state;
 mod testing;
 mod types;
@@ -54,6 +55,9 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            server_settings::get_server_settings,
+            server_settings::save_server_settings,
+            server_settings::upload_server_icon,
             role_admin::role_admin_snapshot,
             role_admin::role_admin_action,
             role_admin::role_overrides,

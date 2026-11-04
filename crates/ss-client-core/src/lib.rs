@@ -45,6 +45,7 @@ mod invites;
 mod webhooks;
 pub use webhooks::{CreatedWebhookUrl, WebhookMetadata};
 pub mod role_admin;
+pub mod server_settings;
 pub mod state;
 pub mod storage;
 pub mod voice;

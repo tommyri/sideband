@@ -419,6 +419,12 @@ enum InviteKind {
 }
 
 async fn claim_invite(conn: &mut sqlx::SqliteConnection, pending: &Pending) -> Result<bool, Error> {
+    if settings::get(conn, settings::REGISTRATION_MODE)
+        .await?
+        .is_some_and(|s| s.value == "closed")
+    {
+        return Err(Error::InvalidInvite);
+    }
     match pending.kind {
         InviteKind::Owner => claim_owner(conn, &pending.invite_code).await,
         InviteKind::Regular(id) => {
@@ -443,6 +449,12 @@ async fn classify(
     code: &str,
     now: Timestamp,
 ) -> Result<InviteKind, Error> {
+    if settings::get(conn, settings::REGISTRATION_MODE)
+        .await?
+        .is_some_and(|s| s.value == "closed")
+    {
+        return Err(Error::InvalidInvite);
+    }
     if code.is_empty() {
         return Err(Error::InvalidInvite);
     }

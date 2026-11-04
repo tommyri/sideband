@@ -1270,3 +1270,143 @@ async fn channel_override_reads_require_visible_guild_channels_and_management() 
     wrong_task.abort();
     task.abort();
 }
+
+fn settings_icon() -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([40, 180, 160, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    bytes.into_inner()
+}
+#[tokio::test]
+async fn server_settings_are_authorized_atomic_audited_and_pin_checked() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    assert!(guest.server_settings().await.is_err());
+    assert!(guest.upload_server_icon(settings_icon()).await.is_err());
+    let mut original = owner.server_settings().await.unwrap().settings;
+    assert!(guest.save_server_settings(&original).await.is_err());
+    original.name = "Community".into();
+    original.description = "A place for friends".into();
+    assert!(
+        owner
+            .upload_server_icon(b"<svg>not a raster</svg>".to_vec())
+            .await
+            .is_err()
+    );
+    let icon = owner.upload_server_icon(settings_icon()).await.unwrap();
+    original.icon_id = Some(icon.clone());
+    let saved = owner.save_server_settings(&original).await.unwrap();
+    assert_eq!(saved.settings.name, "Community");
+    assert_eq!(saved.settings.icon_id, Some(icon));
+    assert_eq!(saved.icon_mime.as_deref(), Some("image/png"));
+    assert!(
+        matches!(owner.save_server_settings(&original).await,Err(Error::Protocol(message)) if message.contains("Reload"))
+    );
+    let mut bad = saved.settings.clone();
+    bad.registration_mode = "open".into();
+    assert!(owner.save_server_settings(&bad).await.is_err());
+    bad = saved.settings.clone();
+    bad.name = " ".into();
+    assert!(owner.save_server_settings(&bad).await.is_err());
+    bad = saved.settings.clone();
+    bad.description = "x".repeat(2049);
+    assert!(owner.save_server_settings(&bad).await.is_err());
+    assert_eq!(
+        owner.server_settings().await.unwrap().settings.revision,
+        saved.settings.revision
+    );
+    let mut clear = saved.settings;
+    clear.icon_id = None;
+    clear.description.clear();
+    let cleared = owner.save_server_settings(&clear).await.unwrap();
+    assert!(cleared.settings.icon_id.is_none());
+    assert_eq!(cleared.settings.description, "");
+    let rows = owner
+        .audit_page(
+            None,
+            &ss_client_core::AuditFilter {
+                action: Some("server.update".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let (wrong_port, wrong_task) = https(&world, true).await;
+    let mut address = world.address.clone();
+    address.https_port = wrong_port;
+    let wrong = Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(wrong.server_settings().await, Err(Error::Http(_))));
+    wrong.close().await;
+    guest.close().await;
+    owner.close().await;
+    wrong_task.abort();
+    task.abort();
+}
+#[tokio::test]
+async fn closed_registration_rejects_invites_but_preserves_existing_accounts() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let invite = owner
+        .create_invite(v1::CreateInvite::default())
+        .await
+        .unwrap();
+    let mut profile = owner.server_settings().await.unwrap().settings;
+    profile.registration_mode = "closed".into();
+    let saved = owner.save_server_settings(&profile).await.unwrap();
+    let rejected = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Register(v1::Register {
+            invite_code: invite.code.clone(),
+            username: "newcomer".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+        Arc::new(MemoryStorage::default()),
+    )
+    .await;
+    assert!(rejected.is_err());
+    let login = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Saved,
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        login.state().read().server.as_ref().unwrap().name,
+        saved.settings.name
+    );
+    let mut profile = saved.settings;
+    profile.registration_mode = "invite".into();
+    owner.save_server_settings(&profile).await.unwrap();
+    let newcomer = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Register(v1::Register {
+            invite_code: invite.code,
+            username: "newcomer".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+        Arc::new(MemoryStorage::default()),
+    )
+    .await
+    .unwrap();
+    newcomer.close().await;
+    login.close().await;
+    owner.close().await;
+    task.abort();
+}

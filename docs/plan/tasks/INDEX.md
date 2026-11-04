@@ -17,7 +17,7 @@ T-063 live diagnostics and operator inspection are implemented; real-call and
 dashboard deployment acceptance remain open.
 T-056A adds invite administration, T-056B adds filtered audit history and T-056C adds
 webhook management. T-056D adds channel management; T-056E adds roles, member assignments
-and channel permission overrides. Server settings and broader member moderation remain open.
+and channel permission overrides. T-056F adds server settings; broader member moderation remains open.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -95,6 +95,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-056C](T-056C-webhook-management.md) | Webhook management UI and metadata history | S | T-042, T-031 | done |
 | [T-056D](T-056D-channel-management.md) | Channel management UI | M | T-042, T-023 | done |
 | [T-056E](T-056E-roles-permissions.md) | Roles, assignments and channel permissions UI | M | T-042, T-022, T-023 | done |
+| [T-056F](T-056F-server-settings.md) | Server settings UI and persistent profile API | M | T-042, T-021, T-022, T-027 | done |
 | [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | todo |
 | [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | in-progress |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
@@ -158,6 +159,7 @@ flowchart TD
     T042 & T031 --> T056C
     T042 & T023 --> T056D
     T042 & T022 & T023 --> T056E
+    T042 & T021 & T022 & T027 --> T056F
     T003 --> T047 --> T048 & T049 & T050
     T047 & T044 & T051 --> T058
     T042 --> T075 --> T057
@@ -191,7 +193,7 @@ decide how many sub-agents to spawn.
 | 6 | T-018, T-019, T-025, T-026, T-033, T-034 |
 | 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-070 |
 | 8 | T-041, T-042, T-062 |
-| 9 | T-075 (priority), T-043, T-044, T-045, T-055, T-056, T-056A, T-056B, T-056C, T-056D, T-056E, T-060, T-069, T-071 |
+| 9 | T-075 (priority), T-043, T-044, T-045, T-055, T-056, T-056A, T-056B, T-056C, T-056D, T-056E, T-056F, T-060, T-069, T-071 |
 | 10 | T-057, T-046, T-051, T-061, T-065, T-072 |
 | 11 | T-058, T-064, T-066, T-067, T-068, T-073, T-074 |
 | 12 | T-076, T-080 |

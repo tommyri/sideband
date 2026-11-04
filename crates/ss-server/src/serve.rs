@@ -185,7 +185,17 @@ async fn print_invite(pool: &Pool) -> Result<(), Error> {
 
 async fn apply_settings(pool: &Pool, config: &Config) -> Result<(), Error> {
     let mut conn = pool.write().await;
-    settings::set(&mut conn, settings::NAME, &config.server.name).await?;
+    let previous = settings::get(&mut conn, "configured_server_name").await?;
+    if previous.is_none_or(|s| s.value != config.server.name) {
+        settings::set(&mut conn, settings::NAME, &config.server.name).await?;
+        settings::set(&mut conn, "configured_server_name", &config.server.name).await?;
+        settings::set(
+            &mut conn,
+            "profile_revision",
+            &ss_core::Id::generate().to_string(),
+        )
+        .await?;
+    }
     let enabled = if config.previews.enabled { "on" } else { "off" };
     settings::set(&mut conn, "link_previews", enabled).await?;
     settings::set(&mut conn, "link_preview_allow", &config.previews.allow).await?;
@@ -278,4 +288,45 @@ pub enum Error {
     /// A recorder was already installed in this process.
     #[error("metrics recorder is already installed")]
     Metrics,
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    #[tokio::test]
+    async fn ui_name_survives_restart_until_operator_changes_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Pool::open(dir.path().join("test.db")).await.unwrap();
+        let mut config = Config::default();
+        apply_settings(&pool, &config).await.unwrap();
+        {
+            let mut conn = pool.write().await;
+            settings::set(&mut conn, settings::NAME, "Community")
+                .await
+                .unwrap();
+        }
+        apply_settings(&pool, &config).await.unwrap();
+        {
+            let mut conn = pool.write().await;
+            assert_eq!(
+                settings::get(&mut conn, settings::NAME)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .value,
+                "Community"
+            );
+        }
+        config.server.name = "Operator name".into();
+        apply_settings(&pool, &config).await.unwrap();
+        let mut conn = pool.write().await;
+        assert_eq!(
+            settings::get(&mut conn, settings::NAME)
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            "Operator name"
+        );
+    }
 }

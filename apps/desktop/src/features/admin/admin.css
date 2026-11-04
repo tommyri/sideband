@@ -259,3 +259,67 @@
 .role-dialog form > fieldset > button {
   margin: 0.5rem 0.5rem 0.5rem 0;
 }
+.server-settings > button,
+.server-settings > p {
+  margin: 1rem 0;
+}
+.server-settings-fields {
+  display: grid;
+  gap: 1.25rem;
+  border: 0;
+  padding: 1rem 0;
+}
+.server-settings-fields > label,
+.server-icon-row label {
+  display: grid;
+  gap: 0.5rem;
+}
+.server-settings-fields small,
+.server-identity {
+  color: var(--muted, #929eaa);
+}
+.server-settings textarea {
+  background: var(--bg, #0d1116);
+  color: var(--text, #f5f7f9);
+  border: 1px solid var(--border, #28313b);
+  border-radius: 5px;
+  padding: 9px;
+  resize: vertical;
+}
+.server-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+.server-icon-row label {
+  flex: 1;
+  min-width: 180px;
+}
+.server-icon-row input {
+  max-width: 100%;
+  width: 100%;
+}
+.server-icon-preview,
+.server-icon-placeholder {
+  width: 80px;
+  height: 80px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--bg, #0d1116);
+}
+.server-icon-placeholder {
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-size: 0.8rem;
+}
+.server-identity {
+  border-top: 1px solid var(--border, #28313b);
+  padding-top: 1rem;
+}
+.server-identity dd {
+  margin: 0.25rem 0 1rem;
+  overflow-wrap: anywhere;
+}

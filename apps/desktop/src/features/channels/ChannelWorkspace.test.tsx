@@ -64,6 +64,7 @@ const channel = {
 const active = { serverId: 'server', channelId: 'voice', muted: false, deafened: false }
 const fixture = (): ServerView => ({
   ownUserId: 'own',
+  canManageServer: false,
   canManageRoles: false,
   canManageChannels: false,
   canManageWebhooks: false,
