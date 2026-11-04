@@ -1,3 +1,4 @@
+import { MessageFiles } from './MessageFiles'
 import { RichMessage } from './RichMessage'
 import { canonicalId, messageLink } from './rich-model'
 import { draftKey, getDraft, saveDraft, useChatNavigation } from './navigation'
@@ -328,7 +329,8 @@ export function Chat({
                 {message.replyTo && (
                   <button className="chat-reply" onClick={() => void jump(message.replyTo!)}>
                     ↳{' '}
-                    {byId.get(message.replyTo)?.content.slice(0, 100) ??
+                    {byId.get(message.replyTo)?.content.slice(0, 100) ||
+                      byId.get(message.replyTo)?.attachments[0]?.filename ||
                       'Reply to an earlier message'}
                   </button>
                 )}
@@ -340,11 +342,13 @@ export function Chat({
                     {message.editedAt !== null && <small> (edited)</small>}
                   </div>
                 )}
-                {message.attachmentCount > 0 && (
-                  <small>
-                    {message.attachmentCount} attachment(s) · Viewing attachments is coming in a
-                    later build.
-                  </small>
+                {!message.deleted && (
+                  <MessageFiles
+                    server={server}
+                    message={message.id}
+                    attachments={message.attachments}
+                    previews={message.previews}
+                  />
                 )}
                 {!message.deleted && (
                   <div className="chat-actions">
@@ -418,6 +422,7 @@ export function Chat({
       )}
       <Composer
         key={`${draftId}:${target?.kind === 'edit' ? target.message.id : 'new'}`}
+        canAttach={view?.canAttach ?? false}
         initialDraft={getDraft(draftId)}
         draftIdentity={draftId}
         saveDraft={(value) => saveDraft(draftId, value)}

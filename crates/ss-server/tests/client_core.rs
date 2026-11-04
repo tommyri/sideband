@@ -603,10 +603,17 @@ async fn https(world: &World, wrong_certificate: bool) -> (u16, JoinHandle<()>) 
                             if stream.read_exact(&mut byte).await.is_err() { return; } header.push(byte[0]);
                         }
                         let text = String::from_utf8(header).unwrap(); let mut lines = text.split("\r\n");
-                        let path = lines.next().unwrap().split_whitespace().nth(1).unwrap();
-                        let mut request = axum::http::Request::builder().uri(path);
-                        for line in lines { if let Some((key, value)) = line.split_once(':') { request = request.header(key, value.trim()); } }
-                        let response = app.oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap();
+                        let mut start = lines.next().unwrap().split_whitespace();
+                        let method = start.next().unwrap(); let path = start.next().unwrap();
+                        let mut request = axum::http::Request::builder().method(method).uri(path);
+                        let mut length = 0;
+                        for line in lines { if let Some((key, value)) = line.split_once(':') {
+                            if key.eq_ignore_ascii_case("content-length") { length = value.trim().parse::<usize>().unwrap(); }
+                            request = request.header(key, value.trim());
+                        } }
+                        assert!(length <= 4 * 1024 * 1024);
+                        let mut body = vec![0; length]; stream.read_exact(&mut body).await.unwrap();
+                        let response = app.oneshot(request.body(axum::body::Body::from(body)).unwrap()).await.unwrap();
                         let status = response.status(); let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap();
                         let header = format!("HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", status.as_u16(), body.len());
                         let _ = stream.write_all(header.as_bytes()).await; let _ = stream.write_all(&body).await; let _ = stream.shutdown().await;
@@ -658,6 +665,7 @@ async fn https_history_uses_session_bearer_and_exact_quic_pin() {
     let around = fresh.load_around(channel, second).await.unwrap();
     assert!(around.iter().any(|m| m.id == wire(second)));
     assert_eq!(fresh.state().read().messages[&channel].history_len(), 2);
+    let file = attachment_roundtrip(&world, &fresh, &owner, channel).await;
     let (wrong_port, wrong_task) = https(&world, true).await;
     let mut address = world.address.clone();
     address.https_port = wrong_port;
@@ -677,6 +685,74 @@ async fn https_history_uses_session_bearer_and_exact_quic_pin() {
         wrong.load_around(channel, second).await,
         Err(Error::Http(_))
     ));
+    let wrong_files = wrong.attachment_session().await.unwrap();
+    assert!(matches!(
+        wrong_files.download(file, "notes with spaces.txt").await,
+        Err(Error::Http(_))
+    ));
+    assert!(matches!(
+        wrong_files
+            .upload(channel, "notes.txt".into(), b"test".to_vec())
+            .await,
+        Err(Error::Http(_))
+    ));
     task.abort();
     wrong_task.abort();
+}
+
+async fn attachment_roundtrip(world: &World, fresh: &Client, owner: &Client, channel: Id) -> Id {
+    let files = fresh.attachment_session().await.unwrap();
+    let contents = b"attachment integration test".to_vec();
+    let file = files
+        .upload(channel, "notes with spaces.txt".into(), contents.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        files.download(file, "notes with spaces.txt").await.unwrap(),
+        contents
+    );
+    let guest = world.guest(owner).await;
+    let guest_files = guest.attachment_session().await.unwrap();
+    assert!(
+        guest_files
+            .download(file, "notes with spaces.txt")
+            .await
+            .is_err()
+    );
+    assert!(files.download(file, "wrong.txt").await.is_err());
+    assert!(
+        files
+            .upload(Id::generate(), "no-access.txt".into(), b"test".to_vec())
+            .await
+            .is_err()
+    );
+    assert!(
+        files
+            .upload(channel, "empty.txt".into(), Vec::new())
+            .await
+            .is_err()
+    );
+    // Attachment-only posts are real messages, while entirely empty posts remain invalid.
+    assert!(fresh.send_message(post(channel, "")).await.is_err());
+    let mut attachment_post = post(channel, "");
+    attachment_post.attachment_ids = vec![wire(file)];
+    let attachment_message = fresh.send_message(attachment_post).await.unwrap();
+    let loaded = fresh
+        .load_around(channel, attachment_message)
+        .await
+        .unwrap();
+    let sent_file = loaded
+        .iter()
+        .find(|m| m.id == wire(attachment_message))
+        .unwrap();
+    assert_eq!(sent_file.content, "");
+    assert_eq!(sent_file.attachments.len(), 1);
+    assert_eq!(
+        guest_files
+            .download(file, "notes with spaces.txt")
+            .await
+            .unwrap(),
+        contents
+    );
+    file
 }

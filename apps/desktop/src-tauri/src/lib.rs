@@ -1,3 +1,4 @@
+mod attachments;
 mod audio;
 mod build_identity;
 mod chat;
@@ -47,6 +48,8 @@ pub fn run() {
             chat::chat_action,
             chat::message_context,
             chat::open_chat_link,
+            attachments::attachment_transfer,
+            attachments::cancel_attachment,
             dm::dm_action,
             onboarding::probe_server,
             onboarding::remove_server,

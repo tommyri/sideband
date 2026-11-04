@@ -1,3 +1,5 @@
+import { useUploads } from './useUploads'
+import { fileSize } from './attachments'
 import { draftNonce, clearDraftNonce } from './navigation'
 import { completeOptions, completionAt, wrapSelection, type ChatMember } from './rich-model'
 import { useEffect, useRef, useState } from 'react'
@@ -18,6 +20,7 @@ export function Composer({
   members = [],
   editLast,
   draftIdentity = JSON.stringify([server, channel]),
+  canAttach = false,
 }: {
   server: string
   channel: string
@@ -30,8 +33,11 @@ export function Composer({
   onBusy?: (busy: boolean) => void
   members?: ChatMember[]
   editLast?: () => void
+  canAttach?: boolean
   draftIdentity?: string
 }) {
+  const uploads = useUploads(draftIdentity, server, channel)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState(
     target?.kind === 'edit' ? target.message.content : initialDraft,
   )
@@ -95,7 +101,13 @@ export function Composer({
   }, [])
   // Keep the same nonce when retrying an unchanged draft after an uncertain ack.
   const submit = async () => {
-    if (busy || disabled || !draft.trim()) return
+    if (
+      busy ||
+      disabled ||
+      (!draft.trim() && !uploads.items.length) ||
+      (target?.kind !== 'edit' && (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
+    )
+      return
     setBusy(true)
     onBusy?.(true)
     setError('')
@@ -103,20 +115,27 @@ export function Composer({
       if (target?.kind === 'edit') {
         await chatAction(server, { kind: 'edit', message: target.message.id, content: draft })
       } else {
-        const identity = JSON.stringify([draft, target?.message.id ?? null])
+        const identity = JSON.stringify([
+          draft,
+          target?.message.id ?? null,
+          uploads.items.map((i) => i.id),
+        ])
         await sendMessage({
           serverId: server,
           channelId: channel,
           content: draft,
           replyTo: target?.message.id ?? null,
-          attachmentIds: [],
+          attachmentIds: uploads.items.map((i) => i.id!),
           nonce: draftNonce(draftIdentity, identity),
         })
       }
       setDraft('')
       setCursor(0)
       setDismissed(true)
-      if (target?.kind !== 'edit') saveDraft?.('')
+      if (target?.kind !== 'edit') {
+        saveDraft?.('')
+        uploads.clear()
+      }
       clearDraftNonce(draftIdentity)
       cancel()
       sent()
@@ -128,9 +147,33 @@ export function Composer({
       onBusy?.(false)
     }
   }
+  const addFiles = (files: File[]) => {
+    if (!canAttach || disabled || busy || target?.kind === 'edit') return
+    try {
+      uploads.add(files)
+      setError('')
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
   return (
     <form
       className="chat-composer"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer.files.length) {
+          e.preventDefault()
+          addFiles(Array.from(e.dataTransfer.files))
+        }
+      }}
+      onPaste={(e) => {
+        if (e.clipboardData.files.length) {
+          e.preventDefault()
+          addFiles(Array.from(e.clipboardData.files))
+        }
+      }}
       onSubmit={(e) => {
         e.preventDefault()
         void submit()
@@ -148,7 +191,61 @@ export function Composer({
           </button>
         </div>
       )}
+      {target?.kind !== 'edit' && uploads.items.length > 0 && (
+        <ul className="chat-upload-list" aria-label="Attachments to send">
+          {uploads.items.map((item) => (
+            <li key={item.key}>
+              <span>
+                {item.file.name} · {fileSize(item.file.size)} ·{' '}
+                {item.status === 'ready'
+                  ? 'Ready'
+                  : item.status === 'reading'
+                    ? 'Preparing…'
+                    : item.status === 'uploading'
+                      ? 'Uploading…'
+                      : item.error}
+              </span>
+              {(item.status === 'reading' || item.status === 'uploading') && (
+                <progress aria-label={`Uploading ${item.file.name}`} />
+              )}
+              {item.status === 'error' && (
+                <button
+                  type="button"
+                  disabled={busy || disabled || !canAttach}
+                  onClick={() => uploads.retry(item.key)}
+                >
+                  Retry upload
+                </button>
+              )}
+              <button type="button" disabled={busy} onClick={() => uploads.remove(item.key)}>
+                {item.status === 'uploading' || item.status === 'reading'
+                  ? 'Cancel upload'
+                  : 'Remove attachment'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        type="file"
+        multiple
+        ref={fileInput}
+        hidden
+        aria-label="Attach files"
+        onChange={(e) => {
+          addFiles(Array.from(e.target.files ?? []))
+          e.target.value = ''
+        }}
+      />
       <div className="chat-format-tools" aria-label="Message formatting">
+        <button
+          type="button"
+          disabled={disabled || busy || !canAttach || target?.kind === 'edit'}
+          title="Attach files (up to 25 MiB each)"
+          onClick={() => fileInput.current?.click()}
+        >
+          Attach
+        </button>
         <button
           type="button"
           disabled={disabled || busy}
@@ -274,7 +371,13 @@ export function Composer({
         <button
           type="submit"
           className="button primary"
-          disabled={busy || disabled || !draft.trim()}
+          disabled={
+            busy ||
+            disabled ||
+            (!draft.trim() && !uploads.items.length) ||
+            (target?.kind !== 'edit' &&
+              (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
+          }
         >
           {busy ? 'Sending…' : target?.kind === 'edit' ? 'Save edit' : 'Send'}
         </button>

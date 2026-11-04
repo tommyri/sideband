@@ -105,3 +105,6 @@ mod tests {
         assert_eq!(crate::foundation(), ["ss-core", "ss-proto"]);
     }
 }
+
+/// Public-network address and hostname policy for untrusted URLs.
+pub mod public_address;

@@ -292,4 +292,27 @@ pub struct BridgeMessage {
     #[ts(type = "number | null")]
     pub edited_at: Option<i64>,
     pub attachment_count: u32,
+    pub attachments: Vec<BridgeAttachment>,
+    pub previews: Vec<BridgePreview>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub struct BridgeAttachment {
+    pub id: String,
+    pub filename: String,
+    pub mime: String,
+    #[ts(type = "number")]
+    pub size: u64,
+}
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub struct BridgePreview {
+    pub url: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub image_url: Option<String>,
+    pub site_name: Option<String>,
 }

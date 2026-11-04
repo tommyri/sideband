@@ -17,6 +17,7 @@ serde_json.workspace = true
 
 [dependencies]
 bytes.workspace = true
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ss-audio = { workspace = true, features = ["aec", "rnnoise"] }

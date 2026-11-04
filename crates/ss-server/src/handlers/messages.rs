@@ -77,7 +77,7 @@ impl Messages {
 
     async fn send(&self, actor: Id, command: &v1::SendMessage) -> Result<CommandReply, Error> {
         let channel_id = required_id(&command.channel_id, "channel id must be 16 bytes")?;
-        let content = body(&command.content)?;
+        let content = body(&command.content, !command.attachment_ids.is_empty())?;
         let nonce = nonce(command.nonce.as_deref())?;
         let (mentioned, everyone) = parse_mentions(&content)?;
         if command.attachment_ids.len() > MAX_ATTACHMENTS {
@@ -165,7 +165,7 @@ impl Messages {
 
     async fn edit(&self, actor: Id, command: &v1::EditMessage) -> Result<CommandReply, Error> {
         let message_id = required_id(&command.message_id, "message id must be 16 bytes")?;
-        let content = body(&command.content)?;
+        let content = body(&command.content, false)?;
         let (mentioned, everyone) = parse_mentions(&content)?;
         let mut conn = self.perms.pool().write().await;
         let current = live_message(&mut conn, message_id).await?;
@@ -454,10 +454,10 @@ async fn claimable_files(
     Ok(files)
 }
 
-fn body(content: &str) -> Result<String, Error> {
+fn body(content: &str, has_attachments: bool) -> Result<String, Error> {
     let trimmed = content.trim();
     let len = trimmed.chars().count();
-    if len == 0 {
+    if len == 0 && !has_attachments {
         return Err(Error::Invalid("message is empty"));
     }
     if len > MAX_CHARS {

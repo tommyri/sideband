@@ -31,6 +31,8 @@ const message: BridgeMessage = {
   createdAt: Date.now(),
   editedAt: null,
   attachmentCount: 0,
+  attachments: [],
+  previews: [],
 }
 const snapshot = {
   messages: [message],
@@ -38,6 +40,7 @@ const snapshot = {
   lastRead: null,
   canSend: true,
   canManage: false,
+  canAttach: true,
 }
 afterEach(() => {
   cleanup()

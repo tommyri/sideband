@@ -32,6 +32,7 @@ mod tests {
     }
 }
 
+pub mod attachments;
 mod commands;
 pub mod connection;
 mod error;

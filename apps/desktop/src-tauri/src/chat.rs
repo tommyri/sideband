@@ -2,7 +2,7 @@
 use crate::{
     commands::{api_error, parse_server_id},
     state::AppState,
-    types::{ApiError, BridgeMessage},
+    types::{ApiError, BridgeAttachment, BridgeMessage, BridgePreview},
 };
 use serde::{Deserialize, Serialize};
 use ss_client_core::v1;
@@ -41,6 +41,29 @@ pub(crate) fn message_view(message: &v1::Message) -> Result<BridgeMessage, ApiEr
         created_at: message.created_at,
         edited_at: message.edited_at,
         attachment_count: message.attachments.len().try_into().unwrap_or(u32::MAX),
+        attachments: message
+            .attachments
+            .iter()
+            .map(|a| {
+                Ok(BridgeAttachment {
+                    id: display(&a.id)?,
+                    filename: a.filename.clone(),
+                    mime: a.mime.clone(),
+                    size: a.size,
+                })
+            })
+            .collect::<Result<_, ApiError>>()?,
+        previews: message
+            .link_previews
+            .iter()
+            .map(|p| BridgePreview {
+                url: p.url.clone(),
+                title: p.title.clone(),
+                description: p.description.clone(),
+                image_url: p.image_url.clone(),
+                site_name: p.site_name.clone(),
+            })
+            .collect(),
     })
 }
 #[derive(Serialize, TS)]
@@ -51,6 +74,7 @@ pub struct ChatSnapshot {
     own_user_id: Option<String>,
     last_read: Option<String>,
     can_send: bool,
+    can_attach: bool,
     can_manage: bool,
 }
 #[tauri::command]
@@ -110,6 +134,7 @@ async fn snapshot_for(
             .map(|r| display(&r.last_read_message_id))
             .transpose()?,
         can_send: permissions.contains(Permissions::SEND_MESSAGES),
+        can_attach: permissions.contains(Permissions::ATTACH_FILES),
         can_manage: permissions.contains(Permissions::MANAGE_MESSAGES),
     })
 }

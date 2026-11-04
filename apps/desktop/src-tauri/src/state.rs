@@ -5,6 +5,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::Mutex;
 
 pub struct AppState {
+    pub transfers: Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<bool>>>,
     pub clients: Mutex<ClientSet>,
     pub storage: Arc<DesktopStorage>,
     pub pins: Arc<JsonPinStore>,
@@ -17,6 +18,7 @@ pub struct AppState {
 impl AppState {
     pub fn open(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
+            transfers: Mutex::new(std::collections::HashMap::new()),
             clients: Mutex::new(ClientSet::default()),
             storage: Arc::new(DesktopStorage::open(path.join("sessions.json"))?),
             pins: Arc::new(JsonPinStore::open(path.join("pins.json"))?),
