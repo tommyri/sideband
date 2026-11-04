@@ -45,6 +45,32 @@ pub struct State {
     pub revision: u64,
 }
 
+// Match the server's @everyone word-boundary rule. Explicit mention IDs are
+// already canonical bytes on the wire, including alias spellings in content.
+fn mentions_user(message: &v1::Message, own: &bytes::Bytes) -> bool {
+    if message
+        .author
+        .as_ref()
+        .is_some_and(|author| author.id == own)
+    {
+        return false;
+    }
+    message.mentions.contains(own)
+        || message
+            .content
+            .match_indices("@everyone")
+            .any(|(index, _)| {
+                message.content[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !c.is_ascii_alphanumeric())
+                    && message.content[index + "@everyone".len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !c.is_ascii_alphanumeric())
+            })
+}
+
 impl State {
     /// Depth-first channel tree, siblings sorted by (position, id). Missing
     /// parents and cycles cannot hide a visible channel or recurse forever.
@@ -287,6 +313,32 @@ impl State {
             return Ok(ClientEvent::MessagesChanged { channel });
         }
         let cache = self.messages.entry(channel).or_default();
+        // Message events do not carry a refreshed read state. Maintain the live
+        // delta over the server's snapshot count, deduplicating cached echoes.
+        // ReadStateUpdated remains authoritative and replaces this count.
+        if let Some(own) = self.own_user.as_ref() {
+            let previous = cache.get(key);
+            let before = previous.is_some_and(|m| mentions_user(m, &own.id));
+            let after =
+                !deleted && (created || previous.is_some()) && mentions_user(&message, &own.id);
+            if before != after {
+                let read = self
+                    .read_states
+                    .entry(channel)
+                    .or_insert_with(|| v1::ReadState {
+                        channel_id: message.channel_id.clone(),
+                        last_read_message_id: Id::nil().as_bytes().to_vec().into(),
+                        mention_count: 0,
+                    });
+                if message.id > read.last_read_message_id {
+                    read.mention_count = if after {
+                        read.mention_count.saturating_add(1)
+                    } else {
+                        read.mention_count.saturating_sub(1)
+                    };
+                }
+            }
+        }
         if deleted {
             cache.remove(key);
         } else {
@@ -483,6 +535,64 @@ impl State {
 mod tests {
     use super::*;
     use ss_proto::validate::id_to_bytes as wire;
+
+    #[test]
+    fn live_mentions_deduplicate_follow_edits_deletes_and_respect_read_cursors() {
+        let own = Id::generate();
+        let other = Id::generate();
+        let channel = Id::generate();
+        let key = Id::generate();
+        let mut state = State {
+            own_user: Some(v1::User {
+                id: wire(own),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        state.channels.insert(
+            channel,
+            v1::Channel {
+                id: wire(channel),
+                ..Default::default()
+            },
+        );
+        let mut message = v1::Message {
+            id: wire(key),
+            channel_id: wire(channel),
+            author: Some(v1::User {
+                id: wire(other),
+                ..Default::default()
+            }),
+            mentions: vec![wire(own)],
+            ..Default::default()
+        };
+        state.message(Some(message.clone()), false, true).unwrap();
+        state.message(Some(message.clone()), false, true).unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 1);
+        message.mentions.clear();
+        state.message(Some(message.clone()), false, false).unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 0);
+        message.content = "hello @everyone!".into();
+        state.message(Some(message.clone()), false, false).unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 1);
+        state.message(Some(message.clone()), true, false).unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 0);
+        // No count for already-read messages, self-mentions or embedded words.
+        state
+            .read_states
+            .get_mut(&channel)
+            .unwrap()
+            .last_read_message_id = wire(key);
+        state.message(Some(message.clone()), false, true).unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 0);
+        message.author.as_mut().unwrap().id = wire(own);
+        assert!(!mentions_user(&message, &wire(own)));
+        message.author.as_mut().unwrap().id = wire(other);
+        for content in ["mail@everyone", "@everyoneElse"] {
+            message.content = content.into();
+            assert!(!mentions_user(&message, &wire(own)));
+        }
+    }
 
     fn channel(key: Id, position: i32) -> v1::Channel {
         v1::Channel {

@@ -1,0 +1,126 @@
+.dm-list {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dm-list-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 8px;
+  gap: 8px;
+}
+.dm-list-title h3 {
+  font-size: 12px;
+  color: var(--muted);
+}
+.dm-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-presence {
+  color: var(--muted);
+  font-size: 10px;
+}
+.dm-presence.online {
+  color: #69c7a6;
+}
+.dm-empty {
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.dm-header {
+  font-size: 12px;
+  margin-top: 8px;
+}
+.dm-header details {
+  max-height: 100px;
+  overflow: auto;
+}
+.dm-header summary {
+  cursor: pointer;
+}
+.dm-header ul {
+  list-style: none;
+  padding: 8px 0;
+}
+.dm-header small,
+.dm-picker small {
+  color: var(--muted);
+}
+.dm-header-actions,
+.dm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.dm-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+.dm-dialog form {
+  display: grid;
+  gap: 14px;
+}
+.dm-dialog label:not(.dm-option) {
+  display: grid;
+  gap: 6px;
+}
+.dm-dialog .dm-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+.dm-dialog input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.dm-dialog input:not([type='checkbox']) {
+  background: var(--panel);
+  color: var(--text);
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+.dm-picker {
+  max-height: 240px;
+  overflow: auto;
+}
+.dm-dialog-actions {
+  justify-content: flex-end;
+}
+.dm-list button:focus-visible,
+.dm-header button:focus-visible {
+  outline: 2px solid var(--coral);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1150px) {
+  .live-workspace.has-chat {
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .has-chat .live-members {
+    display: none;
+  }
+  .has-chat .live-channels {
+    grid-row: 1;
+  }
+  .has-chat .live-channel-main {
+    grid-row: 1;
+  }
+}
+@media (max-height: 700px) {
+  .dm-header details {
+    max-height: 70px;
+  }
+}
+@media (max-height: 700px) {
+  .has-chat .chat-scroll {
+    min-height: 60px;
+  }
+  .has-chat .chat-composer textarea {
+    max-height: 100px;
+  }
+}

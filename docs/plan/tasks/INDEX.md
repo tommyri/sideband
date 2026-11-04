@@ -75,7 +75,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-045A](T-045A-live-text-chat.md) | Live text chat foundation | M | T-042, T-026 | done |
 | [T-045B](T-045B-rich-chat-composer.md) | Rich text and composer completion | M | T-045A | todo |
 | [T-045C](T-045C-chat-attachments.md) | Chat attachments and previews | M | T-045A, T-027, T-029 | todo |
-| [T-046](T-046-dm-ui.md) | DM UI | S | T-045, T-028 | todo |
+| [T-046](T-046-dm-ui.md) | DM UI | S | T-045A, T-028 | done |
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
 | [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | in-progress |
 | [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | in-progress |

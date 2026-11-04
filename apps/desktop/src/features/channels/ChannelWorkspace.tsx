@@ -1,3 +1,7 @@
+import { DmList } from '../dm/DmList'
+import { DmDialog, type DmMode } from '../dm/DmDialog'
+import { DmHeader } from '../dm/DmHeader'
+import { dmName } from '../dm/model'
 import { Chat } from '../chat/Chat'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/app-store'
@@ -36,6 +40,8 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
+  const [dmDialog, setDmDialog] = useState<DmMode | null>(null)
+  const [dmWarning, setDmWarning] = useState('')
   const openMenu = useCallback((id: string) => setMenu(id), [])
   useEffect(() => {
     void refreshVoice(server)
@@ -89,6 +95,9 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const current = view.channels.find(
     (c) => c.id === (selected ?? (active?.serverId === server ? active.channelId : undefined)),
   )
+  const currentDm = view.directMessages.find((dm) => dm.id === selected)
+  const chatChannel = currentDm ?? (current?.kind === 2 ? current : undefined)
+  const title = currentDm ? dmName(currentDm, members, view.ownUserId) : current?.name
   const chosenMember = view.members.find((m) => m.id === menu)
   const connected = status?.kind === 'connected'
   const join = (channel: ChannelView) => {
@@ -96,7 +105,25 @@ export function ChannelWorkspace({ server }: { server: string }) {
     if (channel.kind === 3) void runVoice(() => joinVoice(server, channel.id))
   }
   return (
-    <section className="live-workspace">
+    <section className={`live-workspace ${chatChannel ? 'has-chat' : ''}`}>
+      {dmDialog && (dmDialog === 'create' || currentDm) && (
+        <DmDialog
+          key={`${dmDialog}:${currentDm?.id ?? ''}`}
+          server={server}
+          view={view}
+          conversation={currentDm}
+          mode={dmDialog}
+          connected={connected}
+          close={() => setDmDialog(null)}
+          complete={(result) => {
+            const leaving = dmDialog === 'leave'
+            setDmDialog(null)
+            setDmWarning(result.warning ?? '')
+            select(server, leaving ? '' : result.channelId)
+            void refreshVoice(server)
+          }}
+        />
+      )}
       {audioSettings && <AudioSettings close={() => setAudioSettings(false)} />}
       <aside className="live-channels" aria-label="Channel tree">
         <header>
@@ -109,6 +136,17 @@ export function ChannelWorkspace({ server }: { server: string }) {
           </button>
         </header>
         <div className="live-channel-scroll">
+          <DmList
+            view={view}
+            selected={selected}
+            connected={connected}
+            select={(id) => {
+              select(server, id)
+              setDmDialog(null)
+              setDmWarning('')
+            }}
+            create={() => setDmDialog('create')}
+          />
           {visibleChannels(view.channels, collapsed).map(({ channel, depth }) => {
             const participants = view.participants.filter((p) => p.channelId === channel.id)
             return (
@@ -215,10 +253,25 @@ export function ChannelWorkspace({ server }: { server: string }) {
           {view.channels.length === 0 && <p>No channels are visible to your account.</p>}
         </div>
       </aside>
-      <main className={`live-channel-main ${current?.kind === 2 ? 'text-workspace' : ''}`}>
+      <main className={`live-channel-main ${chatChannel ? 'text-workspace' : ''}`}>
         <header>
-          <p className="eyebrow">{current?.kind === 3 ? 'Voice channel' : 'Your community'}</p>
-          <h1>{current?.name ?? 'Choose a channel'}</h1>
+          <p className="eyebrow">
+            {currentDm
+              ? 'Direct messages'
+              : current?.kind === 3
+                ? 'Voice channel'
+                : 'Your community'}
+          </p>
+          <h1>{title ?? 'Choose a channel'}</h1>
+          {currentDm && (
+            <DmHeader
+              conversation={currentDm}
+              view={view}
+              connected={connected}
+              manage={setDmDialog}
+            />
+          )}
+          {dmWarning && <p role="alert">{dmWarning}</p>}
           {current?.kind === 3 && (
             <p>
               {current.profile} profile ·{' '}
@@ -271,36 +324,40 @@ export function ChannelWorkspace({ server }: { server: string }) {
                 })}
             </div>
           </>
-        ) : current?.kind === 2 ? (
+        ) : chatChannel ? (
           <Chat
-            key={`${server}:${current.id}`}
+            key={`${server}:${chatChannel.id}`}
             server={server}
-            channel={current.id}
-            name={current.name}
+            channel={chatChannel.id}
+            name={title ?? 'Conversation'}
             connected={connected}
           />
         ) : (
           <p>Select a channel to join the conversation.</p>
         )}
-        <details className="voice-ui-settings">
-          <summary>Interaction settings</summary>
-          <label>
-            <input
-              type="checkbox"
-              defaultChecked={localStorage.getItem('ss.doubleClickJoin') === 'true'}
-              onChange={(e) => localStorage.setItem('ss.doubleClickJoin', String(e.target.checked))}
-            />{' '}
-            Double-click voice channels to join
-          </label>
-          <p>
-            Ctrl/Cmd + Shift + M: mute · D: deafen · ↑/↓: select channel. Shortcuts work while this
-            app is focused.
-          </p>
-          <p>
-            Microphone/output selection and global push-to-talk settings are coming in a future test
-            build. This build uses system-default devices.
-          </p>
-        </details>
+        {!chatChannel && (
+          <details className="voice-ui-settings">
+            <summary>Interaction settings</summary>
+            <label>
+              <input
+                type="checkbox"
+                defaultChecked={localStorage.getItem('ss.doubleClickJoin') === 'true'}
+                onChange={(e) =>
+                  localStorage.setItem('ss.doubleClickJoin', String(e.target.checked))
+                }
+              />{' '}
+              Double-click voice channels to join
+            </label>
+            <p>
+              Ctrl/Cmd + Shift + M: mute · D: deafen · ↑/↓: select channel. Shortcuts work while
+              this app is focused.
+            </p>
+            <p>
+              Microphone/output selection and global push-to-talk settings are coming in a future
+              test build. This build uses system-default devices.
+            </p>
+          </details>
+        )}
       </main>
       <aside className="live-members" aria-label="Members">
         {groups.map((group) => (

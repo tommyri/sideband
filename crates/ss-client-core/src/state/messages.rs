@@ -31,6 +31,9 @@ impl MessageCache {
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
+    pub(super) fn get(&self, key: Id) -> Option<&v1::Message> {
+        self.recent.get(&key).or_else(|| self.history.get(&key))
+    }
     pub(super) fn newest(&self) -> Option<&v1::Message> {
         self.ordered().last().copied()
     }

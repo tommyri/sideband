@@ -3,6 +3,7 @@ mod build_identity;
 mod chat;
 mod commands;
 mod diagnostics;
+mod dm;
 mod input;
 mod onboarding;
 mod persistence;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::load_history,
             chat::chat_snapshot,
             chat::chat_action,
+            dm::dm_action,
             onboarding::probe_server,
             onboarding::remove_server,
             onboarding::reorder_servers,

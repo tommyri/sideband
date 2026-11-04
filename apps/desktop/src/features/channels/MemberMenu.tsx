@@ -1,3 +1,5 @@
+import { openDm } from '../dm/api'
+import { errorText } from '../chat/api'
 import { useEffect, useRef, useState } from 'react'
 import type { MemberView } from '../../lib/generated/MemberView'
 import type { ServerView } from '../../lib/generated/ServerView'
@@ -19,7 +21,9 @@ export function MemberMenu({
 }) {
   const modal = useRef<HTMLDialogElement>(null)
   const pending = useVoiceStore((s) => s.busy)
-  const busy = pending || !connected
+  const [dmBusy, setDmBusy] = useState(false)
+  const [dmError, setDmError] = useState('')
+  const busy = pending || dmBusy || !connected
   const active = useVoiceStore((s) => s.active)
   const [volume, setVolume] = useState(member.volume)
   const [destination, setDestination] = useState('')
@@ -74,7 +78,10 @@ export function MemberMenu({
             : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length
         controls[next]?.focus()
       }}
-      onCancel={close}
+      onCancel={(e) => {
+        if (dmBusy) e.preventDefault()
+        else close()
+      }}
       aria-labelledby="member-menu-title"
     >
       <header>
@@ -102,6 +109,23 @@ export function MemberMenu({
         >
           {copied ? 'User ID copied' : 'Copy user ID'}
         </button>
+        {!own && (
+          <button
+            className="button primary"
+            disabled={busy}
+            onClick={() => {
+              setDmBusy(true)
+              setDmError('')
+              void openDm(server, member.id)
+                .then(close)
+                .catch((e) => setDmError(errorText(e)))
+                .finally(() => setDmBusy(false))
+            }}
+          >
+            {dmBusy ? 'Opening…' : 'Message'}
+          </button>
+        )}
+        {dmError && <p role="alert">{dmError}</p>}
         {own ? (
           <div className="field-row">
             <button

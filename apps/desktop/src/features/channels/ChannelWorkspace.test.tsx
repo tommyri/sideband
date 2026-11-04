@@ -64,6 +64,7 @@ const channel = {
 const active = { serverId: 'server', channelId: 'voice', muted: false, deafened: false }
 const fixture = (): ServerView => ({
   ownUserId: 'own',
+  directMessages: [],
   channels: [{ ...channel, id: 'category', parentId: null, kind: 1, name: 'Social' }, channel],
   members: [{ ...member, id: 'own', username: 'me' }, member],
   participants: [

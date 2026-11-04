@@ -65,6 +65,7 @@ pub struct ActiveVoiceView {
 pub struct ServerView {
     pub own_user_id: String,
     pub channels: Vec<ChannelView>,
+    pub direct_messages: Vec<crate::dm::DmView>,
     pub members: Vec<MemberView>,
     pub participants: Vec<ParticipantView>,
     pub active_voice: Option<ActiveVoiceView>,
@@ -227,6 +228,7 @@ pub fn snapshot(
     Ok(ServerView {
         own_user_id: own_id.to_string(),
         channels,
+        direct_messages: crate::dm::views(state)?,
         members,
         participants,
         active_voice,
