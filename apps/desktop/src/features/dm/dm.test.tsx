@@ -49,6 +49,7 @@ const conversation: DmView = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canModerateMembers: false,
   canManageServer: false,
   canManageRoles: false,
   canManageChannels: false,

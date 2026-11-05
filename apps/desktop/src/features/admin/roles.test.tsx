@@ -51,6 +51,7 @@ const data: RoleSnapshot = {
 }
 const view: ServerView = {
   ownUserId: 'own',
+  canModerateMembers: false,
   canManageServer: false,
   canManageRoles: true,
   canManageChannels: true,

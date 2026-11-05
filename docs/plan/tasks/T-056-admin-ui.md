@@ -1,6 +1,6 @@
 # T-056 — Admin UI: server settings, roles, members, invites, channels, audit log
 
-Status: in-progress
+Status: done
 Phase: 3
 Size: M
 Depends on: T-042, T-030, T-023, T-031
@@ -15,7 +15,8 @@ Completed increments: [T-056A](T-056A-invite-management.md) delivers invite mana
 [T-056D](T-056D-channel-management.md) adds channel creation, settings, ordering and deletion;
 [T-056E](T-056E-roles-permissions.md) adds roles, assignments, permission-model tests
 and channel permission overrides; [T-056F](T-056F-server-settings.md) adds server settings.
-The parent remains open for broader member administration/moderation.
+[T-056G](T-056G-member-moderation.md) completes member administration/moderation.
+Installed cross-platform acceptance remains in the testing-app milestone.
 
 ## Scope
 - Server settings: name, description, icon (attachment), registration
@@ -24,7 +25,7 @@ The parent remains open for broader member administration/moderation.
   permission checkboxes grouped (General / Members / Text / Voice) with
   descriptions, member assignment; disabled states for things above your
   rank.
-- Members: table with search, roles chips, join date, last seen; actions
+- Members: table with search, roles chips, join date, last session activity (accurately labeled; see T-056G); actions
   kick/ban (reason, duration presets), unban list.
 - Invites: create (uses/expiry), copy, revoke, see creator/uses.
 - Channel editor dialogs (create/edit): name, topic, kind, parent, voice

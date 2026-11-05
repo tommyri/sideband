@@ -369,6 +369,18 @@ const VIDEO_VIEWER: Policy = perms_and(
 /// Every HTTP route, by `(file, method, path)`.
 const ROUTES: &[(&str, &str, &str, Policy)] = &[
     (
+        "http/moderation_admin.rs",
+        "get",
+        "/api/v1/moderation/members",
+        perms_and(&["KICK_MEMBERS", "BAN_MEMBERS"], &["caller("]),
+    ),
+    (
+        "http/moderation_admin.rs",
+        "get",
+        "/api/v1/moderation/bans",
+        perms_and(&["BAN_MEMBERS"], &["caller("]),
+    ),
+    (
         "http/server_settings.rs",
         "get",
         "/api/v1/server/settings",

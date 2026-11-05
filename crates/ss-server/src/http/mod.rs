@@ -12,6 +12,7 @@ pub mod info;
 pub mod internal;
 pub mod invites;
 pub mod messages;
+pub mod moderation_admin;
 pub mod role_admin;
 pub mod server_settings;
 pub mod webhook_admin;

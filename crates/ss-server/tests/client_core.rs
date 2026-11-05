@@ -1410,3 +1410,219 @@ async fn closed_registration_rejects_invites_but_preserves_existing_accounts() {
     owner.close().await;
     task.abort();
 }
+
+#[tokio::test]
+async fn moderation_admin_reads_are_scoped_and_mutations_remain_authoritative() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let guest_id = id_from_bytes(&guest.state().read().own_user.as_ref().unwrap().id).unwrap();
+    assert!(guest.moderation_page(false, None, "").await.is_err());
+    assert!(guest.moderation_page(true, None, "").await.is_err());
+    moderation_kick_only_scope(&owner, &guest).await;
+    let page = owner.moderation_page(false, None, "").await.unwrap();
+    assert_eq!(page.members.len(), 2);
+    let own = page.members.iter().find(|m| m.username == "owner").unwrap();
+    assert!(!own.can_kick && !own.can_ban);
+    let other = page.members.iter().find(|m| m.username == "guest").unwrap();
+    assert!(other.can_kick && other.can_ban);
+    assert!(other.last_session_at.is_some());
+    assert!(other.roles.iter().any(|role| role == "@everyone"));
+    assert_eq!(
+        owner
+            .moderation_page(false, None, "%")
+            .await
+            .unwrap()
+            .members
+            .len(),
+        0
+    );
+    assert_eq!(
+        owner
+            .moderation_page(false, None, "GUEST")
+            .await
+            .unwrap()
+            .members
+            .len(),
+        1
+    );
+    let serialized = serde_json::to_string(&page).unwrap();
+    assert!(!serialized.contains("password") && !serialized.contains("token"));
+    let expiry = ss_core::Timestamp::now().as_millis() + 3_600_000;
+    owner
+        .ban_user(v1::BanUser {
+            user_id: wire(guest_id),
+            reason: "test reason <script>".into(),
+            expires_at: Some(expiry),
+        })
+        .await
+        .unwrap();
+    let bans = owner.moderation_page(true, None, "guest").await.unwrap();
+    assert_eq!(bans.bans.len(), 1);
+    assert_eq!(bans.bans[0].reason, "test reason <script>");
+    assert_eq!(bans.bans[0].expires_at, Some(expiry.to_string()));
+    assert!(bans.bans[0].can_unban);
+    let banned = owner.moderation_page(false, None, "guest").await.unwrap();
+    assert!(banned.members[0].banned);
+    assert!(!banned.members[0].can_kick && !banned.members[0].can_ban);
+    owner
+        .unban_user(v1::UnbanUser {
+            user_id: wire(guest_id),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        owner
+            .moderation_page(true, None, "")
+            .await
+            .unwrap()
+            .bans
+            .len(),
+        0
+    );
+    assert!(
+        owner
+            .unban_user(v1::UnbanUser {
+                user_id: wire(guest_id)
+            })
+            .await
+            .is_err()
+    );
+    guest.close().await;
+    owner.close().await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn moderation_admin_pages_are_bounded_and_expired_bans_are_omitted() {
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let owner_id = id_from_bytes(&owner.state().read().own_user.as_ref().unwrap().id).unwrap();
+    {
+        let mut conn = world.pool.write().await;
+        for index in 0..55 {
+            let user = db::users::insert(
+                &mut conn,
+                db::users::NewUser {
+                    id: Id::generate(),
+                    username: format!("paged{index:02}"),
+                    display_name: "Paged member".into(),
+                    password_hash: "not exposed".into(),
+                    kind: ss_core::UserKind::User,
+                },
+            )
+            .await
+            .unwrap();
+            db::bans::insert(
+                &mut conn,
+                db::bans::NewBan {
+                    id: Id::generate(),
+                    user_id: user.id,
+                    banned_by: owner_id,
+                    reason: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+    for bans in [false, true] {
+        let first = owner.moderation_page(bans, None, "paged").await.unwrap();
+        let cursor = first.next_cursor.as_ref().unwrap().parse().unwrap();
+        let second = owner
+            .moderation_page(bans, Some(cursor), "paged")
+            .await
+            .unwrap();
+        assert!(second.next_cursor.is_none());
+        if bans {
+            assert_eq!(first.bans.len(), 50);
+            assert_eq!(second.bans.len(), 5);
+            assert!(
+                first
+                    .bans
+                    .iter()
+                    .all(|a| second.bans.iter().all(|b| a.id != b.id))
+            );
+        } else {
+            assert_eq!(first.members.len(), 50);
+            assert_eq!(second.members.len(), 5);
+            assert!(
+                first
+                    .members
+                    .iter()
+                    .all(|a| second.members.iter().all(|b| a.id != b.id))
+            );
+        }
+    }
+    {
+        let mut conn = world.pool.write().await;
+        sqlx::query("UPDATE bans SET expires_at = 1")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        owner
+            .moderation_page(true, None, "")
+            .await
+            .unwrap()
+            .bans
+            .len(),
+        0
+    );
+    assert!(
+        !owner
+            .moderation_page(false, None, "paged")
+            .await
+            .unwrap()
+            .members[0]
+            .banned
+    );
+    assert!(
+        owner
+            .moderation_page(false, None, &"a".repeat(101))
+            .await
+            .is_err()
+    );
+    owner.close().await;
+    task.abort();
+}
+
+async fn moderation_kick_only_scope(owner: &Client, guest: &Client) {
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some((Permissions::EVERYONE | Permissions::KICK_MEMBERS).bits()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let limited = guest.moderation_page(false, None, "").await.unwrap();
+    assert!(!limited.can_ban);
+    assert!(limited.members.iter().all(|m| !m.can_ban && !m.can_kick));
+    assert!(guest.moderation_page(true, None, "").await.is_err());
+    let owner_id = id_from_bytes(&owner.state().read().own_user.as_ref().unwrap().id).unwrap();
+    assert!(
+        guest
+            .kick_user(v1::KickUser {
+                user_id: wire(owner_id),
+                reason: String::new()
+            })
+            .await
+            .is_err()
+    );
+    owner
+        .update_role(v1::UpdateRole {
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            permissions: Some(Permissions::EVERYONE.bits()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(guest.moderation_page(false, None, "").await.is_err());
+}

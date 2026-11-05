@@ -249,6 +249,8 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/channels/{channel_id}/overrides` | Requires MANAGE_CHANNELS and VIEW_CHANNEL; guild-only rows `{roleId: ULID, allow: decimal-u64, deny: decimal-u64}` |
 | GET | `/api/v1/webhooks?before=&limit=` | Metadata only; requires `MANAGE_SERVER` |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
+| GET | `/api/v1/moderation/members?before=&q=` | KICK_MEMBERS or BAN_MEMBERS; 50-row member metadata/capability page, literal search up to 100 characters |
+| GET | `/api/v1/moderation/bans?before=&q=` | BAN_MEMBERS; 50-row active ban metadata/capability page, expired/lifted bans omitted |
 | GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
 | GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
 | GET | `/metrics` | internal listener only |
@@ -323,3 +325,11 @@ unattached upload owned by the caller. A null iconId clears the icon.
 Registration modes are `invite` and `closed`; closed stops new accounts without
 invalidating sessions or invites. Password login and session resumption remain
 available. Both settings routes and uploads use session bearer authentication.
+
+Member moderation pages use `{members, bans, nextCursor, canBan}`; only the requested
+collection is populated. Cursors are exclusive ULIDs, newest first. Timestamps are
+decimal Unix milliseconds. Member `lastSessionAt` is the maximum retained session
+activity timestamp, not precise offline history. Role names include the default
+role. Per-target `canKick`, `canBan` and `canUnban` reflect current authority and
+hierarchy; mutations still use the existing audited QUIC moderation commands and
+recheck server authority. Session tokens and account credentials are never projected.

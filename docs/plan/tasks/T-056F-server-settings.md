@@ -54,7 +54,7 @@ revision. Existing connected Welcome metadata is refreshed on reconnect; public
 server discovery reads the updated name immediately. Custom local server labels
 are not changed by editing the remote server name.
 
-T-056 remains open for the broader member administration/moderation UI. Installed
+T-056G subsequently completes the broader member administration/moderation UI. Installed
 Windows/macOS/Linux acceptance remains part of the testing-app milestone.
 
 ## Validation

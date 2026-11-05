@@ -9,6 +9,7 @@ mod commands;
 mod diagnostics;
 mod dm;
 mod input;
+mod moderation_admin;
 mod onboarding;
 mod persistence;
 mod role_admin;
@@ -55,6 +56,8 @@ pub fn run() {
             chat::message_context,
             chat::open_chat_link,
             admin::invite_page,
+            moderation_admin::get_moderation_page,
+            moderation_admin::moderate_member,
             server_settings::get_server_settings,
             server_settings::save_server_settings,
             server_settings::upload_server_icon,

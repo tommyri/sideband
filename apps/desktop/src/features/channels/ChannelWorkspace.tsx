@@ -1,3 +1,4 @@
+import { MemberManager } from '../admin/MemberManager'
 import { ServerSettings } from '../admin/ServerSettings'
 import { RoleManager } from '../admin/RoleManager'
 import { ChannelManager } from '../admin/ChannelManager'
@@ -46,6 +47,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
   const [details, setDetails] = useState(false)
+  const [membersOpen, setMembersOpen] = useState(false)
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(false)
   const [channelsOpen, setChannelsOpen] = useState(false)
@@ -145,6 +147,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           close={() => setInvitesOpen(false)}
         />
       )}
+      {membersOpen && view.canModerateMembers && (
+        <MemberManager
+          key={`${server}:${view.ownUserId}`}
+          server={server}
+          connected={connected}
+          permitted={view.canModerateMembers}
+          close={() => setMembersOpen(false)}
+        />
+      )}
       {serverSettingsOpen && view.canManageServer && (
         <ServerSettings
           server={server}
@@ -196,6 +207,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
           <button className="button secondary" onClick={() => setDetails(true)}>
             Server details
           </button>
+          {view.canModerateMembers && (
+            <button
+              className="button secondary"
+              disabled={!connected}
+              onClick={() => setMembersOpen(true)}
+            >
+              Members &amp; moderation
+            </button>
+          )}
           {view.canManageServer && (
             <button
               className="button secondary"

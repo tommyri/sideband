@@ -20,9 +20,10 @@ this is not a production-ready release or a claim of measured quality parity.
   rich channel chat and per-server DMs (Markdown, mentions, typing indicators,
   history, replies, edits/deletes, drafts, attachments, media viewing, link previews,
   unread state and group membership), invite, webhook and channel management, roles,
-  member role assignments, channel permission overrides, server settings, filtered audit history,
+  member role assignments, channel permission overrides, server settings, searchable members,
+  timed bans/unban, filtered audit history,
   guided tests, diagnostics and redacted local evidence exports.
-- Still to build: notifications, full admin UI,
+- Still to build: notifications,
   production distribution/updating, and the finished screen-sharing experience.
 - Automated tests and local macOS package checks exist. Cross-platform installed
   app acceptance, real group listening tests and production readiness remain open.

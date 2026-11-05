@@ -161,6 +161,10 @@ impl Server {
         let auth = Arc::new(Auth::new(Arc::clone(&self.pool)));
         let perms = Arc::clone(&self.perms);
         crate::http::messages::router(Arc::clone(&auth), Arc::clone(&perms))
+            .merge(crate::http::moderation_admin::router(
+                Arc::clone(&auth),
+                Arc::clone(&perms),
+            ))
             .merge(crate::http::audit::router(
                 Arc::clone(&auth),
                 Arc::clone(&perms),
