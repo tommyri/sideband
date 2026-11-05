@@ -88,7 +88,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-052](T-052-voice-activation.md) | Voice activation detection | S | T-010, T-014 | done |
 | [T-053](T-053-audio-processing-chain.md) | Optional processing chain (AEC/NS/AGC) | M | T-010 | done |
 | [T-054](T-054-macos-voiceio-mode.md) | macOS AUVoiceIO mode | M | T-013, T-053 | done |
-| [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | todo |
+| [T-055](T-055-notifications-sounds.md) | Notifications and sound cues | S | T-042, T-041 | in-progress |
 | [T-056](T-056-admin-ui.md) | Admin UI | M | T-042, T-030, T-023, T-031 | done |
 | [T-056A](T-056A-invite-management.md) | Invite management UI and scoped history | S | T-042, T-030 | done |
 | [T-056B](T-056B-audit-log.md) | Filterable audit-log viewer | S | T-042, T-030 | done |

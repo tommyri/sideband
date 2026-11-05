@@ -397,45 +397,6 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
         .show();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn preferences_survive_restart_without_message_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sessions.json");
-        let storage = crate::persistence::DesktopStorage::open(&path).unwrap();
-        assert!(!storage.notifications().desktop && !storage.notifications().previews);
-        let mut prefs = Preferences {
-            dnd: true,
-            ..Default::default()
-        };
-        prefs.channels.insert("s/c".into(), Level::None);
-        storage.save_notifications(prefs).unwrap();
-        let restored = crate::persistence::DesktopStorage::open(&path)
-            .unwrap()
-            .notifications();
-        assert!(restored.dnd);
-        assert_eq!(restored.channels["s/c"], Level::None);
-    }
-    #[test]
-    fn policy_honors_defaults_overrides_and_suppression() {
-        let mut p = Preferences::default();
-        assert!(!p.allows("s", "c", false, false));
-        assert!(p.allows("s", "c", true, false));
-        assert!(p.allows("s", "c", false, true));
-        p.channels.insert("s/c".into(), Level::None);
-        assert!(!p.allows("s", "c", true, true));
-        p.channels.insert("s/c".into(), Level::All);
-        assert!(p.allows("s", "c", false, false));
-        p.muted_servers.insert("s".into());
-        assert!(!p.allows("s", "c", true, true));
-        p.muted_servers.clear();
-        p.dnd = true;
-        assert!(!p.allows("s", "c", true, true));
-    }
-}
-
 // Output-only playback uses the same self-made cue PCM as the voice graph.
 // Device opening latency is platform-dependent and remains an installed-app check.
 fn play_idle(app: &AppHandle, server: &str, cue: Cue) {
@@ -527,5 +488,44 @@ pub fn presence(store: &StateStore, dnd: bool) -> v1::SetPresence {
             v1::PresenceStatus::Online
         } as i32,
         activity,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preferences_survive_restart_without_message_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let storage = crate::persistence::DesktopStorage::open(&path).unwrap();
+        assert!(!storage.notifications().desktop && !storage.notifications().previews);
+        let mut prefs = Preferences {
+            dnd: true,
+            ..Default::default()
+        };
+        prefs.channels.insert("s/c".into(), Level::None);
+        storage.save_notifications(prefs).unwrap();
+        let restored = crate::persistence::DesktopStorage::open(&path)
+            .unwrap()
+            .notifications();
+        assert!(restored.dnd);
+        assert_eq!(restored.channels["s/c"], Level::None);
+    }
+    #[test]
+    fn policy_honors_defaults_overrides_and_suppression() {
+        let mut p = Preferences::default();
+        assert!(!p.allows("s", "c", false, false));
+        assert!(p.allows("s", "c", true, false));
+        assert!(p.allows("s", "c", false, true));
+        p.channels.insert("s/c".into(), Level::None);
+        assert!(!p.allows("s", "c", true, true));
+        p.channels.insert("s/c".into(), Level::All);
+        assert!(p.allows("s", "c", false, false));
+        p.muted_servers.insert("s".into());
+        assert!(!p.allows("s", "c", true, true));
+        p.muted_servers.clear();
+        p.dnd = true;
+        assert!(!p.allows("s", "c", true, true));
     }
 }
