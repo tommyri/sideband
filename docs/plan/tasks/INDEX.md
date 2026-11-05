@@ -127,7 +127,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-070](T-070-video-track-transport.md) | Server: video tracks, subscriptions, keyframe relay | M | T-025, T-004 | done |
 | [T-071](T-071-screen-capture-encode.md) | Client: capture + hardware encode | L | T-070, T-041 | in-progress |
 | [T-072](T-072-stream-viewer.md) | Client: viewer (decode + wgpu window) | M | T-070, T-071 | in-progress |
-| [T-073](T-073-screen-share-ui.md) | Screen share UI | S | T-071, T-072, T-044 | todo |
+| [T-073](T-073-screen-share-ui.md) | Screen share UI | S | T-071, T-072, T-044 | in-progress |
 | [T-074](T-074-adaptive-bitrate.md) | Adaptive bitrate | M | T-070, T-071, T-072 | todo |
 
 ## Phase 6 — Bots

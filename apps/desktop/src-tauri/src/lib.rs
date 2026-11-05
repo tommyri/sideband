@@ -17,6 +17,7 @@ mod role_admin;
 mod search;
 mod server_settings;
 mod state;
+mod stream;
 mod testing;
 mod types;
 mod updates;
@@ -39,6 +40,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Pending::default())
         .manage(viewer::Viewers::default())
+        .manage(stream::Sharing::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -50,6 +52,11 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            stream::screen_sources,
+            stream::screen_preview,
+            stream::screen_snapshot,
+            stream::start_screen_share,
+            stream::stop_screen_share,
             viewer::open_stream_viewer,
             viewer::stream_viewers,
             updates::check_update,

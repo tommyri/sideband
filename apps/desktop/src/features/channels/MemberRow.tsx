@@ -1,3 +1,4 @@
+import { WatchStream } from '../stream/StreamControls'
 import { memo, useId } from 'react'
 import type { MemberView } from '../../lib/generated/MemberView'
 import type { ParticipantView } from '../../lib/generated/ParticipantView'
@@ -80,6 +81,9 @@ export const MemberRow = memo(function MemberRow({
           aria-label={member.presence}
         />
       </button>
+      {participant && (
+        <WatchStream server={server} user={member.id} channel={participant.channelId} />
+      )}
       <span className="member-hover-card" role="tooltip" id={tooltip}>
         <strong>{member.displayName || member.username}</strong> @{member.username}
         <br />

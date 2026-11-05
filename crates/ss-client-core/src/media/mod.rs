@@ -7,7 +7,7 @@ pub use viewer::{AudioClock, VideoSubscription};
 #[cfg(feature = "screen-share")]
 mod sender;
 #[cfg(feature = "screen-share")]
-pub use sender::{ScreenShareError, ScreenShareSession};
+pub use sender::{ScreenShareError, ScreenShareHandle, ScreenShareSession};
 
 /// Opens GOP streams for a server-assigned video track.
 pub struct VideoTrackSender {

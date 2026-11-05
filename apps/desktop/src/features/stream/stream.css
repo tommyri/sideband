@@ -1,0 +1,124 @@
+.stream-picker {
+  margin: auto;
+  inset: 0;
+  width: min(660px, calc(100vw - 32px));
+  max-height: 85vh;
+  overflow: auto;
+  border: 1px solid #3c4055;
+  border-radius: 16px;
+  padding: 24px;
+  background: #171a27;
+  color: #eff0f8;
+}
+.stream-picker::backdrop {
+  background: #050711b8;
+}
+.stream-picker header,
+.stream-picker footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.stream-picker header h2 {
+  margin: 0;
+}
+.stream-picker footer {
+  margin-top: 24px;
+  justify-content: flex-end;
+}
+.stream-picker button,
+.stream-picker select {
+  cursor: pointer;
+}
+.stream-picker button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.stream-permission {
+  color: #a8adc3;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.stream-sources {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  border: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.stream-sources label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #222637;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.stream-sources small {
+  display: block;
+  color: #a8adc3;
+  font-size: 11px;
+}
+.stream-preview {
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  background: #0c0e16;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.stream-preview canvas {
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+}
+.stream-option {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 14px;
+}
+.stream-option select {
+  padding: 6px;
+  background: #222637;
+  color: inherit;
+  border: 1px solid #3c4055;
+  border-radius: 6px;
+}
+.stream-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  max-width: 300px;
+}
+.stream-controls > small {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stream-controls > p,
+.stream-watch small {
+  color: #ffb4b4;
+  font-size: 12px;
+}
+.stream-watch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.stream-watch button {
+  font-size: 11px;
+  padding: 4px;
+}
+.stream-live {
+  color: #b2a3ff;
+  font-size: 10px;
+  font-weight: 700;
+}

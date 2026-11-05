@@ -1,3 +1,4 @@
+import { StreamControls } from '../stream/StreamControls'
 import { useShortcuts } from '../settings/shortcuts/store'
 import { useEffect, useState } from 'react'
 import { AudioSettings } from '../settings/audio/AudioSettings'
@@ -169,6 +170,12 @@ export function VoiceDock() {
       )}
       {active && (
         <section className="voice-dock" aria-label="Voice controls">
+          <StreamControls
+            key={`${active.serverId}:${active.channelId}`}
+            server={active.serverId}
+            channel={active.channelId}
+            connected={server?.status.kind === 'connected'}
+          />
           <div className="call-identity">
             <span
               className={`quality-dot ${server?.status.kind === 'connected' ? (stats && stats.rttMs > 300 ? 'poor' : stats && stats.rttMs > 150 ? 'fair' : 'good') : 'poor'}`}

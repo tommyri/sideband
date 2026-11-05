@@ -1,3 +1,4 @@
+import { useStreamPolling } from '../stream/store'
 import { MemberManager } from '../admin/MemberManager'
 import { SearchPanel } from '../search/SearchPanel'
 import { ServerSettings } from '../admin/ServerSettings'
@@ -37,6 +38,7 @@ function visibleChannels(channels: ChannelView[], collapsed: Set<string>) {
   })
 }
 export function ChannelWorkspace({ server }: { server: string }) {
+  useStreamPolling(server)
   const view = useVoiceStore((s) => s.views[server])
   const selected = useVoiceStore((s) => s.selected[server])
   const select = useVoiceStore((s) => s.select)

@@ -88,6 +88,9 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
           listen('ss://voice-session', () => {
             for (const server of useAppStore.getState().servers) scheduleVoiceRefresh(server.id)
           }),
+          listen<[string, string]>('ss://viewer-error', ({ payload }) =>
+            useVoiceStore.setState({ error: `Screen viewer: ${payload[1]}` }),
+          ),
           listen<string>('ss://voice-error', ({ payload }) =>
             useVoiceStore.setState({ error: payload }),
           ),

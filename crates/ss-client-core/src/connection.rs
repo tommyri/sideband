@@ -100,7 +100,7 @@ pub(crate) struct MediaLink {
 }
 
 impl MediaLink {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (outgoing, _) = broadcast::channel(256);
         let (incoming, _) = broadcast::channel(512);
         Self {
