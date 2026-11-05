@@ -20,6 +20,8 @@ mod state;
 mod testing;
 mod types;
 mod updates;
+mod viewer;
+mod viewer_gpu;
 mod voice;
 mod voice_view;
 mod webhooks;
@@ -36,6 +38,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Pending::default())
+        .manage(viewer::Viewers::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -47,6 +50,8 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            viewer::open_stream_viewer,
+            viewer::stream_viewers,
             updates::check_update,
             updates::install_update,
             notifications::notification_preferences,
@@ -152,7 +157,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
-                if state.close_to_tray.load(Ordering::Relaxed) {
+                if window.label() == "main" && state.close_to_tray.load(Ordering::Relaxed) {
                     api.prevent_close();
                     let _ = window.hide();
                 }

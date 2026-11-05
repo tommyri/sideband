@@ -506,3 +506,21 @@ fn custom_jitter_bounds_survive_estimation_and_reject_invalid_ranges() {
     buffer.set_bounds(ms(190), ms(30));
     assert!((ms(60)..=ms(80)).contains(&buffer.target_delay()));
 }
+
+#[test]
+fn video_clock_follows_audio_quanta_across_timestamp_wrap() {
+    let packet = packet();
+    let mut track = TrackReceiver::new(VoiceProfile::Voice).unwrap();
+    let mut first = header(0);
+    first.timestamp = u32::MAX - 959;
+    track.push(first, &packet, ms(0)).unwrap();
+    let mut second = header(1);
+    second.timestamp = 0;
+    track.push(second, &packet, ms(20)).unwrap();
+    track.render(ms(30));
+    assert_eq!(track.playout_timestamp(), None);
+    for (time, expected) in [(40, u32::MAX - 479), (50, 0), (60, 480), (70, 960)] {
+        track.render(ms(time));
+        assert_eq!(track.playout_timestamp(), Some(expected));
+    }
+}

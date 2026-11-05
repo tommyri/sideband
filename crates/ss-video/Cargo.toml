@@ -10,12 +10,15 @@ publish = false
 [features]
 default = ["capture", "software"]
 capture = ["moq-video/capture"]
+render = ["moq-video/render", "dep:wgpu"]
 software = ["moq-video/openh264"]
 pipewire = ["capture", "moq-video/pipewire"]
 vaapi = ["moq-video/vaapi"]
 nvidia = ["moq-video/nvidia"]
 
 [dependencies]
+hang = "=0.21.19"
+wgpu = { version = "30", optional = true }
 bytes.workspace = true
 moq-net.workspace = true
 moq-video.workspace = true

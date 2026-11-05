@@ -40,6 +40,7 @@ pub(super) struct TrackSpec {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TrackSnapshot {
     pub user: Option<Id>,
+    pub timestamp: Option<u32>,
     pub delay: Duration,
     pub stats: ReceiverStats,
     pub speaking: bool,
@@ -266,6 +267,10 @@ impl VoiceGraph {
                 id,
                 TrackSnapshot {
                     user: Some(track.user),
+                    timestamp: track
+                        .receiver
+                        .playout_timestamp()
+                        .map(|t| t.wrapping_sub(480)),
                     delay: track.receiver.applied_delay(),
                     stats: track.receiver.stats(),
                     speaking,
@@ -290,6 +295,10 @@ impl VoiceGraph {
         self.snapshot.output_rms = output_rms;
         self.snapshot.tracks = snapshots;
         output
+    }
+
+    pub fn capture_timestamp(&self) -> u32 {
+        self.timestamp
     }
 
     pub fn snapshot(&self) -> GraphSnapshot {

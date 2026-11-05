@@ -35,6 +35,7 @@ pub struct ScreenShareSession<'a> {
     events: broadcast::Receiver<ClientEvent>,
     track: u32,
     hint: ss_video::SubscriberHint,
+    clock_offset: Option<u32>,
 }
 
 impl<'a> ScreenShareSession<'a> {
@@ -69,6 +70,7 @@ impl<'a> ScreenShareSession<'a> {
                 events: client.subscribe(),
                 track,
                 hint: ss_video::SubscriberHint::default(),
+                clock_offset: None,
             },
             codec,
         ))
@@ -87,7 +89,19 @@ impl<'a> ScreenShareSession<'a> {
         let Some(frames) = next? else {
             return Ok(());
         };
-        for frame in frames {
+        for mut frame in frames {
+            // Capture backends have independent epochs. Anchor video to the voice
+            // capture clock once, then retain capture cadence through wraps.
+            if self.clock_offset.is_none() {
+                self.clock_offset = self
+                    .client
+                    .media
+                    .capture_clock
+                    .lock()
+                    .and_then(crate::media::AudioClock::now)
+                    .map(|t| t.wrapping_sub(frame.timestamp));
+            }
+            frame.timestamp = frame.timestamp.wrapping_add(self.clock_offset.unwrap_or(0));
             if frame.keyframe {
                 if let Some(writer) = self.writer.take() {
                     writer.finish()?;

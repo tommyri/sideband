@@ -495,3 +495,96 @@ async fn group_budget_drops_oldest_and_membership_cleanup_preserves_newer_groups
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn client_viewers_demux_two_tracks_and_release() {
+    let world = World::new().await;
+    let publisher = world.peer("publisher", None).await;
+    let second = world.peer("second", Some(publisher.user())).await;
+    let viewer_invite = {
+        let mut db = world.pool.write().await;
+        invites::insert(
+            &mut db,
+            NewInvite {
+                id: Id::generate(),
+                code: "viewer-code".into(),
+                created_by: publisher.user(),
+                max_uses: Some(1),
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        "viewer-code"
+    };
+    let viewer = ss_client_core::Client::connect(
+        ss_client_core::ServerAddr::new("127.0.0.1", world.endpoint.local_addr().unwrap().port())
+            .unwrap(),
+        ss_client_core::Credentials::Register(v1::Register {
+            invite_code: viewer_invite.into(),
+            username: "viewer".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+    )
+    .await
+    .unwrap();
+    publisher.join().await;
+    second.join().await;
+    viewer
+        .join_voice(v1::JoinVoice {
+            channel_id: publisher.channel(),
+            self_mute: true,
+            self_deaf: false,
+        })
+        .await
+        .unwrap();
+    let a = publisher.start().await;
+    let b = second.start().await;
+    timeout(WAIT, async {
+        while !viewer.state().read().tracks.contains_key(&b) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let first = viewer.prepare_video(a).unwrap();
+    first.subscribe().await.unwrap();
+    let other = viewer.prepare_video(b).unwrap();
+    other.subscribe().await.unwrap();
+    assert!(viewer.prepare_video(a).is_err());
+    let mut send_a = ss_client_core::media::VideoTrackSender::new(&publisher.conn, a).unwrap();
+    let mut send_b = ss_client_core::media::VideoTrackSender::new(&second.conn, b).unwrap();
+    for (sender, value) in [(&mut send_a, 1_u8), (&mut send_b, 2_u8)] {
+        let mut group = sender.begin_group(0).await.unwrap();
+        group
+            .write_frame(&Frame {
+                timestamp: 0,
+                keyframe: true,
+                payload: Bytes::from(vec![value; 8]),
+            })
+            .await
+            .unwrap();
+        group.finish().unwrap();
+    }
+    let mut group = timeout(WAIT, first.next_group()).await.unwrap().unwrap();
+    assert_eq!(group.next_frame().await.unwrap().unwrap().payload[0], 1);
+    let mut group = timeout(WAIT, other.next_group()).await.unwrap().unwrap();
+    assert_eq!(group.next_frame().await.unwrap().unwrap().payload[0], 2);
+    drop(first);
+    // Reopening a closed viewer is allowed without starting another accept loop.
+    let reopened = viewer.prepare_video(a).unwrap();
+    reopened.subscribe().await.unwrap();
+    viewer.leave_voice(v1::LeaveVoice {}).await.unwrap();
+    timeout(WAIT, async {
+        while reopened.valid() || other.valid() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(reopened.next_group().await.is_none());
+    drop(reopened);
+    drop(other);
+    viewer.close().await;
+}

@@ -1,5 +1,9 @@
 //! Native screen capture and H.264 encoding, independent of transport.
 
+pub mod decode;
+#[cfg(feature = "render")]
+pub use moq_video::render;
+pub use moq_video::{Frame, Size};
 mod h264;
 mod preset;
 #[cfg(feature = "capture")]

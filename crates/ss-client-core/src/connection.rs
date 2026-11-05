@@ -90,6 +90,9 @@ pub(crate) struct TransportStats {
 
 #[derive(Clone)]
 pub(crate) struct MediaLink {
+    pub(crate) video: Arc<parking_lot::Mutex<crate::media::viewer::Hub>>,
+    pub(crate) audio_clocks: Arc<parking_lot::Mutex<BTreeMap<u32, crate::media::AudioClock>>>,
+    pub(crate) capture_clock: Arc<parking_lot::Mutex<Option<crate::media::AudioClock>>>,
     outgoing: broadcast::Sender<Bytes>,
     incoming: broadcast::Sender<IncomingMedia>,
     stats: Arc<RwLock<TransportStats>>,
@@ -101,6 +104,9 @@ impl MediaLink {
         let (outgoing, _) = broadcast::channel(256);
         let (incoming, _) = broadcast::channel(512);
         Self {
+            video: Arc::default(),
+            audio_clocks: Arc::default(),
+            capture_clock: Arc::default(),
             outgoing,
             incoming,
             stats: Arc::new(RwLock::new(TransportStats::default())),

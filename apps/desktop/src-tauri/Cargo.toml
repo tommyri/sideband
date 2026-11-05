@@ -25,9 +25,12 @@ reqwest.workspace = true
 tempfile.workspace = true
 ss-client-core = { workspace = true, features = ["macos-voiceio"] }
 ss-input.workspace = true
+ss-video = { workspace = true, features = ["render"] }
+wgpu = "30"
+font8x8 = "0.3"
 ss-core.workspace = true
 ss-net.workspace = true
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"
@@ -38,5 +41,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 
 [dev-dependencies]
+moq-video = { workspace = true, features = ["openh264"] }
+moq-net.workspace = true
 tempfile.workspace = true
 ss-server = { path = "../../../crates/ss-server" }

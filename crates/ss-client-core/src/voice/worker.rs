@@ -817,6 +817,20 @@ impl Runtime {
         {
             let _ = push_playback(producer, &mixed);
         }
+        let now = Instant::now();
+        let graph = self.graph.snapshot();
+        *self.media.audio_clocks.lock() = graph
+            .tracks
+            .iter()
+            .filter_map(|(&id, t)| {
+                t.timestamp
+                    .map(|timestamp| (id, crate::media::AudioClock { timestamp, at: now }))
+            })
+            .collect();
+        *self.media.capture_clock.lock() = Some(crate::media::AudioClock {
+            timestamp: self.graph.capture_timestamp(),
+            at: now,
+        });
         let (underruns, overruns) = self.counters();
         *self.shared.stats.write() = WorkerStats {
             graph: self.graph.snapshot(),

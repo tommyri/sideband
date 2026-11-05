@@ -43,6 +43,7 @@ pub struct TrackReceiver {
     gain: f32,
     newest: Option<(u16, Duration, bool)>,
     stats: Stats,
+    playout_timestamp: Option<u32>,
 }
 
 impl TrackReceiver {
@@ -68,6 +69,7 @@ impl TrackReceiver {
             gain: 1.0,
             newest: None,
             stats: Stats::default(),
+            playout_timestamp: None,
         })
     }
 
@@ -151,12 +153,15 @@ impl TrackReceiver {
         self.cursor = 0;
         self.length = 0;
         match self.jitter.pop_for_playout(now) {
-            Playout::Wait => {}
+            Playout::Wait => {
+                self.playout_timestamp = None;
+            }
             Playout::Packet { packet, discarded } => {
                 if let Some(discarded) = discarded {
                     // Preserve prediction history even when silence is shortened.
                     self.decode(discarded.payload(), false);
                 }
+                self.playout_timestamp = Some(packet.header.timestamp);
                 self.decode(packet.payload(), false);
             }
             Playout::Loss {
@@ -164,6 +169,9 @@ impl TrackReceiver {
                 missing,
                 expanded,
             } => {
+                self.playout_timestamp = self
+                    .playout_timestamp
+                    .map(|t| t.wrapping_add(u32::try_from(self.frame_samples).unwrap_or(0)));
                 #[cfg(feature = "dred")]
                 if !expanded
                     && missing > 1
@@ -187,6 +195,14 @@ impl TrackReceiver {
                 }
             }
         }
+    }
+
+    /// Timestamp of the next 10 ms quantum on the remote sender's 48 kHz clock.
+    /// None during silence without a packet reference. This is mixing, not DAC time.
+    pub fn playout_timestamp(&self) -> Option<u32> {
+        self.playout_timestamp
+            .filter(|_| self.length > 0)
+            .map(|t| t.wrapping_add(u32::try_from(self.cursor / 2).unwrap_or(0)))
     }
 
     /// Emit exactly 480 stereo samples per channel. Call once every 10 ms using

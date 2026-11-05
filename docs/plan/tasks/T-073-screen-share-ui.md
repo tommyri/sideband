@@ -27,3 +27,9 @@ Stream chat overlays.
 - Component tests for picker state and permission-gated visibility.
 
 ## Notes from implementation
+
+T-072's backend is implemented; its remaining hardware/latency acceptance does
+not block this integration. Invoke `open_stream_viewer({ serverId, trackId })`
+for a screen track, use `stream_viewers()` for diagnostics, and handle
+`ss://viewer-error` (window label and message). The viewer owns subscribe,
+unsubscribe, native presentation and window controls.

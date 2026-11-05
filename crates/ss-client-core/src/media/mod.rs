@@ -1,7 +1,9 @@
 //! Byte-level screen/video transport. Call StartStream/SubscribeTrack on the
 //! control stream first; capture, decoding, and rendering belong above this API.
+pub(crate) mod viewer;
 use ss_net::media::{DatagramHeader, MAX_TRACK_ID, StreamHeader, stream};
 pub use stream::{Error, Frame, GroupReader, GroupWriter};
+pub use viewer::{AudioClock, VideoSubscription};
 #[cfg(feature = "screen-share")]
 mod sender;
 #[cfg(feature = "screen-share")]
