@@ -99,7 +99,7 @@ cd ../..
 node scripts/build-test-desktop.mjs
 ```
 
-Defaults: native macOS app ZIP + DMG, Windows x64 NSIS installer, Linux x64
+Defaults: native macOS app ZIP + DMG, Windows x64 NSIS/MSI installers, Linux x64
 deb + AppImage. The app ZIP preserves macOS bundle permissions and symlinks.
 For a quick local packaging check:
 
@@ -124,11 +124,11 @@ After the repository has a GitHub remote and this workflow is pushed to its
 default branch, open Actions → Desktop test builds → Run workflow, selecting
 the branch to test. Download the artifact for your OS from the completed run.
 Packages are workflow artifacts retained for 30 days; this workflow never
-publishes a release or uses production signing credentials.
+publishes a release itself. Direct manual test runs do not use production signing
+credentials; the release workflow can call it with signed updates enabled.
 
-The full matrix has not yet been executed from this repository because no
-GitHub remote is configured. A successful local build does not establish
-Windows/Linux installation acceptance.
+A successful build does not establish installed acceptance. Use the run records
+and platform build identity when reporting Windows/Linux installation results.
 
 ## Install and identify
 
@@ -139,7 +139,7 @@ Only install artifacts from a build/source you trust.
 
 | OS | Installation | Permissions and caveats |
 |---|---|---|
-| Windows x64 | Run the NSIS setup .exe; launch Sideband from Start. | Unsigned test installers may trigger SmartScreen. Follow your machine's approved installation policy. WebView2 is required; the installer may need network access to install it. |
+| Windows x64 | Run the NSIS setup .exe or MSI; launch Sideband from Start. | Unsigned test installers may trigger SmartScreen. Follow your machine's approved installation policy. WebView2 is required; the installer may need network access to install it. |
 | macOS 13+, Apple Silicon | Open the DMG and copy Sideband to Applications, or expand the app ZIP and move the app there. Quit an older copy first. | Test builds are ad-hoc signed, not notarized. Gatekeeper may require an explicit approval through System Settings → Privacy & Security. Do not disable Gatekeeper or reset TCC. |
 | Linux x64, Ubuntu 24.04 or compatible | Prefer `sudo apt install ./<package>.deb`. Alternatively mark the AppImage executable and run it. | Test Linux builds have an Ubuntu 24.04 runtime baseline, not the project's eventual glibc 2.31 distribution target. PipeWire, ALSA, WebKitGTK 4.1 and tray libraries must be available. AppImage portability and FUSE/runtime requirements still need laptop validation. |
 
@@ -233,5 +233,6 @@ latency stays unmeasured. Do not substitute network RTT or device estimates.
 
 T-075 notes in docs/plan/tasks/T-075-installable-test-builds.md track local
 package verification separately from manual install/launch acceptance and
-hosted build results. Production signing, automatic updates and stable release
-approval remain T-057 and T-018.
+hosted build results. Signed updater packaging is implemented in T-057;
+[release setup](release.md), installed upgrades and OS-signing acceptance remain.
+Stable voice-quality approval remains T-018.

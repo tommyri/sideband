@@ -1,4 +1,11 @@
 fn main() {
+    for key in ["SS_UPDATE_PUBLIC_KEY", "SS_UPDATE_ENDPOINT"] {
+        println!("cargo:rerun-if-env-changed={key}");
+        println!(
+            "cargo:rustc-env={key}={}",
+            std::env::var(key).unwrap_or_default()
+        );
+    }
     println!("cargo:rerun-if-env-changed=SS_BUILD_IDENTITY");
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     println!("cargo:rerun-if-changed=tauri.conf.json");

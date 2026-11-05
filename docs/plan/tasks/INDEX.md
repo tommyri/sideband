@@ -18,6 +18,8 @@ dashboard deployment acceptance remain open.
 T-056A adds invite administration, T-056B adds filtered audit history and T-056C adds
 webhook management. T-056D adds channel management; T-056E adds roles, member assignments
 and channel permission overrides. T-056F adds server settings; T-056G completes member moderation.
+T-057 implements signed update packaging and manual-only release feeds; installed
+upgrade/signing acceptance remains open.
 T-018 gates voice-quality release approval, not UI development or test builds.
 Implemented prerequisites may feed this milestone while their documented
 manual acceptance remains in progress; do not mark those tasks done early.
@@ -97,7 +99,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-056E](T-056E-roles-permissions.md) | Roles, assignments and channel permissions UI | M | T-042, T-022, T-023 | done |
 | [T-056F](T-056F-server-settings.md) | Server settings UI and persistent profile API | M | T-042, T-021, T-022, T-027 | done |
 | [T-056G](T-056G-member-moderation.md) | Searchable members, timed bans and unban UI | M | T-042, T-030, T-056E | done |
-| [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | todo |
+| [T-057](T-057-packaging-updater.md) | Production packaging, signing, auto-update | M | T-042, T-075 | in-progress |
 | [T-058](T-058-global-app-shortcuts.md) | Global shortcuts wiring in the app | S | T-047, T-044, T-051 | in-progress |
 | [T-059](T-059-ml-noise-suppression.md) | ML noise suppression behind `deepfilter` | M | T-053 | blocked |
 | [T-075](T-075-installable-test-builds.md) | Installable test builds and build identity — first priority | M | T-042 | in-progress |

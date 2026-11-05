@@ -8,14 +8,26 @@ on:
         required: true
         default: "0.0.1"
         type: string
+      notes:
+        description: Release notes shown in the updater
+        type: string
+        default: Development preview
+      updates:
+        description: Create signed auto-update packages (requires updater keys)
+        type: boolean
+        default: true
       windows:
-        description: Windows x64 installer
+        description: Windows x64 NSIS and MSI installers
         type: boolean
         default: true
       macos:
         description: macOS Apple Silicon DMG and app ZIP
         type: boolean
         default: true
+      macos_intel:
+        description: macOS Intel DMG and app ZIP (additional runner)
+        type: boolean
+        default: false
       linux:
         description: Linux x64 deb and AppImage
         type: boolean
@@ -41,9 +53,13 @@ jobs:
       - name: Validate version and selected platforms
         id: selection
         env:
+          RELEASE_UPDATES: ${{ inputs.updates }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_WINDOWS: ${{ inputs.windows }}
           RELEASE_MACOS: ${{ inputs.macos }}
+          RELEASE_MACOS_INTEL: ${{ inputs.macos_intel }}
           RELEASE_LINUX: ${{ inputs.linux }}
         run: node scripts/release-desktop.mjs select
       - name: Release tooling tests
@@ -55,6 +71,8 @@ jobs:
     with:
       matrix: ${{ needs.prepare.outputs.matrix }}
       version: ${{ inputs.version }}
+      updates: ${{ inputs.updates }}
+    secrets: inherit
 
   publish:
     needs: build
@@ -72,5 +90,6 @@ jobs:
       - name: Publish or replace development installers
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.notes }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: node scripts/release-desktop.mjs publish release-input

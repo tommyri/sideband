@@ -41,6 +41,11 @@
     "linux": {
       "deb": {
         "depends": ["libpipewire-0.3-0", "libasound2"]
+      },
+      "appimage": {
+        "files": {
+          "usr/lib/libpipewire-0.3.so.0": "/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0"
+        }
       }
     }
   }

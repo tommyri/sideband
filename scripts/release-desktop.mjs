@@ -4,11 +4,12 @@ import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } fr
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { validateVersion } from './build-test-desktop.mjs'
+import { validateVersion, updateConfiguration } from './build-test-desktop.mjs'
 
 const platforms = {
-  windows: { os: 'windows-latest', target: 'x86_64-pc-windows-msvc', label: 'windows-x64', suffixes: ['.exe'] },
+  windows: { os: 'windows-latest', target: 'x86_64-pc-windows-msvc', label: 'windows-x64', suffixes: ['.exe', '.msi'] },
   macos: { os: 'macos-14', target: 'aarch64-apple-darwin', label: 'macos-arm64', suffixes: ['.dmg', '.app.zip'] },
+  macos_intel: { os: 'macos-14', target: 'x86_64-apple-darwin', label: 'macos-x64', suffixes: ['.dmg', '.app.zip'] },
   linux: { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-gnu', label: 'linux-x64', suffixes: ['.deb', '.AppImage'] },
 }
 
@@ -21,7 +22,7 @@ export function selectPlatforms(selection) {
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
-export async function prepareAssets(input, output, version, commit) {
+export async function prepareAssets(input, output, version, commit, repo, notes = `Sideband ${version} development preview.`) {
   validateVersion(version)
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected a full source commit')
   await mkdir(output, { recursive: true })
@@ -40,7 +41,7 @@ export async function prepareAssets(input, output, version, commit) {
     const artifacts = [], suffixes = new Set()
     for (const artifact of identity.artifacts) {
       if (path.basename(artifact.file) !== artifact.file) throw new Error('Invalid artifact path')
-      const suffix = platform.suffixes.find((item) => artifact.file.endsWith(item))
+      const suffix = [...platform.suffixes, ...(identity.updater ? ['.app.tar.gz'] : [])].find((item) => artifact.file.endsWith(item))
       if (!suffix || suffixes.has(suffix)) throw new Error('Unexpected or duplicate installer format')
       suffixes.add(suffix)
       const bytes = await readFile(path.join(directory, artifact.file))
@@ -49,7 +50,28 @@ export async function prepareAssets(input, output, version, commit) {
       await writeFile(path.join(output, file), bytes)
       artifacts.push({ ...artifact, file })
     }
-    if (suffixes.size !== platform.suffixes.length) throw new Error('Missing installer format')
+    if (platform.suffixes.some(suffix => !suffixes.has(suffix))) throw new Error('Missing installer format')
+    if (identity.updater) {
+      if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo ?? '')) throw new Error('Updater requires a valid repository')
+      const updates = Array.isArray(identity.updater) ? identity.updater : [identity.updater]
+      if (updates.length !== (identity.target.includes('windows') ? 2 : 1)) throw new Error('Missing updater format')
+      const entries = {}
+      for (const update of updates) {
+        const original = identity.artifacts.find(a => a.file === update.file)
+        const expected = identity.target.includes('apple') ? '.app.tar.gz' : identity.target.includes('windows') ? (update.file.endsWith('.msi') ? '.msi' : '.exe') : '.AppImage'
+        if (!original || !original.file.endsWith(expected) || typeof update.signature !== 'string' || !update.signature.trim()) throw new Error('Invalid updater payload or signature')
+        // Immutable payload URLs prevent same-version replacement racing a cached feed.
+        const immutable = `${prefix}-${commit}-${original.sha256}${expected}`
+        await copyFile(path.join(directory, original.file), path.join(output, immutable))
+        files.push(path.join(output, immutable))
+        const key = identity.target.includes('apple') ? (identity.target.startsWith('aarch64') ? 'darwin-aarch64' : 'darwin-x86_64') : identity.target.includes('windows') ? `windows-x86_64-${expected === '.msi' ? 'msi' : 'nsis'}` : 'linux-x86_64'
+        if (entries[key]) throw new Error('Duplicate updater format')
+        entries[key] = { url: `https://github.com/${repo}/releases/download/v${version}/${immutable}`, signature: update.signature }
+      }
+      if (identity.target.includes('windows') && (!entries['windows-x86_64-msi'] || !entries['windows-x86_64-nsis'])) throw new Error('Both Windows updater formats are required')
+      const manifest = { version, notes: `${notes}\n\nSource: ${commit}.`, platforms: entries }
+      await writeFile(path.join(output, identity.target + '.json'), JSON.stringify(manifest, null, 2) + '\n')
+    }
     const info = prefix + '-build-info.json', install = prefix + '-INSTALL.md'
     await writeFile(path.join(output, info), JSON.stringify({ ...identity, artifacts }, null, 2) + '\n')
     await copyFile(path.join(directory, 'INSTALL.md'), path.join(output, install))
@@ -77,7 +99,7 @@ function lookup(endpoint, run) {
 
 export function publishRelease({ repo, commit, version, files, notes, run = gh }) {
   validateVersion(version)
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release repository or commit')
+  if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo) || !/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release repository or commit')
   const tag = `v${version}`, base = `repos/${repo}`
   const ref = lookup(`${base}/git/ref/tags/${tag}`, run)
   if (ref) {
@@ -91,18 +113,45 @@ export function publishRelease({ repo, commit, version, files, notes, run = gh }
   run(['release', 'upload', tag, ...files, '--repo', repo, '--clobber'])
 }
 
+export async function publishFeeds({ repo, commit, feeds, run = gh }) {
+  if (!feeds.length) return
+  const release = lookup(`repos/${repo}/releases/tags/desktop-updates`, run)
+  const accepted = []
+  for (const file of feeds) {
+    const next = JSON.parse(await readFile(file, 'utf8'))
+    validateVersion(next.version)
+    if (release?.assets?.some(asset => asset.name === path.basename(file))) {
+      const previous = JSON.parse(run(['release', 'download', 'desktop-updates', '--repo', repo, '--pattern', path.basename(file), '--output', '-']))
+      validateVersion(previous.version)
+      const before = previous.version.split('.').map(Number), after = next.version.split('.').map(Number)
+      const first = after.findIndex((n, i) => n !== before[i])
+      // Publishing an old installer must not roll the update channel backwards.
+      if (first !== -1 && after[first] < before[first]) continue
+    }
+    accepted.push(file)
+  }
+  if (!accepted.length) return
+  if (!release) run(['release', 'create', 'desktop-updates', '--repo', repo, '--target', commit,
+    '--prerelease', '--latest=false', '--title', 'Desktop update feeds', '--notes', 'Signed development update manifests.'])
+  // Only selected feeds change, after every referenced payload has uploaded.
+  run(['release', 'upload', 'desktop-updates', ...accepted, '--repo', repo, '--clobber'])
+}
+
 async function main() {
   const version = validateVersion(process.env.RELEASE_VERSION)
   if (process.argv[2] === 'select') {
     const matrix = selectPlatforms(Object.fromEntries(Object.keys(platforms).map((key) => [key, process.env[`RELEASE_${key.toUpperCase()}`] === 'true'])))
+    if (process.env.RELEASE_UPDATES === 'true') for (const entry of matrix.include) updateConfiguration(process.env, entry.target)
     await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`)
   } else if (process.argv[2] === 'publish') {
     const output = await mkdtemp(path.join(tmpdir(), 'sideband-release-'))
     const commit = process.env.GITHUB_SHA, repo = process.env.GITHUB_REPOSITORY
-    const files = await prepareAssets(process.argv[3], output, version, commit)
+    const files = await prepareAssets(process.argv[3], output, version, commit, repo, process.env.RELEASE_NOTES || undefined)
     const notes = path.join(output, 'release-notes.md')
-    await writeFile(notes, `Development preview for testing. Windows installers are unsigned; macOS packages are ad-hoc signed, not notarized. Linux packages target Ubuntu 24.04.\n\nThis version is mutable during development. Reruns replace downloads for selected operating systems; other platforms retain their previous downloads. The tag points to the latest publication; each platform's build-info.json records its exact source commit. Re-download and reinstall to update; automatic updating is not enabled.\n\nLatest publication: ${commit}\n\nSee the platform INSTALL.md and SHA256SUMS assets for installation instructions and checksums.\n`)
+    await writeFile(notes, `Development preview for testing. Without optional OS-signing credentials, Windows installers are unsigned and macOS packages are ad-hoc signed, not notarized. Linux packages target Ubuntu 24.04.\n\nThis version is mutable during development. Reruns replace downloads for selected operating systems; other platforms retain their previous downloads. The tag points to the latest publication; each platform's build-info.json records its exact source commit. Update-enabled builds can install newer signed versions from App updates. Same-version replacements require re-download and reinstall. OS signing status depends on the configured signing credentials; updater signing is separate.\n\nLatest publication: ${commit}\n\nSee the platform INSTALL.md and SHA256SUMS assets for installation instructions and checksums.\n`)
     publishRelease({ repo, commit, version, files, notes })
+    const feeds = (await readdir(output)).filter(name => /^(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu)\.json$/.test(name))
+    await publishFeeds({ repo, commit, feeds: feeds.map(name => path.join(output, name)) })
     console.log(`https://github.com/${repo}/releases/tag/v${version}`)
   } else throw new Error('Usage: node scripts/release-desktop.mjs select|publish INPUT_DIRECTORY')
 }

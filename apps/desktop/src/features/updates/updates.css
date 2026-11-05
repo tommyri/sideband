@@ -1,0 +1,15 @@
+.update-dialog p {
+  margin: 0.75rem 0;
+}
+.update-dialog pre {
+  font: inherit;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  max-height: 35vh;
+  overflow-y: auto;
+}
+.update-dialog > .button {
+  margin-right: 0.5rem;
+  margin-top: 0.75rem;
+}

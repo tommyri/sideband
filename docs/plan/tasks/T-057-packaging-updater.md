@@ -1,6 +1,6 @@
 # T-057 — Packaging, code signing, auto-update, release pipeline
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-042, T-075
@@ -29,8 +29,8 @@ but implementation of this task may proceed before that approval.
 - `tauri-plugin-updater`: static JSON manifest hosted on GitHub Releases,
   signed with the Tauri updater keypair; "update available" UI with release
   notes; check on start + every 6 h.
-- Release workflow: tag `desktop-vX.Y.Z` → build matrix → sign → upload
-  assets + `latest.json`. Nightly channel optional.
+- Release workflow: manual `workflow_dispatch` → selected build matrix → sign → upload
+  assets and per-platform JSON feeds. No automatic tag/push/schedule triggers.
 - Linux: native audio deps bundled or linked dynamically? Decide (PipeWire
   client lib is dynamically loaded; AppImage must include `libpipewire-0.3`
   or dlopen with fallback).
@@ -46,3 +46,22 @@ App stores.
   update.
 
 ## Notes from implementation
+
+- Implemented manual-only selectable release packaging, MSI + NSIS, optional Intel
+  Mac builds, optional Developer ID/notarization and Windows PFX signing, AppImage
+  PipeWire inclusion, and signed updater artifacts with version-bound signatures.
+- Native updater pins its key/feed, checks at startup and every six hours, displays
+  notes and errors, and installs/restarts only on explicit action outside a call.
+  Unsigned-config builds and Linux deb installs retain manual updating.
+- Per-platform feeds publish last; immutable payload URLs include commit/content hash.
+  Same-version human downloads remain replaceable; installed same-version clients
+  require manual reinstall. Old releases cannot regress the update feed.
+- Setup, release procedure and acceptance matrix: [release guide](../../release.md).
+- Local validation: release-script tests, native compilation/strict Clippy, frontend
+  tests, and signed ad-hoc macOS debug app/updater archive with a disposable key.
+  Bundle signature, microphone usage string and audio-input entitlement verified.
+  Actual updater signature/version verified and a tampered payload rejected;
+  Chromium checks at 1200×900/760×600 cover explicit install and error recovery.
+- Remaining: provision real signing credentials and run fresh-install/N→N+1 tests
+  on all supported packages; Developer ID Gatekeeper/notarization and Input Monitoring
+  persistence must be measured. No GitHub Actions or publication was run for this task.

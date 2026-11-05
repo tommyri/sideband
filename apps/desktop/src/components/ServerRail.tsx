@@ -1,3 +1,5 @@
+import { UpdateControl } from '../features/updates/UpdateControl'
+import { isTauri } from '../lib/tauri'
 import { useState } from 'react'
 import { NotificationSettings } from '../features/notifications/NotificationSettings'
 import { Bell, Plus } from 'lucide-react'
@@ -61,6 +63,7 @@ export function ServerRail() {
       >
         <Bell size={20} />
       </button>
+      {isTauri() && <UpdateControl />}
       {notifications && <NotificationSettings close={() => setNotifications(false)} />}
       <div className="rail-avatar" aria-label="Your profile">
         TR

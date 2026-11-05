@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      updates:
+        type: boolean
+        default: false
       matrix:
         type: string
         required: true
@@ -58,13 +61,61 @@ jobs:
       - name: Frontend checks
         working-directory: apps/desktop
         run: pnpm check
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && inputs.updates
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            test -n "$APPLE_CERTIFICATE"
+            keychain_password=$(openssl rand -hex 32)
+            echo "::add-mask::$keychain_password"
+            printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+            security create-keychain -p "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
+            security set-keychain-settings -lut 21600 "$RUNNER_TEMP/sideband.keychain"
+            security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
+            security import "$RUNNER_TEMP/signing.p12" -k "$RUNNER_TEMP/sideband.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
+            security list-keychains -d user -s "$RUNNER_TEMP/sideband.keychain" login.keychain-db
+            rm "$RUNNER_TEMP/signing.p12"
+          fi
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows' && inputs.updates
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE) {
+            $certPath = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            try {
+              $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey | Select-Object -First 1
+              if (-not $cert) { throw "PFX contains no signing identity" }
+              "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+            } finally { Remove-Item $certPath }
+          }
       - name: Create labelled test packages
         id: packages
         shell: bash
         env:
           BUILD_VERSION: ${{ inputs.version || '0.0.1' }}
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: node scripts/build-test-desktop.mjs --target ${{ matrix.target }} --version "$BUILD_VERSION"
+          BUILD_UPDATES: ${{ inputs.updates }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          args=()
+          if [ "$BUILD_UPDATES" = "true" ]; then args+=(--updates); fi
+          node scripts/build-test-desktop.mjs --target ${{ matrix.target }} --version "$BUILD_VERSION" "${args[@]}"
       - name: Validate macOS bundle
         if: runner.os == 'macOS'
         run: |

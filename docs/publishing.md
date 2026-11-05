@@ -28,8 +28,9 @@ workflow can also be called by the manual installer release workflow. See
 [desktop releases](desktop-releases.md) for OS selection and version replacement. Pushes, pull requests and schedules do not start them. The server release workflow publishes only when
 manually dispatched against a `server-v*` tag. Select a release tag only when
 intentionally publishing binaries. Desktop test packages remain
-unsigned/ad-hoc signed; signing, updating and complete binary dependency notices
-still require release work. See [third-party notices](../THIRD_PARTY_NOTICES.md).
+unsigned/ad-hoc signed without optional OS credentials. Signed updater packaging
+is available through the manual release workflow; see [release setup](release.md).
+Installed signing/upgrade acceptance and complete binary dependency notices remain. See [third-party notices](../THIRD_PARTY_NOTICES.md).
 
 Local worktrees, recordings, runtime databases, credentials and evidence exports
 are ignored. Do not force-add them. The repository path checker is a guardrail,

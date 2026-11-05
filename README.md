@@ -23,9 +23,11 @@ this is not a production-ready release or a claim of measured quality parity.
   member role assignments, channel permission overrides, server settings, searchable members,
   timed bans/unban, filtered audit history,
   [message search](docs/message-search.md) with filters and jump-to-message,
-  guided tests, diagnostics and redacted local evidence exports.
-- Still to build: notifications,
-  production distribution/updating, and the finished screen-sharing experience.
+  notification preferences/DND, native alerts and sound cues, guided tests, diagnostics
+  and redacted local evidence exports.
+- Signed update packaging and opt-in installation are implemented; see the
+  [release guide](docs/release.md) for key setup and manual-only workflows.
+- Still to finish: installed signing/upgrade acceptance and the screen-sharing experience.
 - Automated tests and local macOS package checks exist. Cross-platform installed
   app acceptance, real group listening tests and production readiness remain open.
 

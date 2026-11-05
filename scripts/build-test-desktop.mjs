@@ -10,7 +10,7 @@ const desktop = path.join(root, 'apps', 'desktop')
 const platforms = {
   'aarch64-apple-darwin': { os: 'darwin', bundles: ['app', 'dmg'] },
   'x86_64-apple-darwin': { os: 'darwin', bundles: ['app', 'dmg'] },
-  'x86_64-pc-windows-msvc': { os: 'win32', bundles: ['nsis'] },
+  'x86_64-pc-windows-msvc': { os: 'win32', bundles: ['nsis', 'msi'] },
   'x86_64-unknown-linux-gnu': { os: 'linux', bundles: ['deb', 'appimage'] },
 }
 
@@ -19,6 +19,7 @@ export function parseOptions(args, host, os) {
   let bundles
   let debug = false
   let version
+  let updates = false
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--target': target = args[++i]; break
@@ -27,8 +28,9 @@ export function parseOptions(args, host, os) {
         bundles = args[++i].split(',')
         break
       case '--version': version = validateVersion(args[++i]); break
+      case '--updates': updates = true; break
       case '--debug': debug = true; break
-      default: throw new Error('Usage: node scripts/build-test-desktop.mjs [--target TRIPLE] [--bundles app,dmg|nsis|deb,appimage] [--debug] [--version X.Y.Z]')
+      default: throw new Error('Usage: node scripts/build-test-desktop.mjs [--target TRIPLE] [--bundles app,dmg|nsis,msi|deb,appimage] [--debug] [--version X.Y.Z] [--updates]')
     }
   }
   const platform = platforms[target]
@@ -37,13 +39,13 @@ export function parseOptions(args, host, os) {
   if (!bundles.length || bundles.some((bundle) => !platform.bundles.includes(bundle))) {
     throw new Error('Unsupported bundle format for target')
   }
-  return { target, bundles: [...new Set(bundles)], debug, ...(version ? { version } : {}) }
+  return { target, bundles: [...new Set(bundles)], debug, ...(version ? { version } : {}), ...(updates ? { updates } : {}) }
 }
 
 export function validateVersion(version) {
   if (typeof version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) ||
-      version.split('.').some((part) => Number(part) > 65535)) {
-    throw new Error('Version must be X.Y.Z with components between 0 and 65535')
+      version.split('.').some((part, index) => Number(part) > (index < 2 ? 255 : 65535))) {
+    throw new Error('Version must be X.Y.Z; major/minor must be 0–255 and patch 0–65535 for MSI')
   }
   return version
 }
@@ -55,6 +57,23 @@ export function makeIdentity({ version, commit, status, target, debug, ci }) {
     dirty: status.length > 0, target,
     origin: ci ? 'github-actions' : 'local',
     profile: debug ? 'debug' : 'release',
+  }
+}
+
+export function updateConfiguration(env, target) {
+  if (!env.TAURI_SIGNING_PRIVATE_KEY || !env.TAURI_UPDATER_PUBLIC_KEY) throw new Error('Signed updates require TAURI_SIGNING_PRIVATE_KEY and TAURI_UPDATER_PUBLIC_KEY')
+  const repo = env.GITHUB_REPOSITORY
+  if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo ?? '')) throw new Error('Invalid update repository')
+  if (!platforms[target]) throw new Error('Invalid update target')
+  const windows = env.WINDOWS_CERTIFICATE_THUMBPRINT ? { windows: {
+    certificateThumbprint: env.WINDOWS_CERTIFICATE_THUMBPRINT, digestAlgorithm: 'sha256',
+    timestampUrl: 'http://timestamp.digicert.com',
+  } } : {}
+  return {
+    bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: env.APPLE_SIGNING_IDENTITY || '-' }, ...windows },
+    plugins: { updater: { requireSignedVersion: true, pubkey: env.TAURI_UPDATER_PUBLIC_KEY.trim(),
+      endpoints: [`https://github.com/${repo}/releases/download/desktop-updates/${target}.json`],
+      windows: { installMode: 'passive' } } },
   }
 }
 
@@ -104,10 +123,26 @@ async function main() {
   args.push('--', '--locked')
   const env = { ...process.env, CI: 'true', CARGO_TARGET_DIR: targetDir, SS_BUILD_IDENTITY: JSON.stringify(identity) }
   delete env.CARGO_BUILD_TARGET
-  // This test channel never notarizes or consumes production signing credentials.
+  // Manual test installers do not consume signing credentials; --updates opts in.
   for (const key of ['APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID',
     'APPLE_API_ISSUER', 'APPLE_API_KEY', 'APPLE_API_KEY_PATH', 'TAURI_SIGNING_PRIVATE_KEY',
     'TAURI_SIGNING_PRIVATE_KEY_PASSWORD']) delete env[key]
+  let updaterConfig
+  if (options.updates) {
+    updaterConfig = updateConfiguration(process.env, options.target)
+    args.splice(args.indexOf('--'), 0, '--config', JSON.stringify(updaterConfig))
+    env.TAURI_SIGNING_PRIVATE_KEY = process.env.TAURI_SIGNING_PRIVATE_KEY
+    env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? ''
+    env.SS_UPDATE_PUBLIC_KEY = process.env.TAURI_UPDATER_PUBLIC_KEY.trim()
+    env.SS_UPDATE_ENDPOINT = updaterConfig.plugins.updater.endpoints[0]
+    for (const key of ['APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID',
+      'APPLE_API_ISSUER', 'APPLE_API_KEY', 'APPLE_API_KEY_PATH']) {
+      if (process.env[key]) env[key] = process.env[key]
+    }
+  } else {
+    delete env.SS_UPDATE_PUBLIC_KEY
+    delete env.SS_UPDATE_ENDPOINT
+  }
   const started = Date.now()
   run(process.execPath, [path.join(desktop, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), ...args], { env })
   const bundleDir = path.join(targetDir, ...(options.target === host ? [] : [options.target]),
@@ -122,7 +157,7 @@ async function main() {
       collected.push(name)
       continue
     }
-    const suffix = { dmg: '.dmg', nsis: '.exe', deb: '.deb', appimage: '.AppImage' }[bundle]
+    const suffix = { dmg: '.dmg', nsis: '.exe', msi: '.msi', deb: '.deb', appimage: '.AppImage' }[bundle]
     const directory = path.join(bundleDir, bundle)
     const candidates = (await filesBelow(directory)).filter((file) => file.endsWith(suffix))
     let count = 0
@@ -135,11 +170,27 @@ async function main() {
     }
     if (!count) throw new Error('No newly generated ' + bundle + ' artifact; refusing stale output')
   }
+  let updater
+  if (options.updates) {
+    updater = []
+    const suffixes = process.platform === 'darwin' ? ['.app.tar.gz'] : process.platform === 'win32' ? ['.exe', '.msi'] : ['.AppImage']
+    for (const suffix of suffixes) {
+      const candidates = (await filesBelow(bundleDir)).filter(file => file.endsWith(suffix))
+      const fresh = []
+      for (const file of candidates) if ((await stat(file)).mtimeMs >= started - 1000) fresh.push(file)
+      if (fresh.length !== 1) throw new Error('Expected exactly one freshly signed updater payload per format')
+      const file = path.basename(fresh[0])
+      const signature = (await readFile(fresh[0] + '.sig', 'utf8')).trim()
+      if (!signature) throw new Error('Missing updater signature')
+      if (!collected.includes(file)) { await cp(fresh[0], path.join(output, file)); collected.push(file) }
+      updater.push({ file, signature })
+    }
+  }
   const artifacts = await Promise.all(collected.sort().map(async (file) => ({
     file, bytes: (await stat(path.join(output, file))).size,
     sha256: await checksum(path.join(output, file)),
   })))
-  await writeFile(path.join(output, 'build-info.json'), JSON.stringify({ ...identity, artifacts }, null, 2) + '\n')
+  await writeFile(path.join(output, 'build-info.json'), JSON.stringify({ ...identity, artifacts, ...(updater ? { updater } : {}) }, null, 2) + '\n')
   await cp(path.join(root, 'docs', 'testing-app.md'), path.join(output, 'INSTALL.md'))
   const checksummed = [...collected, 'build-info.json', 'INSTALL.md'].sort()
   const lines = await Promise.all(checksummed.map(async (file) => await checksum(path.join(output, file)) + '  ' + file))
