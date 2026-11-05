@@ -49,6 +49,7 @@ pub(super) enum Update {
         muted: bool,
     },
     Cue(Cue),
+    Alert(Cue),
     Bitrate(u32),
     DeviceBackend {
         backend: DeviceBackend,
@@ -90,6 +91,8 @@ pub(super) struct Shared {
     pub ptt: Mutex<PttState>,
     pub muted: AtomicBool,
     pub deaf: AtomicBool,
+    pub cues_enabled: AtomicBool,
+    pub controls_enabled: AtomicBool,
 }
 
 pub(super) struct WorkerHandle {
@@ -150,6 +153,8 @@ pub(super) async fn start(
         }),
         muted: AtomicBool::new(config.start_muted),
         deaf: AtomicBool::new(config.start_deafened),
+        cues_enabled: AtomicBool::new(true),
+        controls_enabled: AtomicBool::new(true),
     });
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -611,7 +616,18 @@ impl Runtime {
                     self.graph.sync_tracks(&remote, self.epoch.elapsed());
                 }
                 Update::User { user, gain, muted } => self.graph.set_user(user, gain, muted),
-                Update::Cue(cue) => self.graph.play_cue(cue),
+                Update::Alert(cue) => {
+                    if self.shared.cues_enabled.load(Ordering::Relaxed) {
+                        self.graph.play_cue(cue);
+                    }
+                }
+                Update::Cue(cue) => {
+                    if self.shared.cues_enabled.load(Ordering::Relaxed)
+                        && self.shared.controls_enabled.load(Ordering::Relaxed)
+                    {
+                        self.graph.play_cue(cue);
+                    }
+                }
                 Update::Bitrate(bitrate) => {
                     if let Err(error) = self.graph.set_bitrate(bitrate) {
                         tracing::warn!(%error, bitrate, "encoder adaptation was rejected");
@@ -791,6 +807,9 @@ impl Runtime {
 
     fn render_once(&mut self) {
         let deaf = self.shared.deaf.load(Ordering::Relaxed);
+        if !self.shared.cues_enabled.load(Ordering::Relaxed) {
+            self.graph.clear_cues();
+        }
         let mixed = self.graph.render(self.epoch.elapsed(), deaf);
         self.render_tap.push(mixed);
         if let Some(devices) = &mut self.devices

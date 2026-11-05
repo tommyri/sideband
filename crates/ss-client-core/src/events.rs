@@ -40,6 +40,13 @@ pub enum ClientEvent {
         /// Affected channel.
         channel: Id,
     },
+    /// A newly received live message, never history or snapshot hydration.
+    MessageReceived {
+        /// Destination channel.
+        channel: Id,
+        /// Message identifier; hosts must project the current cache before notifying.
+        message: Id,
+    },
     /// Voice memberships or tracks changed.
     VoiceChanged,
     /// Voice diagnostics, refreshed every 500 ms while joined.

@@ -79,6 +79,8 @@ pub async fn stop(state: &AppState, only_server: Option<&str>) -> Result<(), Api
     let active = voice.take().unwrap();
     drop(voice);
     active.session.set_ptt(false);
+    active.session.play_cue(ss_client_core::voice::Cue::Leave);
+    tokio::time::sleep(Duration::from_millis(70)).await;
     let connected = clients
         .get(&active.server)
         .is_some_and(|c| c.state().read().connection == ConnectionState::Connected);
@@ -198,6 +200,10 @@ async fn join_with_config(
     let session = VoiceSession::start(client, channel, config)
         .await
         .map_err(api_error)?;
+    let preferences = state.storage.notifications();
+    session.set_cues_enabled(!preferences.dnd);
+    session.set_control_cues_enabled(preferences.sounds(server.as_str()));
+    session.play_cue(ss_client_core::voice::Cue::Join);
     let connection = own_connection(client)?;
     *state.voice.lock().await = Some(ActiveVoice {
         local_ptt: false,

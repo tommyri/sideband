@@ -10,6 +10,7 @@ mod diagnostics;
 mod dm;
 mod input;
 mod moderation_admin;
+mod notifications;
 mod onboarding;
 mod persistence;
 mod role_admin;
@@ -33,6 +34,7 @@ use tauri::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -42,6 +44,9 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            notifications::notification_preferences,
+            notifications::save_notification_preferences,
+            notifications::test_notification,
             diagnostics::diagnostics_snapshot,
             testing::test_build_identity,
             testing::export_test_report,
@@ -100,6 +105,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(AppState::open(&app.path().app_data_dir()?)?);
             input::init(app.handle());
+            notifications::init(app.handle());
             tauri::async_runtime::spawn(voice::watch(app.handle().clone()));
             let about = PredefinedMenuItem::about(
                 app,

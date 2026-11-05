@@ -237,19 +237,13 @@ impl VoiceGraph {
     }
 
     pub fn play_cue(&mut self, cue: Cue) {
-        let frequency = match cue {
-            Cue::Join => 660.0,
-            Cue::Leave => 440.0,
-            Cue::Mute => 330.0,
-            Cue::Unmute => 550.0,
-        };
-        let mut frame = [0.0; 960];
-        for (index, pair) in frame.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let phase = index as f32 * frequency * std::f32::consts::TAU / 48_000.0;
-            *pair = [phase.sin() * 0.08; 2];
+        // A burst must not create a seconds-long backlog of stale sounds.
+        if self.cues.len() <= 12 {
+            self.cues.extend(cue.frames());
         }
-        self.cues.push_back(frame);
+    }
+    pub fn clear_cues(&mut self) {
+        self.cues.clear();
     }
 
     pub fn render(&mut self, now: Duration, deaf: bool) -> StereoFrame {
@@ -278,15 +272,10 @@ impl VoiceGraph {
                 },
             );
         }
-        if !deaf && let Some(cue) = self.cues.pop_front() {
+        if let Some(cue) = self.cues.pop_front() {
             let _ = self.mixer.add_track(&cue, self.preferences.cue_gain);
         }
-        let output = if deaf {
-            let _ = self.mixer.finish();
-            [0.0; 960]
-        } else {
-            *self.mixer.finish()
-        };
+        let output = *self.mixer.finish();
         self.unknown.retain(|_, packets| {
             packets.retain(|packet| now.saturating_sub(packet.arrival) <= UNKNOWN_TTL);
             !packets.is_empty()
@@ -367,6 +356,23 @@ fn audio_packet(
 mod tests {
     use super::*;
 
+    #[test]
+    fn cue_queue_is_bounded_and_dnd_clear_discards_pending_samples() {
+        let mut graph = VoiceGraph::new(VoiceProfile::Voice, 80_000).unwrap();
+        for _ in 0..100 {
+            graph.play_cue(Cue::Mention);
+        }
+        assert!(graph.cues.len() <= 18);
+        graph.clear_cues();
+        assert!(
+            graph
+                .render(Duration::ZERO, false)
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        graph.play_cue(Cue::Deafen);
+        assert!(graph.render(Duration::ZERO, true).iter().any(|s| *s != 0.0));
+    }
     #[test]
     fn master_and_cue_volume_apply_before_playback() {
         let mut graph = VoiceGraph::new(VoiceProfile::Voice, 80_000).unwrap();

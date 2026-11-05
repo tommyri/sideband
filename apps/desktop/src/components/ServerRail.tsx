@@ -1,4 +1,6 @@
-import { Plus } from 'lucide-react'
+import { useState } from 'react'
+import { NotificationSettings } from '../features/notifications/NotificationSettings'
+import { Bell, Plus } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 
 function initials(label: string) {
@@ -11,6 +13,7 @@ function initials(label: string) {
 }
 
 export function ServerRail() {
+  const [notifications, setNotifications] = useState(false)
   const servers = useAppStore((state) => state.servers)
   const selected = useAppStore((state) => state.selectedServerId)
   const select = useAppStore((state) => state.selectServer)
@@ -51,6 +54,14 @@ export function ServerRail() {
           <Plus size={20} />
         </button>
       </div>
+      <button
+        className="server-button"
+        aria-label="Notification settings"
+        onClick={() => setNotifications(true)}
+      >
+        <Bell size={20} />
+      </button>
+      {notifications && <NotificationSettings close={() => setNotifications(false)} />}
       <div className="rail-avatar" aria-label="Your profile">
         TR
         <span className="presence-dot" />

@@ -133,10 +133,53 @@ pub enum Cue {
     Join,
     /// Left voice.
     Leave,
+    /// A channel mention.
+    Mention,
+    /// A direct message.
+    DirectMessage,
+    /// Self-deafened.
+    Deafen,
+    /// Connection interrupted.
+    Lost,
+    /// Connection restored.
+    Restored,
     /// Self-muted.
     Mute,
     /// Self-unmuted.
     Unmute,
+}
+
+impl Cue {
+    /// Self-made 60 ms, 48 kHz stereo cue with a soft envelope. Shared by live
+    /// voice mixing and output-only desktop playback; no microphone is needed.
+    pub fn frames(self) -> Vec<[f32; 960]> {
+        let frequency = match self {
+            Self::Join => 660.0,
+            Self::Leave => 440.0,
+            Self::Mute => 330.0,
+            Self::Unmute => 550.0,
+            Self::Mention => 880.0,
+            Self::DirectMessage => 770.0,
+            Self::Deafen => 220.0,
+            Self::Lost => 165.0,
+            Self::Restored => 990.0,
+        };
+        (0..6)
+            .map(|frame| {
+                let mut samples = [0.0; 960];
+                for (index, pair) in samples.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    #[allow(clippy::cast_precision_loss)]
+                    let position = (frame * 480 + index) as f32;
+                    let envelope = (std::f32::consts::PI * position / 2879.0).sin().max(0.0);
+                    let sample = (position * frequency * std::f32::consts::TAU / 48_000.0).sin()
+                        * 0.08
+                        * envelope;
+                    *pair = [sample; 2];
+                }
+                samples
+            })
+            .collect()
+    }
 }
 
 /// One remote speaker's current playout diagnostics.
@@ -387,6 +430,7 @@ impl VoiceSession {
                 .deaf
                 .store(deaf, std::sync::atomic::Ordering::Relaxed);
         }
+        self.play_cue(if deaf { Cue::Deafen } else { Cue::Unmute });
         Ok(())
     }
 
@@ -429,6 +473,32 @@ impl VoiceSession {
     }
 
     /// Inject a UI cue into the mixer.
+    /// Suppress queued and future UI cues without changing the saved cue volume.
+    pub fn set_cues_enabled(&self, enabled: bool) {
+        if let Some(worker) = &self.worker {
+            worker
+                .shared
+                .cues_enabled
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Suppress call-specific cues without silencing other servers' alerts.
+    pub fn set_control_cues_enabled(&self, enabled: bool) {
+        if let Some(worker) = &self.worker {
+            worker
+                .shared
+                .controls_enabled
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    /// An independently policy-approved message alert, still subject to global DND.
+    pub fn play_alert(&self, cue: Cue) {
+        if let Some(worker) = &self.worker {
+            let _ = worker.updates.try_send(Update::Alert(cue));
+        }
+    }
+    /// Play a call-specific UI cue.
     pub fn play_cue(&self, cue: Cue) {
         if let Some(worker) = &self.worker {
             let _ = worker.updates.try_send(Update::Cue(cue));

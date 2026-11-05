@@ -25,6 +25,8 @@ struct Data {
     #[serde(default)]
     volumes: BTreeMap<String, f32>,
     #[serde(default)]
+    notifications: crate::notifications::Preferences,
+    #[serde(default)]
     muted: BTreeMap<String, bool>,
 }
 
@@ -67,6 +69,16 @@ impl DesktopStorage {
         write().map_err(|e| Error::Storage(e.to_string()))?;
         *current = next;
         Ok(())
+    }
+
+    pub fn notifications(&self) -> crate::notifications::Preferences {
+        self.data.lock().unwrap().notifications.clone()
+    }
+    pub fn save_notifications(
+        &self,
+        preferences: crate::notifications::Preferences,
+    ) -> Result<(), Error> {
+        self.update(|data| data.notifications = preferences)
     }
 
     pub fn servers(&self) -> Vec<SavedServer> {

@@ -372,6 +372,23 @@ async fn persist(
     .map_err(|e| Error::Storage(e.to_string()))?
 }
 
+fn is_new_live_message(view: &crate::State, message: &v1::Message) -> bool {
+    let Ok(channel) = ss_core::Id::try_from(message.channel_id.as_ref()) else {
+        return false;
+    };
+    !view.messages.get(&channel).is_some_and(|cache| {
+        cache
+            .ordered()
+            .iter()
+            .chain(cache.deleted().iter())
+            .any(|cached| cached.id == message.id)
+    }) && view
+        .channels
+        .get(&channel)
+        .or_else(|| view.direct_messages.get(&channel))
+        .is_none_or(|channel| channel.last_message_id.as_ref() != Some(&message.id))
+}
+
 struct Runner {
     address: ServerAddr,
     pins: Arc<dyn PinStore>,
@@ -391,9 +408,27 @@ impl Runner {
     }
     fn event(&self, event: v1::ServerEnvelope) -> Result<bool, Error> {
         let message = event.msg.ok_or(Error::Protocol("empty event"))?;
+        let received = match &message {
+            v1::server_envelope::Msg::MessageCreated(created) => created
+                .message
+                .as_ref()
+                .filter(|message| is_new_live_message(&self.store.read(), message))
+                .cloned(),
+            _ => None,
+        };
         let event = self.store.apply(message)?;
         let removed = matches!(event, ClientEvent::Removed { .. });
         let _ = self.events.send(event);
+        if let Some(message) = received
+            && let (Ok(channel), Ok(message)) = (
+                ss_core::Id::try_from(message.channel_id.as_ref()),
+                ss_core::Id::try_from(message.id.as_ref()),
+            )
+        {
+            let _ = self
+                .events
+                .send(ClientEvent::MessageReceived { channel, message });
+        }
         Ok(removed)
     }
     async fn run(mut self, mut live: Live, mut commands: mpsc::Receiver<Command>) {
@@ -749,6 +784,57 @@ fn make_replayable(message: &mut Msg) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_notifications_reject_cached_echoes_and_snapshot_overlap() {
+        let channel = ss_core::Id::generate();
+        let key = ss_core::Id::generate();
+        let message = v1::Message {
+            id: key.as_bytes().to_vec().into(),
+            channel_id: channel.as_bytes().to_vec().into(),
+            ..Default::default()
+        };
+        let store = StateStore::default();
+        store
+            .apply(v1::server_envelope::Msg::ChannelCreated(
+                v1::ChannelCreated {
+                    channel: Some(v1::Channel {
+                        id: channel.as_bytes().to_vec().into(),
+                        effective_permissions: Some(ss_core::Permissions::EVERYONE.bits()),
+                        ..Default::default()
+                    }),
+                },
+            ))
+            .unwrap();
+        assert!(is_new_live_message(&store.read(), &message));
+        store
+            .apply(v1::server_envelope::Msg::MessageCreated(
+                v1::MessageCreated {
+                    message: Some(message.clone()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert!(!is_new_live_message(&store.read(), &message));
+        let mut view = crate::State::default();
+        view.channels.insert(
+            channel,
+            v1::Channel {
+                last_message_id: Some(message.id.clone()),
+                ..Default::default()
+            },
+        );
+        assert!(!is_new_live_message(&view, &message));
+        view.channels.clear();
+        view.direct_messages.insert(
+            channel,
+            v1::Channel {
+                last_message_id: Some(message.id.clone()),
+                ..Default::default()
+            },
+        );
+        assert!(!is_new_live_message(&view, &message));
+    }
 
     #[test]
     fn reconnect_backoff_and_clock_jump_thresholds_are_bounded() {

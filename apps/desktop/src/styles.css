@@ -1756,3 +1756,71 @@ textarea:focus-visible {
 .testing-panel > header {
   padding: 0 0 16px;
 }
+
+.notification-settings {
+  width: min(620px, calc(100vw - 32px));
+}
+.notification-settings h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.notification-body {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: 65vh;
+}
+.notification-body fieldset {
+  border: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+}
+.notification-body p {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notification-body label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.notification-channel {
+  justify-content: space-between;
+}
+.notification-channel small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.notification-channel select {
+  padding: 8px;
+  background: var(--bg-input);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.notification-settings[open] {
+  display: flex;
+  flex-direction: column;
+}
+.notification-settings > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid #39434e;
+}
+.notification-settings .notification-body {
+  min-height: 0;
+}
+.notification-channel > span {
+  min-width: 120px;
+}
+.notification-settings .notification-channel select {
+  width: auto;
+  min-width: 170px;
+}

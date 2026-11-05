@@ -60,6 +60,7 @@ fn status(state: &ConnectionState) -> ConnectionStatus {
 
 fn event(event: ClientEvent) -> ClientEventPayload {
     match event {
+        ClientEvent::MessageReceived { .. } => ClientEventPayload::Resynced,
         ClientEvent::Resynced => ClientEventPayload::Resynced,
         ClientEvent::ChannelsChanged => ClientEventPayload::ChannelsChanged,
         ClientEvent::MessagesChanged { channel } => ClientEventPayload::MessagesChanged {
@@ -238,8 +239,15 @@ pub async fn connect(
         .storage
         .label(&server_id, label.clone())
         .map_err(api_error)?;
+    if state.storage.notifications().dnd {
+        client
+            .set_presence(crate::notifications::presence(&client.state(), true))
+            .await
+            .map_err(api_error)?;
+    }
     let mut receiver = client.subscribe();
     let event_server_id = server_id.clone();
+    let notification_store = client.state();
     tauri::async_runtime::spawn(async move {
         loop {
             let incoming = match receiver.recv().await {
@@ -247,6 +255,11 @@ pub async fn connect(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
+            crate::notifications::observe(&app, &event_server_id, &notification_store, &incoming)
+                .await;
+            if matches!(incoming, ClientEvent::MessageReceived { .. }) {
+                continue;
+            }
             let _ = app.emit(
                 "ss://event",
                 AppEvent {

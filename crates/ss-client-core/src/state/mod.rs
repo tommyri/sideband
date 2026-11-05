@@ -47,7 +47,7 @@ pub struct State {
 
 // Match the server's @everyone word-boundary rule. Explicit mention IDs are
 // already canonical bytes on the wire, including alias spellings in content.
-fn mentions_user(message: &v1::Message, own: &bytes::Bytes) -> bool {
+pub(crate) fn mentions_user(message: &v1::Message, own: &bytes::Bytes) -> bool {
     if message
         .author
         .as_ref()
@@ -72,6 +72,13 @@ fn mentions_user(message: &v1::Message, own: &bytes::Bytes) -> bool {
 }
 
 impl State {
+    /// Whether a current message mentions the signed-in user (including @everyone).
+    pub fn mentions_me(&self, message: &v1::Message) -> bool {
+        self.own_user
+            .as_ref()
+            .is_some_and(|own| mentions_user(message, &own.id))
+    }
+
     /// Depth-first channel tree, siblings sorted by (position, id). Missing
     /// parents and cycles cannot hide a visible channel or recurse forever.
     pub fn channel_tree(&self) -> Vec<&v1::Channel> {
