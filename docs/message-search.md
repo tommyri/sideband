@@ -4,7 +4,7 @@ Choose **Search messages** in the connected server's channel header. Search word
 must all appear in a message. Search is case-insensitive and ignores diacritics;
 quotes, `OR`, `*`, and other punctuation do not enable advanced query syntax.
 Use Channel, From, After/Before (exclusive UTC midnight boundaries), or Contains
-(link, file, image) to narrow the top 50 matches. Select a result to open its
+(link, file, image) to narrow the newest 50 matches. Select a result to open its
 conversation at that message. Attachment contents are not indexed.
 
 Search includes readable text channels and DMs you belong to, including group
@@ -29,7 +29,9 @@ Searches and result snippets are not stored in the client's message cache.
 The response is an array of `{id, channelId, authorId, authorName, createdAt,
 excerpt}`. IDs and millisecond timestamps are strings; `authorId` can be null.
 `excerpt` is plain text: U+0001 and U+0002 delimit highlighted matches. Never
-interpret it as HTML. Ranking uses FTS5 bm25 followed by timestamp and ID descending.
+interpret it as HTML. Results are ordered by timestamp and ID descending (newest first). Global FTS5
+bm25 statistics are deliberately not used: changes in hidden channels or private
+DMs must not change the order of visible results.
 Visibility is applied before limiting and rechecked before delivery. Unknown or
 inaccessible channel filters return an empty array. Invalid queries return 400;
 missing or invalid credentials return 401. No hidden result count is returned.
@@ -50,8 +52,8 @@ so schedule maintenance when chat traffic is low.
 
 `cargo test -p ss-server --test search -- --nocapture` exercises insert, edit,
 soft/hard delete, malformed queries, filters, rebuild, and a 100,000-message fixture.
-The selective two-word query (100 matches) measured 1.3 ms locally in a debug build;
-a common-term query matching 99,900 rows took 403 ms in the same debug fixture.
+The selective two-word query (100 matches) measured 1.1 ms locally in a debug build;
+a common-term query matching 99,900 rows took 374 ms in the same debug fixture.
 These are reproducible fixture measurements, not universal bounds or end-to-end
 network latency. Tests check result correctness and report timings without a
 wall-clock assertion that would fail on noisy CI hosts. Authenticated client integration checks hidden

@@ -40,6 +40,7 @@ it('renders safe highlights and navigates to the selected message', async () => 
   vi.mocked(invokeBridge).mockResolvedValue([row])
   const close = vi.fn()
   const { container } = render(<SearchPanel server="server" view={view} close={close} />)
+  expect(screen.getByRole('status')).toHaveTextContent('Newest matches first')
   search()
   await screen.findByText('1 match')
   expect(container.querySelector('mark')).toHaveTextContent('launch')

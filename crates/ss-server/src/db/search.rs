@@ -54,7 +54,7 @@ pub fn literal_query(input: &str) -> Option<String> {
             .join(" AND "),
     )
 }
-/// Search only visible channels before ranking and limiting. Empty visibility returns no rows.
+/// Search only visible channels before newest-first ordering and limiting. Empty visibility returns no rows.
 pub async fn search(
     conn: &mut SqliteConnection,
     filter: &Filter,
@@ -107,8 +107,10 @@ pub async fn search(
         }
         _ => {}
     }
+    // Global BM25 statistics include hidden channels and other users' DMs.
+    // Visible-row timestamps and IDs cannot reveal those corpus changes through ranking.
     query
-        .push(" ORDER BY bm25(message_search), m.created_at DESC, m.id DESC LIMIT ")
+        .push(" ORDER BY m.created_at DESC, m.id DESC LIMIT ")
         .push_bind(filter.limit.min(100));
     db(query.build_query_as::<Hit>().fetch_all(conn).await)
 }

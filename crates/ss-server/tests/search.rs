@@ -213,3 +213,83 @@ async fn search_index_tracks_edits_deletes_rebuild_and_filters() {
         50
     );
 }
+
+#[tokio::test]
+async fn hidden_corpus_mutations_cannot_change_visible_result_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = Pool::open(dir.path().join("privacy.db")).await.unwrap();
+    let mut conn = pool.write().await;
+    let author = Id::generate();
+    let visible = Id::generate();
+    let hidden = Id::generate();
+    sqlx::query("INSERT INTO users(id,username,display_name,password_hash,kind,created_at) VALUES(?,'author','Author','unused',0,0)").bind(author).execute(&mut *conn).await.unwrap();
+    for channel in [visible, hidden] {
+        sqlx::query("INSERT INTO channels(id,kind,name,position,created_by,created_at) VALUES(?,2,'test',0,?,0)").bind(channel).bind(author).execute(&mut *conn).await.unwrap();
+    }
+    let older = Id::generate();
+    let newer = Id::generate();
+    for (id, content, stamp) in [
+        (
+            older,
+            "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha beta",
+            100,
+        ),
+        (
+            newer,
+            "alpha beta beta beta beta beta beta beta beta beta beta",
+            200,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO messages(id,channel_id,author_id,content,created_at) VALUES(?,?,?,?,?)",
+        )
+        .bind(id)
+        .bind(visible)
+        .bind(author)
+        .bind(content)
+        .bind(stamp)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+    sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100) INSERT INTO messages(id,channel_id,author_id,content,created_at) SELECT randomblob(16),?,?,'alpha',x FROM n")
+        .bind(hidden).bind(author).execute(&mut *conn).await.unwrap();
+    let query = filter("alpha beta");
+    let original = search::search(&mut conn, &query, &[visible]).await.unwrap();
+    let original: Vec<_> = original
+        .into_iter()
+        .map(|row| (row.id, row.excerpt))
+        .collect();
+    assert_eq!(
+        original.iter().map(|row| row.0).collect::<Vec<_>>(),
+        [newer, older]
+    );
+    // Swapping only hidden term frequencies reverses global BM25's preference
+    // between these visible rows. Neither ordering nor snippets may change.
+    for mutation in [
+        "UPDATE messages SET content='beta' WHERE channel_id=?",
+        "UPDATE messages SET deleted_at=1 WHERE channel_id=?",
+        "DELETE FROM messages WHERE channel_id=?",
+    ] {
+        sqlx::query(mutation)
+            .bind(hidden)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let changed = search::search(&mut conn, &query, &[visible]).await.unwrap();
+        assert_eq!(
+            changed
+                .into_iter()
+                .map(|row| (row.id, row.excerpt))
+                .collect::<Vec<_>>(),
+            original
+        );
+        let mut limited = filter("alpha beta");
+        limited.limit = 1;
+        let page = search::search(&mut conn, &limited, &[visible])
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, newer);
+    }
+}

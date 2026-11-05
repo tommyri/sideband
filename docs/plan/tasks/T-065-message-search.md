@@ -14,7 +14,8 @@ Find that link someone posted three weeks ago.
   tokenizer `unicode61 remove_diacritics 2`.
 - `GET /api/v1/search?q=&channel=&from=&before=&after=&has=link|file|image
   &limit=` scoped to channels the user can view (and their DMs); results
-  ranked by bm25 then recency; highlights.
+  ordered newest-first by visible message timestamp/ID; highlights. Global bm25
+  ranking is excluded because hidden corpus changes can leak through visible ordering.
 - Client: search box in the header, results pane with jump-to-message
   (T-045 jump).
 - Reindex CLI command.
@@ -37,8 +38,12 @@ Attachment content indexing.
 - Header search dialog supports filters, empty/error/loading states, safe highlights, and existing
   T-045 jump navigation. Message/access/connection events invalidate in-flight and displayed results.
 - Reindex command and API/operator usage: [Message search](../../message-search.md).
-- Validation: 100k selective query measured 1.3 ms locally (a broad 99,900-match query took
-  403 ms in the debug fixture; not a universal latency guarantee); index lifecycle/filter tests,
+- Validation: 100k selective query measured 1.1 ms locally (a broad 99,900-match query took
+  374 ms in the debug fixture; not a universal latency guarantee); index lifecycle/filter tests,
   authenticated permission/DM integration, frontend stale-response/highlight/navigation tests,
   and Chromium at 1200×900 and 760×600. Installed cross-platform acceptance remains in release gates.
 - T-045's remaining manual acceptance does not block using its implemented jump-to-message API.
+
+- Privacy review: removed corpus-wide bm25 ordering. A regression varies term frequencies
+  using hidden-only edits and deletions and verifies visible ordering and the limited page
+  remain unchanged. The UI and API documentation state newest-first ordering.

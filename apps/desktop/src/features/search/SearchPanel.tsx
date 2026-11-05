@@ -28,7 +28,9 @@ export function SearchPanel({
   const [has, setHas] = useState('')
   const [rows, setRows] = useState<SearchResult[]>([])
   const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState('Search words are matched together. Dates use UTC.')
+  const [notice, setNotice] = useState(
+    'Newest matches first. Search words are matched together. Dates use UTC.',
+  )
   const [error, setError] = useState('')
   const members = new Map(view.members.map((m) => [m.id, m]))
   const channels = new Map([
@@ -89,7 +91,7 @@ export function SearchPanel({
       setRows(result)
       setNotice(
         result.length === 50
-          ? 'Top 50 matches. Narrow your filters to find more.'
+          ? 'Newest 50 matches. Narrow your filters to find more.'
           : `${result.length} ${result.length === 1 ? 'match' : 'matches'}`,
       )
     } catch (e) {
