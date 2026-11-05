@@ -381,6 +381,12 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         perms_and(&["BAN_MEMBERS"], &["caller("]),
     ),
     (
+        "http/search.rs",
+        "get",
+        "/api/v1/search",
+        perms_and(&["VIEW_CHANNEL"], &["caller(", "visible_channels("]),
+    ),
+    (
         "http/server_settings.rs",
         "get",
         "/api/v1/server/settings",

@@ -1626,3 +1626,116 @@ async fn moderation_kick_only_scope(owner: &Client, guest: &Client) {
         .unwrap();
     assert!(guest.moderation_page(false, None, "").await.is_err());
 }
+
+// Keep the authenticated visibility transitions in one real connection scenario.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn search_https_scopes_permissions_and_private_messages() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use ss_client_core::search::SearchRequest;
+    use tower::ServiceExt;
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let mut events = guest.subscribe();
+    let channel = named(&owner.state().read(), "general", v1::ChannelKind::Text);
+    let message = owner
+        .send_message(post(channel, "launch searchable café"))
+        .await
+        .unwrap();
+    let query = SearchRequest {
+        q: "launch cafe".into(),
+        ..Default::default()
+    };
+    let page = guest.search_messages(&query).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, message.to_string());
+    let detached = guest.search_session().await.unwrap();
+    owner
+        .set_channel_override(v1::SetChannelOverride {
+            channel_id: wire(channel),
+            role_id: wire(db::EVERYONE_ROLE_ID),
+            allow: 0,
+            deny: Permissions::VIEW_CHANNEL.bits(),
+        })
+        .await
+        .unwrap();
+    until(&guest, &mut events, |s| !s.channels.contains_key(&channel)).await;
+    assert!(detached.search_messages(&query).await.unwrap().is_empty());
+    assert_eq!(owner.search_messages(&query).await.unwrap().len(), 1);
+    let guest_id = id_from_bytes(&guest.state().read().own_user.as_ref().unwrap().id).unwrap();
+    let dm = owner
+        .create_dm(v1::CreateDm {
+            user_ids: vec![wire(guest_id)],
+        })
+        .await
+        .unwrap();
+    let dm = id_from_bytes(&dm.id).unwrap();
+    until(&guest, &mut events, |s| s.direct_messages.contains_key(&dm)).await;
+    let _ = owner
+        .send_message(post(dm, "launch private café"))
+        .await
+        .unwrap();
+    let mut dm_query = query.clone();
+    dm_query.channel = Some(dm.to_string());
+    assert_eq!(guest.search_messages(&dm_query).await.unwrap().len(), 1);
+    let invite = owner
+        .create_invite(v1::CreateInvite {
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    let third = Client::connect(
+        world.address.clone(),
+        Credentials::Register(v1::Register {
+            invite_code: invite.code,
+            username: "third".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+    )
+    .await
+    .unwrap();
+    let third_id = id_from_bytes(&third.state().read().own_user.as_ref().unwrap().id).unwrap();
+    let self_dm = guest
+        .create_dm(v1::CreateDm {
+            user_ids: vec![wire(third_id)],
+        })
+        .await
+        .unwrap();
+    let self_dm = id_from_bytes(&self_dm.id).unwrap();
+    let _ = guest
+        .send_message(post(self_dm, "launch secret café"))
+        .await
+        .unwrap();
+    dm_query.channel = Some(self_dm.to_string());
+    assert!(owner.search_messages(&dm_query).await.unwrap().is_empty());
+    assert!(
+        guest
+            .search_messages(&SearchRequest {
+                q: "\"***".into(),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+    );
+    let response = world
+        .server
+        .public_routes()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=launch")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    task.abort();
+}

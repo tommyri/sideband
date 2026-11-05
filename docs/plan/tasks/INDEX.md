@@ -112,7 +112,7 @@ manual acceptance remains in progress; do not mark those tasks done early.
 | [T-062](T-062-load-soak-test.md) | Load and soak testing | S | T-017, T-025, T-026 | done |
 | [T-063](T-063-diagnostics.md) | Diagnostics panel and server dashboards | S | T-041, T-044, T-032, T-076 | in-progress |
 | [T-064](T-064-documentation.md) | Documentation | S | T-034, T-057 | todo |
-| [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | todo |
+| [T-065](T-065-message-search.md) | Message search (FTS5) | S | T-026, T-045 | done |
 | [T-066](T-066-https-rest-listener.md) | Serve the public REST listener over TLS | M | T-033, T-061 | done |
 | [T-067](T-067-security-acceptance.md) | Security acceptance: 1 h fuzz runs, doc review, licence policy | S | T-061 | todo |
 | [T-068](T-068-server-hardening-followups.md) | Server hardening follow-ups (datagram cap, hashed invites, …) | M | T-061 | done |

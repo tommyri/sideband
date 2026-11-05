@@ -13,6 +13,7 @@ mod moderation_admin;
 mod onboarding;
 mod persistence;
 mod role_admin;
+mod search;
 mod server_settings;
 mod state;
 mod testing;
@@ -61,6 +62,7 @@ pub fn run() {
             server_settings::get_server_settings,
             server_settings::save_server_settings,
             server_settings::upload_server_icon,
+            search::search_messages,
             role_admin::role_admin_snapshot,
             role_admin::role_admin_action,
             role_admin::role_overrides,

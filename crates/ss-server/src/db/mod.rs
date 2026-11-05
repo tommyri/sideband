@@ -15,6 +15,7 @@ pub mod messages;
 pub mod model;
 pub mod read_states;
 pub mod roles;
+pub mod search;
 pub mod sessions;
 pub mod settings;
 pub mod users;

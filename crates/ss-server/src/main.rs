@@ -28,6 +28,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Rebuild message search from live messages. Does not start listeners.
+    ReindexSearch {
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
     /// Inspect live connections through the loopback operator listener.
     Conn {
         #[command(subcommand)]
@@ -209,6 +214,12 @@ fn main() -> anyhow::Result<()> {
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
+        Some(Command::ReindexSearch { data_dir }) => {
+            let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+            let mut writer = pool.write().await;
+            ss_server::db::search::reindex(&mut writer).await?;
+            println!("message search index rebuilt");
+        }
         Some(Command::Conn {
             action: ConnAction::List { data_dir },
         }) => {
@@ -285,6 +296,7 @@ async fn start() -> anyhow::Result<()> {
                     | Command::Run { .. }
                     | Command::CheckConfig { .. }
                     | Command::Fingerprint { .. }
+                    | Command::ReindexSearch { .. }
                     | Command::Backup { .. }
                     | Command::Tls { .. },
                 )

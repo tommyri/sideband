@@ -22,6 +22,7 @@ this is not a production-ready release or a claim of measured quality parity.
   unread state and group membership), invite, webhook and channel management, roles,
   member role assignments, channel permission overrides, server settings, searchable members,
   timed bans/unban, filtered audit history,
+  [message search](docs/message-search.md) with filters and jump-to-message,
   guided tests, diagnostics and redacted local evidence exports.
 - Still to build: notifications,
   production distribution/updating, and the finished screen-sharing experience.

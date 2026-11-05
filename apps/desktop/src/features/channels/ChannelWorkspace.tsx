@@ -1,4 +1,5 @@
 import { MemberManager } from '../admin/MemberManager'
+import { SearchPanel } from '../search/SearchPanel'
 import { ServerSettings } from '../admin/ServerSettings'
 import { RoleManager } from '../admin/RoleManager'
 import { ChannelManager } from '../admin/ChannelManager'
@@ -46,6 +47,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [details, setDetails] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false)
@@ -120,6 +122,14 @@ export function ChannelWorkspace({ server }: { server: string }) {
   }
   return (
     <section className={`live-workspace ${chatChannel ? 'has-chat' : ''}`}>
+      {searchOpen && connected && (
+        <SearchPanel
+          key={`${server}:${view.ownUserId}`}
+          server={server}
+          view={view}
+          close={() => setSearchOpen(false)}
+        />
+      )}
       {dmDialog && (dmDialog === 'create' || currentDm) && (
         <DmDialog
           key={`${dmDialog}:${currentDm?.id ?? ''}`}
@@ -399,6 +409,13 @@ export function ChannelWorkspace({ server }: { server: string }) {
                 : 'Your community'}
           </p>
           <h1>{title ?? 'Choose a channel'}</h1>
+          <button
+            className="button secondary"
+            disabled={!connected}
+            onClick={() => setSearchOpen(true)}
+          >
+            Search messages
+          </button>
           {currentDm && (
             <DmHeader
               conversation={currentDm}

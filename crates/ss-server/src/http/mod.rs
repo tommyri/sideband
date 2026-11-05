@@ -14,6 +14,7 @@ pub mod invites;
 pub mod messages;
 pub mod moderation_admin;
 pub mod role_admin;
+pub mod search;
 pub mod server_settings;
 pub mod webhook_admin;
 pub mod webhooks;
