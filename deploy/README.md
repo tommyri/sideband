@@ -72,6 +72,12 @@ image only after both builds succeed. Nothing runs on pushes or pull requests.
 
 ## Host NGINX and a public domain certificate
 
+The examples use `sideband.example.com`, a placeholder. You must register or
+otherwise control your own domain and configure its DNS. Before installing the
+examples, replace every `sideband.example.com` in `nginx-sideband.conf` and
+`renew-sideband-certificate.sh` with your chosen hostname. Use that hostname in
+the commands below too; no domain or certificate is provided with Sideband.
+
 For NGINX installed on Ubuntu, use `docker-compose.nginx.yml` **instead of**
 `docker-compose.yml`. Do not combine them: the latter reserves public TCP 443.
 The NGINX variant keeps the same Compose service/data volume, publishes only UDP
@@ -79,10 +85,10 @@ The NGINX variant keeps the same Compose service/data volume, publishes only UDP
 Run it from the same checkout/project name as the original deployment to preserve
 the existing `deploy_socialspeak` volume. Do not use `down -v` during migration.
 
-1. Point `sideband.badask.no` directly at the VPS. Ordinary HTTP-only CDN proxies
+1. Point `sideband.example.com` directly at the VPS. Ordinary HTTP-only CDN proxies
    cannot carry Sideband's QUIC traffic. Check that NGINX HTTP/3 or another service
    does not already bind UDP 443 (`sudo ss -lunp`). Keep existing website configs.
-2. Obtain a publicly trusted certificate for `sideband.badask.no` using your existing
+2. Obtain a publicly trusted certificate for `sideband.example.com` using your existing
    certificate manager. The supplied examples use Certbot paths; adjust them if
    your certificate name/path differs. Certificate issuance remains operator-owned.
 3. Install the renewal hook and run it once:
@@ -110,9 +116,9 @@ the existing `deploy_socialspeak` volume. Do not use `down -v` during migration.
    sudo nginx -t && sudo systemctl reload nginx
    ```
 
-5. Verify `curl --fail https://sideband.badask.no/api/v1/server` and
+5. Verify `curl --fail https://sideband.example.com/api/v1/server` and
    `curl --fail http://127.0.0.1:9101/healthz`. Open UDP 443 in the firewall and
-   connect the desktop app to `sideband.badask.no:443` with both client ports set to
+   connect the desktop app to `sideband.example.com:443` with both client ports set to
    443. Public traffic is HTTPS at NGINX; its HTTPS upstream also validates the
    hostname and certificate chain. Keep metrics out of the NGINX site.
 

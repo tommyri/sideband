@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Certbot deploy hook; copies only this site's identity, never the LE directory.
 set -euo pipefail
-domain="sideband.badask.no"
+# Set this to your own domain before installing the renewal hook.
+domain="sideband.example.com"
 lineage="${RENEWED_LINEAGE:-/etc/letsencrypt/live/$domain}"
 if [[ -n "${RENEWED_DOMAINS:-}" && " $RENEWED_DOMAINS " != *" $domain "* ]]; then
   exit 0
