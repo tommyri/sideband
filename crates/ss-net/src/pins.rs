@@ -38,87 +38,141 @@ impl ServerId {
     }
 }
 
-/// Shared pin store. Implementations must serialize `remember` with updates.
-pub trait PinStore: Send + Sync + 'static {
-    /// Reads an accepted fingerprint.
-    fn get(&self, server: &ServerId) -> Result<Option<Fingerprint>, Error>;
-    /// Explicit user approval, including replacement of an old pin.
-    fn set(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error>;
-    /// Records a publicly verified certificate, refusing to overwrite a different pin.
-    fn remember(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error>;
+/// Persisted identity policy. Public trust never falls back to a fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TrustPolicy {
+    PublicCertificate,
+    PinnedCertificate { fingerprint: Fingerprint },
 }
 
-fn check_existing(
-    pins: &BTreeMap<String, Fingerprint>,
-    server: &ServerId,
-    received: Fingerprint,
-) -> Result<(), Error> {
-    if let Some(&expected) = pins.get(server.as_str())
-        && expected != received
-    {
-        return Err(Error::FingerprintChanged { expected, received });
+/// Shared trust store; changes and compare-and-set operations are serialized.
+pub trait PinStore: Send + Sync + 'static {
+    fn policy(&self, server: &ServerId) -> Result<Option<TrustPolicy>, Error>;
+    fn compare_exchange(
+        &self,
+        server: &ServerId,
+        expected: Option<TrustPolicy>,
+        next: TrustPolicy,
+    ) -> Result<(), Error>;
+    fn get(&self, server: &ServerId) -> Result<Option<Fingerprint>, Error> {
+        Ok(match self.policy(server)? {
+            Some(TrustPolicy::PinnedCertificate { fingerprint }) => Some(fingerprint),
+            _ => None,
+        })
     }
+    /// Explicit approval. Public trust cannot be downgraded through this API.
+    fn set(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
+        let previous = self.policy(server)?;
+        if previous == Some(TrustPolicy::PublicCertificate) {
+            return Err(Error::Config(
+                "public certificate trust cannot be downgraded to a pin",
+            ));
+        }
+        self.compare_exchange(
+            server,
+            previous,
+            TrustPolicy::PinnedCertificate { fingerprint },
+        )
+    }
+    /// Record a pin only if it does not replace an existing trust decision.
+    fn remember(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
+        if let Some(expected) = self.get(server)? {
+            if expected == fingerprint {
+                return Ok(());
+            }
+            return Err(Error::FingerprintChanged {
+                expected,
+                received: fingerprint,
+            });
+        }
+        self.compare_exchange(server, None, TrustPolicy::PinnedCertificate { fingerprint })
+    }
+}
+
+fn exchange(
+    policies: &mut BTreeMap<String, TrustPolicy>,
+    server: &ServerId,
+    expected: Option<TrustPolicy>,
+    next: TrustPolicy,
+) -> Result<(), Error> {
+    if policies.get(server.as_str()).copied() != expected {
+        return Err(Error::Config(
+            "server trust changed during verification; retry",
+        ));
+    }
+    policies.insert(server.0.clone(), next);
     Ok(())
 }
 
-/// Process-local store, useful for the CLI and tests.
 #[derive(Debug, Default)]
-pub struct MemoryPinStore(Mutex<BTreeMap<String, Fingerprint>>);
-
+pub struct MemoryPinStore(Mutex<BTreeMap<String, TrustPolicy>>);
 impl PinStore for MemoryPinStore {
-    fn get(&self, server: &ServerId) -> Result<Option<Fingerprint>, Error> {
+    fn policy(&self, server: &ServerId) -> Result<Option<TrustPolicy>, Error> {
         Ok(self.0.lock().get(server.as_str()).copied())
     }
-    fn set(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
-        self.0.lock().insert(server.0.clone(), fingerprint);
-        Ok(())
-    }
-    fn remember(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
-        let mut pins = self.0.lock();
-        check_existing(&pins, server, fingerprint)?;
-        pins.insert(server.0.clone(), fingerprint);
-        Ok(())
+    fn compare_exchange(
+        &self,
+        server: &ServerId,
+        expected: Option<TrustPolicy>,
+        next: TrustPolicy,
+    ) -> Result<(), Error> {
+        exchange(&mut self.0.lock(), server, expected, next)
     }
 }
 
-/// JSON file with atomic replacement. Share one instance per file via `Arc`.
-/// Separate processes must not write the same pin file concurrently.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    version: u32,
+    servers: BTreeMap<String, TrustPolicy>,
+}
+
+/// Versioned JSON with atomic replacement. Legacy fingerprints remain strict pins.
+/// Share one instance per file; separate processes must not write concurrently.
 #[derive(Debug)]
 pub struct JsonPinStore {
     path: PathBuf,
-    pins: Mutex<BTreeMap<String, Fingerprint>>,
+    policies: Mutex<BTreeMap<String, TrustPolicy>>,
 }
-
 impl JsonPinStore {
-    /// Loads existing pins. Missing files start empty; corrupt files are errors.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
-        let pins = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        let (policies, migrate) = match std::fs::read(&path) {
+            Ok(bytes) => {
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                if value.get("version").is_some() {
+                    let doc: Document = serde_json::from_value(value)?;
+                    if doc.version != 2 {
+                        return Err(Error::Config("unsupported trust store version"));
+                    }
+                    (doc.servers, false)
+                } else {
+                    let legacy: BTreeMap<String, Fingerprint> = serde_json::from_value(value)?;
+                    (
+                        legacy
+                            .into_iter()
+                            .map(|(key, fingerprint)| {
+                                (key, TrustPolicy::PinnedCertificate { fingerprint })
+                            })
+                            .collect(),
+                        true,
+                    )
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (BTreeMap::new(), false),
             Err(error) => return Err(error.into()),
         };
-        Ok(Self {
+        let store = Self {
             path,
-            pins: Mutex::new(pins),
-        })
-    }
-
-    fn update(
-        &self,
-        server: &ServerId,
-        fingerprint: Fingerprint,
-        replace: bool,
-    ) -> Result<(), Error> {
-        let mut pins = self.pins.lock();
-        if !replace {
-            check_existing(&pins, server, fingerprint)?;
-            if pins.contains_key(server.as_str()) {
-                return Ok(());
-            }
+            policies: Mutex::new(policies),
+        };
+        if migrate {
+            store.persist(&store.policies.lock())?;
         }
-        let mut next = pins.clone();
-        next.insert(server.0.clone(), fingerprint);
+        Ok(store)
+    }
+    fn persist(&self, policies: &BTreeMap<String, TrustPolicy>) -> Result<(), Error> {
         let parent = self
             .path
             .parent()
@@ -126,22 +180,33 @@ impl JsonPinStore {
             .unwrap_or(Path::new("."));
         std::fs::create_dir_all(parent)?;
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer_pretty(temp.as_file_mut(), &next)?;
+        serde_json::to_writer_pretty(
+            temp.as_file_mut(),
+            &Document {
+                version: 2,
+                servers: policies.clone(),
+            },
+        )?;
         temp.as_file().sync_all()?;
         temp.persist(&self.path).map_err(|error| error.error)?;
-        *pins = next;
         Ok(())
     }
 }
-
 impl PinStore for JsonPinStore {
-    fn get(&self, server: &ServerId) -> Result<Option<Fingerprint>, Error> {
-        Ok(self.pins.lock().get(server.as_str()).copied())
+    fn policy(&self, server: &ServerId) -> Result<Option<TrustPolicy>, Error> {
+        Ok(self.policies.lock().get(server.as_str()).copied())
     }
-    fn set(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
-        self.update(server, fingerprint, true)
-    }
-    fn remember(&self, server: &ServerId, fingerprint: Fingerprint) -> Result<(), Error> {
-        self.update(server, fingerprint, false)
+    fn compare_exchange(
+        &self,
+        server: &ServerId,
+        expected: Option<TrustPolicy>,
+        next: TrustPolicy,
+    ) -> Result<(), Error> {
+        let mut current = self.policies.lock();
+        let mut updated = current.clone();
+        exchange(&mut updated, server, expected, next)?;
+        self.persist(&updated)?;
+        *current = updated;
+        Ok(())
     }
 }

@@ -40,6 +40,9 @@ export async function approveFingerprint(input: ApproveFingerprintInput): Promis
 export function probeServer(input: ProbeInput): Promise<ServerProbe> {
   return invokeBridge('probe_server', { input })
 }
+export function enablePublicCertificate(input: ProbeInput): Promise<ServerProbe> {
+  return invokeBridge('use_public_certificate', { input })
+}
 export function removeServer(serverId: string): Promise<void> {
   return invokeBridge('remove_server', { serverId })
 }

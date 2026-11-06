@@ -70,7 +70,69 @@ branch and version. It compiles once on each architecture's native runner,
 checks static linkage, smoke-tests the non-root runtime and publishes the combined
 image only after both builds succeed. Nothing runs on pushes or pull requests.
 
-## Firewall
+## Host NGINX and a public domain certificate
+
+For NGINX installed on Ubuntu, use `docker-compose.nginx.yml` **instead of**
+`docker-compose.yml`. Do not combine them: the latter reserves public TCP 443.
+The NGINX variant keeps the same Compose service/data volume, publishes only UDP
+443 publicly, and exposes HTTPS on `127.0.0.1:8443` and metrics on localhost.
+Run it from the same checkout/project name as the original deployment to preserve
+the existing `deploy_socialspeak` volume. Do not use `down -v` during migration.
+
+1. Point `sideband.badask.no` directly at the VPS. Ordinary HTTP-only CDN proxies
+   cannot carry Sideband's QUIC traffic. Check that NGINX HTTP/3 or another service
+   does not already bind UDP 443 (`sudo ss -lunp`). Keep existing website configs.
+2. Obtain a publicly trusted certificate for `sideband.badask.no` using your existing
+   certificate manager. The supplied examples use Certbot paths; adjust them if
+   your certificate name/path differs. Certificate issuance remains operator-owned.
+3. Install the renewal hook and run it once:
+
+   ```sh
+   sudo install -m 0755 deploy/renew-sideband-certificate.sh \
+     /etc/letsencrypt/renewal-hooks/deploy/sideband
+   sudo /etc/letsencrypt/renewal-hooks/deploy/sideband
+   ```
+
+   The hook checks the certificate hostname, expiry and matching private key, then
+   atomically installs a combined PEM file in `/etc/sideband/tls`. Only root and
+   container group 65532 can read it. The directory is mounted read-only; do not
+   mount the entire Let's Encrypt directory or make private keys world-readable.
+   Sideband's file watcher reloads new identities without dropping existing calls.
+   The hook reloads NGINX after validating its configuration. On renewal failure,
+   investigate Certbot/hook logs; existing certificates still have an expiry date.
+4. Start the container and install the additional NGINX site:
+
+   ```sh
+   docker compose -f deploy/docker-compose.nginx.yml pull
+   docker compose -f deploy/docker-compose.nginx.yml up -d
+   sudo install -m 0644 deploy/nginx-sideband.conf /etc/nginx/sites-available/sideband
+   sudo ln -s /etc/nginx/sites-available/sideband /etc/nginx/sites-enabled/sideband
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+5. Verify `curl --fail https://sideband.badask.no/api/v1/server` and
+   `curl --fail http://127.0.0.1:9101/healthz`. Open UDP 443 in the firewall and
+   connect the desktop app to `sideband.badask.no:443` with both client ports set to
+   443. Public traffic is HTTPS at NGINX; its HTTPS upstream also validates the
+   hostname and certificate chain. Keep metrics out of the NGINX site.
+
+Updated clients use normal hostname/CA validation for public certificates; renewal
+does not need fingerprint approval. Existing saved fingerprints migrate to strict
+pins because their original approval method is unknown. Disconnect the server,
+open its connection dialog, expand **Advanced connection options**, and choose
+**Use domain certificate validation**. Both QUIC and HTTPS must validate before
+the pin is replaced. An invalid public certificate never silently falls back to
+self-signed approval. Older desktop builds retain the old strict-pinning behavior
+and need updating; changing the Docker image alone does not change client trust.
+
+NGINX and QUIC may present different valid certificates for the same hostname to
+updated public-trust clients. This example shares one certificate for operational
+simplicity. Self-signed/pinned deployments still require the same leaf on both
+transports. HTTP traffic reaches Sideband from the proxy address: existing
+server-side per-IP limits are shared across proxied clients; forwarded headers
+are not treated as trusted client identities.
+
+## Firewall rules
 
 Open the voice port. Forgetting UDP is the usual outage: clients look
 connected to TCP and never hear anyone.
@@ -116,13 +178,14 @@ sudo sysctl --system
 ## TLS
 
 `bind_http` is an HTTPS listener. It serves the same live certificate as
-QUIC, so the fingerprint printed by `run` and `fingerprint` pins both
-transports. The internal health and metrics listener stays plain HTTP on
+QUIC. Pinned clients require that leaf on both transports. Public-certificate
+clients independently validate each transport for the configured hostname. The internal health and metrics listener stays plain HTTP on
 loopback.
 
 `self-signed` is the default. `ss-server tls rotate` replaces
 `tls/identity.json`. A running server loads the new leaf without closing
-the QUIC or HTTPS socket, and clients re-prompt on their next handshake.
+the QUIC or HTTPS socket, and pinned clients re-prompt on their next handshake. Public-certificate clients
+accept valid domain-certificate renewals automatically.
 
 `files` uses `cert_path` and `key_path` (PEM, leaf first). Replacing
 either file reloads the certificate for new QUIC and HTTPS handshakes.

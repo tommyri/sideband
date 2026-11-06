@@ -119,3 +119,55 @@ async fn identity_is_persisted_atomically_and_never_silently_rotates() {
     assert!(tls::generate_self_signed(directory.path()).await.is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "corrupt");
 }
+
+#[test]
+fn legacy_pins_migrate_atomically_without_changing_trust() {
+    use ss_net::pins::TrustPolicy;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pins.json");
+    let id = ServerId::new("friends.example", 443).unwrap();
+    let pin = fingerprint(b"legacy");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&std::collections::BTreeMap::from([(id.as_str(), pin)])).unwrap(),
+    )
+    .unwrap();
+    let store = JsonPinStore::open(&path).unwrap();
+    assert_eq!(
+        store.policy(&id).unwrap(),
+        Some(TrustPolicy::PinnedCertificate { fingerprint: pin })
+    );
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(data["version"], 2);
+    assert_eq!(
+        JsonPinStore::open(&path).unwrap().get(&id).unwrap(),
+        Some(pin)
+    );
+    store
+        .compare_exchange(
+            &id,
+            store.policy(&id).unwrap(),
+            TrustPolicy::PublicCertificate,
+        )
+        .unwrap();
+    assert!(store.set(&id, pin).is_err());
+    assert_eq!(
+        JsonPinStore::open(&path).unwrap().policy(&id).unwrap(),
+        Some(TrustPolicy::PublicCertificate)
+    );
+    assert!(
+        store
+            .compare_exchange(
+                &id,
+                Some(TrustPolicy::PinnedCertificate { fingerprint: pin }),
+                TrustPolicy::PublicCertificate
+            )
+            .is_err()
+    );
+    std::fs::write(&path, r#"{"version":99,"servers":{}}"#).unwrap();
+    assert!(JsonPinStore::open(&path).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        r#"{"version":99,"servers":{}}"#
+    );
+}

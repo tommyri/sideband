@@ -26,9 +26,20 @@ pub struct Connection {
     pub(crate) endpoint: quinn::Endpoint,
     pub(crate) is_client: bool,
     pub(crate) control_taken: bool,
+    pub(crate) trust: Option<crate::pins::TrustPolicy>,
+    pub(crate) peer_fingerprint: Option<crate::tls::Fingerprint>,
 }
 
 impl Connection {
+    /// Policy verified at the handshake, independent of subsequent store edits.
+    pub fn trust_policy(&self) -> Option<crate::pins::TrustPolicy> {
+        self.trust
+    }
+    /// Observed leaf, for diagnostics only.
+    pub fn peer_fingerprint(&self) -> Option<crate::tls::Fingerprint> {
+        self.peer_fingerprint
+    }
+
     pub(crate) fn new(
         inner: quinn::Connection,
         endpoint: quinn::Endpoint,
@@ -43,6 +54,8 @@ impl Connection {
             endpoint,
             is_client,
             control_taken: false,
+            trust: None,
+            peer_fingerprint: None,
         })
     }
 

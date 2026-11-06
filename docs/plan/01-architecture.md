@@ -132,8 +132,10 @@ Profile numbers, the processing chain, and the jitter target are in
 
 ## Security model (summary)
 
-- Transport: TLS 1.3 via QUIC; clients pin the server certificate fingerprint
-  on first connect (TOFU) and refuse changed certs unless the user re-approves.
+- Transport: TLS 1.3 via QUIC and HTTPS. Public-certificate servers use hostname/CA
+  validation with automatic renewal; self-signed servers require explicit leaf
+  pin approval. Legacy pins remain strict until explicitly migrated. See
+  `docs/security.md` for the trust policy and reverse-proxy boundary.
 - Auth: argon2id password hashes; opaque session tokens (random 32 bytes,
   stored hashed); invite-only registration; the first account is the owner.
 - Authorization: every mutating command runs through `Permissions::check`

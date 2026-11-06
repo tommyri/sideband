@@ -3,15 +3,23 @@ use crate::{
     types::{ApiError, ProbeInput, ServerProbe},
 };
 use ss_net::{
-    pins::{MemoryPinStore, PinStore, ServerId},
+    pins::{MemoryPinStore, PinStore, ServerId, TrustPolicy},
     tls::Fingerprint,
 };
 use std::{sync::Arc, time::Duration};
 use tauri::State;
 
 /// Discover the actual QUIC certificate without sending a Hello or credentials.
-/// Public metadata is fetched with that exact pin, never trust-all HTTPS.
+/// Metadata uses domain validation or the observed pin, never trust-all HTTPS.
 async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe, ApiError> {
+    probe_with_policy(input, pins, false).await
+}
+
+async fn probe_with_policy(
+    input: ProbeInput,
+    pins: Arc<dyn PinStore>,
+    public: bool,
+) -> Result<ServerProbe, ApiError> {
     let address = ss_client_core::ServerAddr::new(input.host, input.port)
         .map_err(|_| ApiError::new("invalid_server", "Enter a valid server address."))?;
     if input.port == 0 || input.https_port == 0 {
@@ -20,32 +28,52 @@ async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe
             "Ports must be between 1 and 65535.",
         ));
     }
-    let id = address.id().map_err(super::commands::api_error)?;
-    let previous = pins
-        .get(&id)
-        .map_err(|e| ApiError::new("pin_store", e.to_string()))?;
+    let id = address
+        .id()
+        .map_err(|e| super::commands::api_error(e.into()))?;
+    let previous_policy = pins
+        .policy(&id)
+        .map_err(|e| super::commands::api_error(e.into()))?;
+    let previous = match previous_policy {
+        Some(TrustPolicy::PinnedCertificate { fingerprint }) => Some(fingerprint),
+        _ => None,
+    };
     let temporary = Arc::new(MemoryPinStore::default());
-    if let Some(pin) = previous {
+    if let Some(policy) = if public {
+        Some(TrustPolicy::PublicCertificate)
+    } else {
+        previous_policy
+    } {
         temporary
-            .set(&id, pin)
-            .map_err(|e| ApiError::new("pin_store", e.to_string()))?;
+            .compare_exchange(&id, None, policy)
+            .map_err(|e| super::commands::api_error(e.into()))?;
     }
-    let fingerprint =
+    let (fingerprint, policy) =
         match ss_net::client::connect(&address.host, address.port, temporary.clone()).await {
             Ok(connection) => {
+                let fingerprint = connection
+                    .peer_fingerprint()
+                    .ok_or_else(|| ApiError::new("client", "No server certificate received."))?;
+                let policy = connection
+                    .trust_policy()
+                    .ok_or_else(|| ApiError::new("client", "Missing verified trust."))?;
                 connection.close(0, b"onboarding probe complete");
-                temporary
-                    .get(&id)
-                    .map_err(|e| ApiError::new("pin_store", e.to_string()))?
-                    .ok_or_else(|| ApiError::new("client", "No server certificate received."))?
+                (fingerprint, policy)
             }
-            Err(ss_net::Error::Untrusted { fingerprint }) => fingerprint,
-            Err(ss_net::Error::FingerprintChanged { received, .. }) => received,
-            Err(e) => return Err(ApiError::new("unreachable", e.to_string())),
+            Err(ss_net::Error::Untrusted { fingerprint }) => {
+                (fingerprint, TrustPolicy::PinnedCertificate { fingerprint })
+            }
+            Err(ss_net::Error::FingerprintChanged { received, .. }) => (
+                received,
+                TrustPolicy::PinnedCertificate {
+                    fingerprint: received,
+                },
+            ),
+            Err(e) => return Err(ApiError::new("certificate_validation", e.to_string())),
         };
     let http = reqwest::Client::builder()
         .use_preconfigured_tls(
-            ss_net::client::pinned_tls_config(fingerprint)
+            ss_net::client::tls_config(policy)
                 .map_err(|e| ApiError::new("client", e.to_string()))?,
         )
         .https_only(true)
@@ -85,18 +113,25 @@ async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe
     }
     let metadata: Metadata = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::new("invalid_server", "Invalid server metadata."))?;
-    if Fingerprint::try_from(metadata.fingerprint).ok() != Some(fingerprint) {
+    if policy != TrustPolicy::PublicCertificate
+        && Fingerprint::try_from(metadata.fingerprint).ok() != Some(fingerprint)
+    {
         return Err(ApiError::new(
             "invalid_server",
             "HTTPS metadata and QUIC certificate do not match.",
         ));
+    }
+    if policy == TrustPolicy::PublicCertificate {
+        pins.compare_exchange(&id, previous_policy, policy)
+            .map_err(|e| super::commands::api_error(e.into()))?;
     }
     Ok(ServerProbe {
         name: metadata.name,
         registration_mode: metadata.registration_mode,
         fingerprint: fingerprint.to_string(),
         previous_fingerprint: previous.map(|p| p.to_string()),
-        trusted: previous == Some(fingerprint),
+        trusted: policy == TrustPolicy::PublicCertificate || previous == Some(fingerprint),
+        public_certificate: policy == TrustPolicy::PublicCertificate,
     })
 }
 
@@ -112,6 +147,29 @@ pub async fn probe_server(
     tokio::time::timeout(Duration::from_secs(12), probe(input, state.pins.clone()))
         .await
         .map_err(|_| ApiError::new("timeout", "The server did not respond."))?
+}
+
+/// Explicit migration: verify both transports before replacing a legacy pin.
+#[tauri::command]
+pub async fn use_public_certificate(
+    state: State<'_, AppState>,
+    input: ProbeInput,
+) -> Result<ServerProbe, ApiError> {
+    let _operation = state.operations.lock().await;
+    let id =
+        ServerId::new(&input.host, input.port).map_err(|e| super::commands::api_error(e.into()))?;
+    if state.clients.lock().await.get(&id).is_some() {
+        return Err(ApiError::new(
+            "connected",
+            "Disconnect this server before changing its trust mode.",
+        ));
+    }
+    tokio::time::timeout(
+        Duration::from_secs(12),
+        probe_with_policy(input, state.pins.clone(), true),
+    )
+    .await
+    .map_err(|_| ApiError::new("timeout", "The server did not respond."))?
 }
 
 #[tauri::command]
@@ -228,6 +286,18 @@ mod tests {
         pins.set(&id, Fingerprint::try_from(found.fingerprint).unwrap())
             .unwrap();
         assert!(probe(input.clone(), pins.clone()).await.unwrap().trusted);
+        let old_policy = pins.policy(&id).unwrap();
+        assert!(
+            probe_with_policy(input.clone(), pins.clone(), true)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            pins.policy(&id).unwrap(),
+            old_policy,
+            "failed public validation must preserve explicit trust"
+        );
+
         let client = Client::connect_with_storage(
             address.clone(),
             Credentials::Register(v1::Register {

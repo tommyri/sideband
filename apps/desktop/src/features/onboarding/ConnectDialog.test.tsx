@@ -3,12 +3,19 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConnectDialog } from './ConnectDialog'
 import { useAppStore } from '../../store/app-store'
-import { approveFingerprint, connect, getSnapshot, probeServer } from '../../lib/api'
+import {
+  approveFingerprint,
+  connect,
+  getSnapshot,
+  probeServer,
+  enablePublicCertificate,
+} from '../../lib/api'
 import { authError, parseAddress } from './validation'
 
 vi.mock('../../lib/api', () => ({
   probeServer: vi.fn(),
   approveFingerprint: vi.fn(),
+  enablePublicCertificate: vi.fn(),
   connect: vi.fn(),
   getSnapshot: vi.fn(),
 }))
@@ -18,6 +25,7 @@ const metadata = {
   fingerprint: 'ab'.repeat(32),
   previousFingerprint: null,
   trusted: false,
+  publicCertificate: false,
 }
 
 beforeEach(() => {
@@ -180,4 +188,50 @@ describe('onboarding', () => {
     expect(opener).toHaveFocus()
     opener.remove()
   })
+})
+
+it('uses domain validation without asking for a fingerprint', async () => {
+  vi.mocked(probeServer).mockResolvedValue({ ...metadata, publicCertificate: true, trusted: true })
+  await discover()
+  expect(screen.getByText(/Verified domain certificate/)).toBeInTheDocument()
+  expect(screen.getByLabelText('Password')).toBeInTheDocument()
+  expect(approveFingerprint).not.toHaveBeenCalled()
+})
+
+it('explicitly switches a legacy pin only through the validated domain action', async () => {
+  vi.mocked(enablePublicCertificate).mockResolvedValue({
+    ...metadata,
+    publicCertificate: true,
+    trusted: true,
+  })
+  render(<ConnectDialog />)
+  fireEvent.change(screen.getByLabelText('Server address'), {
+    target: { value: 'friends.example:443' },
+  })
+  await screen.findByText('Friends · Invite required')
+  fireEvent.click(screen.getByText('Advanced connection options'))
+  fireEvent.click(screen.getByRole('button', { name: 'Use domain certificate validation' }))
+  await screen.findByText(/Verified domain certificate/)
+  expect(enablePublicCertificate).toHaveBeenCalledWith({
+    host: 'friends.example',
+    port: 443,
+    httpsPort: 443,
+  })
+  expect(approveFingerprint).not.toHaveBeenCalled()
+  expect(connect).not.toHaveBeenCalled()
+})
+
+it('keeps a failed domain switch out of the login step', async () => {
+  vi.mocked(enablePublicCertificate).mockRejectedValue({ message: 'Certificate validation failed' })
+  render(<ConnectDialog />)
+  fireEvent.change(screen.getByLabelText('Server address'), {
+    target: { value: 'friends.example:443' },
+  })
+  await screen.findByText('Friends · Invite required')
+  fireEvent.click(screen.getByText('Advanced connection options'))
+  fireEvent.click(screen.getByRole('button', { name: 'Use domain certificate validation' }))
+  await screen.findByText('Certificate validation failed')
+  expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+  expect(approveFingerprint).not.toHaveBeenCalled()
+  expect(connect).not.toHaveBeenCalled()
 })

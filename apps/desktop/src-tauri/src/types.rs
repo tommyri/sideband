@@ -80,6 +80,7 @@ pub struct ServerProbe {
     pub fingerprint: String,
     pub previous_fingerprint: Option<String>,
     pub trusted: bool,
+    pub public_certificate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

@@ -1,7 +1,7 @@
-//! Shared authenticated, pinned HTTPS transport.
+//! Shared authenticated HTTPS transport using the session's verified trust.
 use crate::{Client, ConnectionState, Error};
 use std::time::Duration;
-/// A short-lived pinned HTTPS session. Credentials never cross the native boundary.
+/// A short-lived HTTPS session. Credentials never cross the native boundary.
 pub struct HttpSession {
     pub(crate) http: reqwest::Client,
     pub(crate) base: reqwest::Url,
@@ -13,15 +13,9 @@ impl Client {
         if self.store.read().connection != ConnectionState::Connected {
             return Err(Error::Disconnected);
         }
-        let token = self.auth.read().clone().ok_or(Error::Disconnected)?;
-        let pins = self.pins.clone();
-        let key = self.address.id()?;
-        let pin = tokio::task::spawn_blocking(move || pins.get(&key))
-            .await
-            .map_err(|e| Error::Storage(e.to_string()))??
-            .ok_or(Error::Protocol("missing approved HTTPS pin"))?;
+        let session = self.auth.read().clone().ok_or(Error::Disconnected)?;
         let http = reqwest::Client::builder()
-            .use_preconfigured_tls(ss_net::client::pinned_tls_config(pin)?)
+            .use_preconfigured_tls(ss_net::client::tls_config(session.trust)?)
             .https_only(true)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -34,7 +28,11 @@ impl Client {
         };
         let base = reqwest::Url::parse(&format!("https://{host}:{}/", self.address.https_port))
             .map_err(|_| Error::Protocol("invalid attachment origin"))?;
-        Ok(HttpSession { http, base, token })
+        Ok(HttpSession {
+            http,
+            base,
+            token: session.token,
+        })
     }
 }
 pub(crate) async fn read_bounded(

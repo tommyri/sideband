@@ -685,6 +685,15 @@ async fn https_history_uses_session_bearer_and_exact_quic_pin() {
         wrong.load_around(channel, second).await,
         Err(Error::Http(_))
     ));
+    // An in-flight authenticated session must not adopt a subsequent store edit.
+    world
+        .pins
+        .set(
+            &world.address.id().unwrap(),
+            ss_net::tls::fingerprint(b"unrelated approval"),
+        )
+        .unwrap();
+    assert!(fresh.load_older(channel, None).await.is_ok());
     let wrong_files = wrong.attachment_session().await.unwrap();
     assert!(matches!(
         wrong_files.download(file, "notes with spaces.txt").await,

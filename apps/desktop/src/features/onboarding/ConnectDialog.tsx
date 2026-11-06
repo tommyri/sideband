@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Radio, X } from 'lucide-react'
-import { approveFingerprint, connect, getSnapshot, probeServer } from '../../lib/api'
+import {
+  approveFingerprint,
+  connect,
+  getSnapshot,
+  probeServer,
+  enablePublicCertificate,
+} from '../../lib/api'
 import type { ApiError, ProbeInput, ServerProbe, ServerSummary } from '../../lib/bindings'
 import { useAppStore } from '../../store/app-store'
 import { authError, friendlyError, groupedFingerprint, parseAddress } from './validation'
@@ -52,7 +58,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   }, [step])
 
   useEffect(() => {
-    if (step !== 'address') return
+    if (step !== 'address' || pending) return
     let active = true
     const timer = window.setTimeout(async () => {
       if (!address.trim()) return
@@ -81,7 +87,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       active = false
       window.clearTimeout(timer)
     }
-  }, [address, httpsPort, step, retry])
+  }, [address, httpsPort, step, retry, pending])
 
   function editAddress(value: string, https = false) {
     setProbe(null)
@@ -136,6 +142,24 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         setError(friendlyError(e))
         setStep('auth')
       }
+    } finally {
+      if (mounted.current) setPending(false)
+    }
+  }
+
+  async function switchDomainTrust() {
+    setPending(true)
+    setError('')
+    try {
+      const input = parseAddress(address, httpsPort)
+      const result = await enablePublicCertificate(input)
+      if (mounted.current) {
+        setTarget(input)
+        setProbe(result)
+        setStep('auth')
+      }
+    } catch (e) {
+      if (mounted.current) setError(friendlyError(e))
     } finally {
       if (mounted.current) setPending(false)
     }
@@ -230,6 +254,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
               Server address
               <input
                 required
+                disabled={pending}
                 placeholder="ss://friends.example:5781"
                 value={address}
                 onChange={(e) => editAddress(e.target.value)}
@@ -241,6 +266,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                 HTTPS port
                 <input
                   type="number"
+                  disabled={pending}
                   min="1"
                   max="65535"
                   placeholder="Same as server port"
@@ -248,6 +274,19 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                   onChange={(e) => editAddress(e.target.value, true)}
                 />
               </label>
+              <p>
+                Domain certificate validation accepts valid renewals automatically. Switching
+                replaces an existing fingerprint pin only after both connections validate.
+                Disconnect first.
+              </p>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={pending || checking || !address.trim()}
+                onClick={() => void switchDomainTrust()}
+              >
+                Use domain certificate validation
+              </button>
             </details>
             <p role="status">
               {checking
@@ -277,6 +316,9 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
               The displayed name is supplied by this server and is not proof of its identity.
             </small>
           </div>
+        )}
+        {probe?.publicCertificate && (
+          <p>Verified domain certificate · Renewals are validated automatically.</p>
         )}
         {step === 'auth' && (
           <>

@@ -14,7 +14,8 @@ peer task for `Incoming::accept()`, then `Connection::accept_control()`.
 Client: `client::connect(host, port, Arc<dyn PinStore>)`, then `open_control()`.
 First-use rejection exposes a fingerprint; explicit approval calls
 `PinStore::set` before retrying. Public WebPKI certificates are accepted and
-pinned automatically; changed pins always fail.
+recorded as public-certificate policies, allowing valid renewal. Explicit pins
+remain strict; legacy pin files migrate without changing trust.
 
 `ControlStream::send/recv` retain partial frames across cancellation.
 `ClientControl::start` adds bounded request correlation and an event receiver;

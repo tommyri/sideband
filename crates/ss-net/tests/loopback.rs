@@ -252,7 +252,7 @@ async fn changed_certificate_is_distinct_and_never_replaces_pin() {
 }
 
 #[tokio::test]
-async fn webpki_valid_certificate_is_recorded_but_cannot_override_pin() {
+async fn webpki_records_policy_not_leaf_and_cannot_override_explicit_pin() {
     let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
     let cert = generated.cert.der().clone();
     let mut roots = rustls::RootCertStore::empty();
@@ -274,8 +274,17 @@ async fn webpki_valid_certificate_is_recorded_but_cannot_override_pin() {
     ))
     .await
     .unwrap();
-    assert_eq!(pins.get(&key).unwrap(), Some(server.fingerprint));
+    assert_eq!(pins.get(&key).unwrap(), None);
+    assert_eq!(
+        pins.policy(&key).unwrap(),
+        Some(ss_net::pins::TrustPolicy::PublicCertificate)
+    );
+    assert_eq!(
+        connection.trust_policy(),
+        Some(ss_net::pins::TrustPolicy::PublicCertificate)
+    );
     connection.close(0, b"done");
+    let pins = Arc::new(MemoryPinStore::default());
     pins.set(&key, tls::fingerprint(b"old")).unwrap();
     assert!(matches!(
         within(client::connect_with_roots(
@@ -770,4 +779,81 @@ async fn control_io_preserves_the_peers_reconnect_close_code() {
     assert!(
         matches!(client.quic().close_reason(), Some(quinn::ConnectionError::ApplicationClosed(close)) if close.error_code == 73_u32.into())
     );
+}
+
+#[tokio::test]
+async fn public_quic_renews_without_pinning_and_rejects_downgrade() {
+    use ss_net::pins::TrustPolicy;
+    fn identity() -> TlsConfig {
+        let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
+        TlsConfig {
+            certificates: vec![generated.cert.der().clone()],
+            private_key: rustls::pki_types::PrivatePkcs8KeyDer::from(
+                generated.signing_key.serialize_der(),
+            )
+            .into(),
+        }
+    }
+    let first = identity();
+    let second = identity();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(first.certificates[0].clone()).unwrap();
+    roots.add(second.certificates[0].clone()).unwrap();
+    let resolver = Arc::new(tls::CertResolver::new(first).unwrap());
+    let endpoint =
+        Endpoint::bind_resolver((Ipv4Addr::LOCALHOST, 0).into(), resolver.clone()).unwrap();
+    let acceptor = endpoint.clone();
+    let worker = tokio::spawn(async move {
+        let mut connections = Vec::new();
+        while let Some(incoming) = acceptor.accept().await {
+            if let Ok(connection) = incoming.accept().await {
+                connections.push(connection);
+            }
+        }
+    });
+    let pins = Arc::new(MemoryPinStore::default());
+    let port = endpoint.local_addr().unwrap().port();
+    let key = ServerId::new("127.0.0.1", port).unwrap();
+    let a = within(client::connect_with_roots(
+        "127.0.0.1",
+        port,
+        pins.clone(),
+        roots.clone(),
+    ))
+    .await
+    .unwrap();
+    resolver.replace(second).unwrap();
+    let b = within(client::connect_with_roots(
+        "127.0.0.1",
+        port,
+        pins.clone(),
+        roots.clone(),
+    ))
+    .await
+    .unwrap();
+    assert_ne!(a.peer_fingerprint(), b.peer_fingerprint());
+    assert_eq!(
+        pins.policy(&key).unwrap(),
+        Some(TrustPolicy::PublicCertificate)
+    );
+    resolver.replace(identity()).unwrap();
+    let rejected = within(client::connect_with_roots(
+        "127.0.0.1",
+        port,
+        pins.clone(),
+        roots,
+    ))
+    .await;
+    assert!(rejected.is_err());
+    assert!(!matches!(
+        rejected,
+        Err(Error::Untrusted { .. } | Error::FingerprintChanged { .. })
+    ));
+    assert_eq!(
+        pins.policy(&key).unwrap(),
+        Some(TrustPolicy::PublicCertificate)
+    );
+    a.close(0, b"done");
+    b.close(0, b"done");
+    worker.abort();
 }

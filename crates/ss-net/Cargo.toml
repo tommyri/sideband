@@ -25,6 +25,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 webpki-roots.workspace = true
+x509-parser = { version = "0.18.1", features = ["verify"] }
 
 # Unify Quinn's UDP dependency with its batched macOS socket implementation.
 # This avoids one syscall per UDP packet; Linux/Windows retain their own paths.

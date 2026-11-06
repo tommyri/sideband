@@ -100,6 +100,7 @@ pub fn run() {
             attachments::cancel_attachment,
             dm::dm_action,
             onboarding::probe_server,
+            onboarding::use_public_certificate,
             onboarding::remove_server,
             onboarding::reorder_servers,
             voice::get_server_view,

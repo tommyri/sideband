@@ -35,7 +35,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Boundary | Who is on the other side | What they can do before any check | Main controls |
 |---|---|---|---|
 | Internet → QUIC | Anyone | Complete a handshake, send one `Hello` | Stateless Retry before any slot, 256 sessions total, 32 per validated address, 10 s handshake and Hello deadlines, Hello and password quotas, 1 MiB frames |
-| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same live certificate and pin as QUIC, handshake deadline, per-address quota, header and request deadlines, body caps, strict headers |
+| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers |
 | Members → server | Authenticated accounts | Every control command and REST call | `PermissionService::check` per command, role hierarchy, per-account quotas, input limits |
 | Moderators and admins → server | Accounts with management bits | Kick, ban, mute, move, roles, channels, webhooks, invites | Bits plus strict hierarchy (`can_act_on`); only `ADMINISTRATOR` grants `ADMINISTRATOR`; audit log |
 | Server → previewed sites | Arbitrary web servers | Return any bytes to the preview fetcher | SSRF address filter after DNS, pinned socket address, 3 redirects re-checked, 5 s, 1 MiB, fuzzed parser |
@@ -48,9 +48,23 @@ username. It binds `127.0.0.1:4433` by default and must not be exposed.
 
 Self-signed is the default (decision D10). The client pins the SHA-256 of the
 leaf on first connect and refuses a different one until the user re-approves
-(`ss_net::pins`). A WebPKI-valid chain is accepted and also recorded.
+(`ss_net::pins`). New servers with a WebPKI-valid chain use a persisted public-certificate policy,
+not a leaf pin. Each QUIC/HTTPS handshake validates the configured hostname,
+validity period and chain. Valid renewals are accepted; validation failure never
+falls back to TOFU. HTTPS credentials use the policy captured with the authenticated
+QUIC session, not a subsequent mutable-store lookup. Redirects remain disabled.
 
-It protects against:
+The version-2 trust file migrates all old fingerprints to strict pins, since the
+legacy format did not record whether approval was explicit or via a public CA.
+Switching to domain trust is an explicit disconnected-client action and validates
+both transports before atomically replacing the old policy. Future/invalid trust
+file formats fail closed. Self-signed first-use prompts require a currently valid,
+self-signed certificate; already approved exact pins retain their existing identity
+semantics (including no hostname/expiry revalidation). Removing a saved server
+retains its trust decision. Public trust relies on CA/domain authority and permits
+normal key rotation; an explicit pin is deliberately stricter.
+
+Explicit pinning protects against:
 
 - an attacker who appears **after** the first connection (café Wi-Fi, a
   hijacked route, a DNS change): the pin no longer matches;

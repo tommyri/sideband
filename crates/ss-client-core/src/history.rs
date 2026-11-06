@@ -11,7 +11,8 @@ const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 impl Client {
     /// Fetch 50 messages older than `before`, or the newest page when None.
     /// Redirects and environment proxies are disabled. HTTP and QUIC must
-    /// present the same leaf certificate. Pages are retained until reconnect.
+    /// use the same trust policy (the same leaf only in pinned mode).
+    /// Pages are retained until reconnect.
     /// If a live event races the request, returns `StateChanged` for a retry.
     pub async fn load_older(
         &self,
@@ -21,7 +22,7 @@ impl Client {
         self.load_page(channel, before, None).await
     }
 
-    /// Load the authorized history window around a reply/link target over pinned HTTPS.
+    /// Load the authorized history window around a reply/link target over verified HTTPS.
     pub async fn load_around(&self, channel: Id, around: Id) -> Result<Vec<v1::Message>, Error> {
         self.load_page(channel, None, Some(around)).await
     }
@@ -39,11 +40,11 @@ impl Client {
             }
             state.revision
         };
-        let token = self.auth.read().clone().ok_or(Error::Disconnected)?;
+        let session = self.auth.read().clone().ok_or(Error::Disconnected)?;
         let page = fetch_page(
             &self.address,
-            self.pins.clone(),
-            &token,
+            session.trust,
+            &session.token,
             channel,
             before,
             None,
@@ -58,20 +59,15 @@ impl Client {
 
 pub(crate) async fn fetch_page(
     address: &ServerAddr,
-    pins: std::sync::Arc<dyn ss_net::pins::PinStore>,
+    trust: ss_net::pins::TrustPolicy,
     token: &str,
     channel: Id,
     before: Option<Id>,
     after: Option<Id>,
     around: Option<Id>,
 ) -> Result<Vec<v1::Message>, Error> {
-    let key = address.id()?;
-    let pin = tokio::task::spawn_blocking(move || pins.get(&key))
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))??
-        .ok_or(Error::Protocol("missing approved HTTPS pin"))?;
     let http = reqwest::Client::builder()
-        .use_preconfigured_tls(ss_net::client::pinned_tls_config(pin)?)
+        .use_preconfigured_tls(ss_net::client::tls_config(trust)?)
         .https_only(true)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

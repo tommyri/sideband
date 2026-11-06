@@ -135,15 +135,21 @@ impl MediaLink {
     }
 }
 
+/// Credentials and the trust decision verified by their QUIC connection.
+#[derive(Clone)]
+pub(crate) struct AuthSession {
+    pub token: String,
+    pub trust: ss_net::pins::TrustPolicy,
+}
+
 /// One independently owned client. Drop aborts its worker, which drops the
 /// control router and closes QUIC. No worker retains an Arc back to Client.
 pub struct Client {
     pub(crate) commands: mpsc::Sender<Command>,
     pub(crate) store: StateStore,
     pub(crate) events: broadcast::Sender<ClientEvent>,
-    pub(crate) auth: Arc<RwLock<Option<String>>>,
+    pub(crate) auth: Arc<RwLock<Option<AuthSession>>>,
     pub(crate) address: ServerAddr,
-    pub(crate) pins: Arc<dyn PinStore>,
     pub(crate) storage: Arc<dyn Storage>,
     pub(crate) media: MediaLink,
     worker: JoinHandle<()>,
@@ -191,7 +197,13 @@ impl Client {
         let store = StateStore::default();
         store.welcome(&welcome)?;
         persist(&storage, &address, &welcome.resume_token).await?;
-        let auth = Arc::new(RwLock::new(Some(welcome.resume_token)));
+        let auth = Arc::new(RwLock::new(Some(AuthSession {
+            token: welcome.resume_token,
+            trust: live
+                .connection
+                .trust_policy()
+                .ok_or(Error::Protocol("missing verified trust"))?,
+        })));
         let (events, _) = broadcast::channel(256);
         let (commands, command_rx) = mpsc::channel(64);
         let media = MediaLink::new();
@@ -214,7 +226,6 @@ impl Client {
             events,
             auth,
             address,
-            pins,
             storage,
             media,
             worker,
@@ -401,7 +412,7 @@ struct Runner {
     storage: Arc<dyn Storage>,
     store: StateStore,
     events: broadcast::Sender<ClientEvent>,
-    auth: Arc<RwLock<Option<String>>>,
+    auth: Arc<RwLock<Option<AuthSession>>>,
     desired_voice: Option<v1::JoinVoice>,
     typing: HashMap<Vec<u8>, Instant>,
     pending: VecDeque<Command>,
@@ -459,10 +470,11 @@ impl Runner {
                 Err(_) => {}
             }
             let token = self.auth.read().clone();
-            let Some(mut token) = token else {
+            let Some(session) = token else {
                 self.status(ConnectionState::Disconnected);
                 return;
             };
+            let mut token = session.token;
             let mut attempt = 0_u32;
             loop {
                 attempt = attempt.saturating_add(1);
@@ -497,9 +509,17 @@ impl Runner {
                             )?;
                             persist(&self.storage, &self.address, &welcome.resume_token).await?;
                             token.clone_from(&welcome.resume_token);
-                            *self.auth.write() = Some(welcome.resume_token.clone());
+                            let trust = next
+                                .connection
+                                .trust_policy()
+                                .ok_or(Error::Protocol("missing verified trust"))?;
+                            *self.auth.write() = Some(AuthSession {
+                                token: welcome.resume_token.clone(),
+                                trust,
+                            });
                             self.restore_voice(&mut next).await?;
-                            self.resync_messages(&welcome.resume_token, cursors).await;
+                            self.resync_messages(&welcome.resume_token, trust, cursors)
+                                .await;
                             self.flush_pending(&mut next).await?;
                             Ok::<_, Error>(())
                         }
@@ -641,12 +661,17 @@ impl Runner {
         }
         Ok(())
     }
-    async fn resync_messages(&self, token: &str, cursors: Vec<(ss_core::Id, ss_core::Id)>) {
+    async fn resync_messages(
+        &self,
+        token: &str,
+        trust: ss_net::pins::TrustPolicy,
+        cursors: Vec<(ss_core::Id, ss_core::Id)>,
+    ) {
         for (channel, mut cursor) in cursors {
             for _ in 0..20 {
                 let page = match crate::history::fetch_page(
                     &self.address,
-                    self.pins.clone(),
+                    trust,
                     token,
                     channel,
                     None,
