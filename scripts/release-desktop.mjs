@@ -8,8 +8,8 @@ import { validateVersion, updateConfiguration } from './build-test-desktop.mjs'
 
 const platforms = {
   windows: { os: 'windows-latest', target: 'x86_64-pc-windows-msvc', label: 'windows-x64', suffixes: ['.exe', '.msi'] },
-  macos: { os: 'macos-14', target: 'aarch64-apple-darwin', label: 'macos-arm64', suffixes: ['.dmg', '.app.zip'] },
-  macos_intel: { os: 'macos-14', target: 'x86_64-apple-darwin', label: 'macos-x64', suffixes: ['.dmg', '.app.zip'] },
+  macos: { os: 'macos-15', target: 'aarch64-apple-darwin', label: 'macos-arm64', suffixes: ['.dmg', '.app.zip'] },
+  macos_intel: { os: 'macos-15-intel', target: 'x86_64-apple-darwin', label: 'macos-x64', suffixes: ['.dmg', '.app.zip'] },
   linux: { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-gnu', label: 'linux-x64', suffixes: ['.deb', '.AppImage'] },
 }
 
