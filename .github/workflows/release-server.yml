@@ -2,6 +2,12 @@ name: Release server
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Image version (X.Y.Z); replaces this version and latest
+        required: true
+        default: "0.0.1"
+        type: string
 
 permissions:
   contents: read
@@ -9,19 +15,32 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: server-releases
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
+            arch: amd64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            arch: arm64
     steps:
+      - name: Validate image version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
@@ -53,6 +72,59 @@ jobs:
         with:
           name: ss-server-${{ matrix.target }}
           path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
+      - name: Package and smoke-test image
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-server"
+          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          echo "SERVER_IMAGE=$image:$tag" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/image/data"
+          install -m 0755 "target/$TARGET/release/ss-server" "$RUNNER_TEMP/image/ss-server"
+          docker build -f deploy/Dockerfile.release \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            -t "$image:$tag" "$RUNNER_TEMP/image"
+          docker run -d --name server-smoke --cap-add NET_BIND_SERVICE \
+            -p 127.0.0.1:19101:9101 -p 127.0.0.1:19443:443 \
+            -e SS_BIND_QUIC=0.0.0.0:443 -e SS_BIND_HTTP=0.0.0.0:443 \
+            -e SS_INTERNAL_BIND=0.0.0.0:9101 "$image:$tag"
+          trap 'docker rm -fv server-smoke' EXIT
+          curl --retry 30 --retry-delay 1 --retry-connrefused --fail \
+            http://127.0.0.1:19101/healthz
+          curl --insecure --fail https://127.0.0.1:19443/api/v1/server
+      - name: Push architecture image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$SERVER_IMAGE"
+          docker logout ghcr.io
+
+  image:
+    name: Publish multi-platform image
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Publish version, latest and commit tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-server"
+          build="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create \
+            -t "$image:$VERSION" -t "$image:latest" -t "$image:sha-$GITHUB_SHA" \
+            "$image:$build-amd64" "$image:$build-arm64"
+          docker buildx imagetools inspect "$image:$VERSION"
+          docker logout ghcr.io
+          echo "Published: \`$image:$VERSION\` (linux/amd64 and linux/arm64)" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: GitHub release

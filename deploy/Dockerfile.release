@@ -1,0 +1,10 @@
+# The manual release workflow supplies a smoke-tested static musl binary.
+# Keep the runtime equivalent to the source-build deploy/Dockerfile.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --chown=65532:65532 --chmod=0755 ss-server /ss-server
+COPY --chown=65532:65532 data /data
+WORKDIR /data
+VOLUME ["/data"]
+EXPOSE 80/tcp 443/udp 443/tcp 9101/tcp
+ENTRYPOINT ["/ss-server"]
+CMD ["run", "--data-dir", "/data"]

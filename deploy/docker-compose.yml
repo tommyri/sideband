@@ -3,10 +3,7 @@
 
 services:
   socialspeak:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    image: socialspeak:local
+    image: ${SIDEBAND_IMAGE:-ghcr.io/tommyri/sideband-server:0.0.1}
     restart: unless-stopped
     command: ["run", "--data-dir", "/data"]
     environment:

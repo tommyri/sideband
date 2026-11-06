@@ -30,19 +30,44 @@ unit and reload. Ring does not JIT, so that line should stay.
 
 ## Docker Compose
 
-From the repository:
+The manual **Release server** GitHub Actions workflow publishes
+`ghcr.io/tommyri/sideband-server` for `linux/amd64` and `linux/arm64`.
+Docker selects the correct architecture. No Rust toolchain or source checkout
+is needed on the server: copy `deploy/docker-compose.yml` there, then run:
 
 ```sh
-docker compose -f deploy/docker-compose.yml up -d --build
-docker compose -f deploy/docker-compose.yml logs
+docker compose pull
+docker compose up -d
+docker compose logs
 ```
+
+From a repository checkout, add `-f deploy/docker-compose.yml` to these commands.
+The default image version is `0.0.1`. Override it with `SIDEBAND_IMAGE` in a
+Compose `.env` file, for example `SIDEBAND_IMAGE=ghcr.io/tommyri/sideband-server:latest`.
+During development, rerunning a version replaces its image. The workflow also
+publishes `sha-<full-commit>` tags; use an image digest for immutable deployment.
+
+GitHub initially creates container packages as private. After the first publish,
+set the `sideband-server` package visibility to **Public** in its GitHub package
+settings to allow pulls without login. If keeping it private, authenticate to
+GHCR on the server with a token that has `read:packages` before pulling.
 
 The container runs as uid 65532. Compose publishes UDP and TCP 443, and
 publishes the metrics port only on `127.0.0.1:9101`. The data volume is
 `/data` inside the container. `docker logs` shows the owner invite and
 the fingerprint.
 
-To build without compose: `docker build -f deploy/Dockerfile -t socialspeak .`
+For an optional local source build:
+
+```sh
+docker build -f deploy/Dockerfile -t socialspeak:local .
+SIDEBAND_IMAGE=socialspeak:local docker compose -f deploy/docker-compose.yml up -d
+```
+
+To publish a new image, manually run **Release server**, selecting the source
+branch and version. It compiles once on each architecture's native runner,
+checks static linkage, smoke-tests the non-root runtime and publishes the combined
+image only after both builds succeed. Nothing runs on pushes or pull requests.
 
 ## Firewall
 
@@ -147,7 +172,8 @@ Migrations run on the next start.
 Binary: replace `/usr/local/bin/ss-server`, then
 `sudo systemctl restart socialspeak`.
 
-Image: `docker compose -f deploy/docker-compose.yml up -d --build`.
+Image: `docker compose -f deploy/docker-compose.yml pull`, followed by
+`docker compose -f deploy/docker-compose.yml up -d`.
 The volume keeps the database.
 
 ## Next to TeamSpeak
