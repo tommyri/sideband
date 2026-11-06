@@ -81,7 +81,17 @@ sudo ufw allow 443/tcp
 ```
 
 ACME with `challenge = "http-01"` also needs TCP 80. Other TLS modes do
-not open it.
+not open it, so the default Compose file does not reserve that host port.
+For HTTP-01, configure ACME and add the optional port mapping:
+
+```sh
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.acme-http.yml up -d
+```
+
+Use both files for subsequent Compose operations on that deployment. TCP 80 must
+be available on the host. If an existing web server owns it, route the ACME
+challenge through that server or use another TLS mode instead of stopping it.
+The default deployment still requires both TCP and UDP 443 to be available.
 
 Leave `9101` on loopback. `/healthz` and `/metrics` are not public.
 

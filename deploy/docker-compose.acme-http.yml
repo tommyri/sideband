@@ -1,0 +1,6 @@
+# Optional port mapping for ACME http-01. Configure TLS/ACME separately.
+# Use alongside docker-compose.yml only when this host's TCP 80 is available.
+services:
+  socialspeak:
+    ports:
+      - "80:80/tcp"
