@@ -48,21 +48,18 @@ async fn response(response: reqwest::Response) -> Result<Vec<u8>, Error> {
 impl Client {
     /// Read manager-only settings over the authenticated connection.
     pub async fn server_settings(&self) -> Result<ServerSettingsSnapshot, Error> {
-        self.http_session().await?.server_settings().await
+        self.http_session()?.server_settings().await
     }
     /// Save a revision-checked server profile.
     pub async fn save_server_settings(
         &self,
         settings: &ServerSettings,
     ) -> Result<ServerSettingsSnapshot, Error> {
-        self.http_session()
-            .await?
-            .save_server_settings(settings)
-            .await
+        self.http_session()?.save_server_settings(settings).await
     }
     /// Upload an icon for a later settings save.
     pub async fn upload_server_icon(&self, bytes: Vec<u8>) -> Result<String, Error> {
-        self.http_session().await?.upload_server_icon(bytes).await
+        self.http_session()?.upload_server_icon(bytes).await
     }
 }
 impl crate::http::HttpSession {

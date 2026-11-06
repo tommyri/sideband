@@ -12,8 +12,9 @@ export default defineConfig({
   },
   envPrefix: ['VITE_', 'TAURI_ENV_'],
   build: {
-    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-    minify: process.env.TAURI_ENV_DEBUG ? false : 'esbuild',
+    // macOS 13 ships Safari 16; permission bitsets require BigInt support.
+    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari16',
+    minify: process.env.TAURI_ENV_DEBUG ? false : 'oxc',
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
   },
   test: {

@@ -73,8 +73,7 @@ impl Client {
         before: Option<ss_core::Id>,
         query: &str,
     ) -> Result<ModerationPage, Error> {
-        self.http_session()
-            .await?
+        self.http_session()?
             .moderation_page(bans, before, query)
             .await
     }

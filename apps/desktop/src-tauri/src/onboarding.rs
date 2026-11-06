@@ -28,9 +28,7 @@ async fn probe_with_policy(
             "Ports must be between 1 and 65535.",
         ));
     }
-    let id = address
-        .id()
-        .map_err(|e| super::commands::api_error(e.into()))?;
+    let id = address.id().map_err(super::commands::api_error)?;
     let previous_policy = pins
         .policy(&id)
         .map_err(|e| super::commands::api_error(e.into()))?;

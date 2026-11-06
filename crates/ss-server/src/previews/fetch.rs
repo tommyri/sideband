@@ -118,6 +118,7 @@ impl Fetcher {
         };
         let permit = self.gate.enter(&host).await;
         let remaining = deadline.checked_duration_since(Instant::now()).ok_or(())?;
+        ss_net::tls::install_default_crypto_provider();
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(remaining)

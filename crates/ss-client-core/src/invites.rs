@@ -6,7 +6,7 @@ use ss_core::Id;
 impl Client {
     /// Get at most 50 invite records visible to the authenticated account.
     pub async fn list_invites(&self, before: Option<Id>) -> Result<Vec<v1::Invite>, Error> {
-        let session = self.http_session().await?;
+        let session = self.http_session()?;
         let mut request = session
             .http
             .get(session.base.join("api/v1/invites").expect("static URL"))

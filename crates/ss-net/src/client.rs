@@ -312,7 +312,10 @@ fn self_signed(der: &[u8], now: UnixTime) -> bool {
     let Ok((rest, cert)) = X509Certificate::from_der(der) else {
         return false;
     };
-    let Ok(time) = ASN1Time::from_timestamp(now.as_secs() as i64) else {
+    let Ok(seconds) = i64::try_from(now.as_secs()) else {
+        return false;
+    };
+    let Ok(time) = ASN1Time::from_timestamp(seconds) else {
         return false;
     };
     rest.is_empty()
@@ -380,7 +383,7 @@ mod trust_tests {
             Some(TrustPolicy::PinnedCertificate {
                 fingerprint: fingerprint(first.as_ref()),
             }),
-            &[renewed.clone()],
+            std::slice::from_ref(&renewed),
         );
         assert!(verify(&pinned, &first));
         assert!(
@@ -404,7 +407,10 @@ mod trust_tests {
         let first_use = verifier(None, &[certificate("friends.example")]);
         assert!(!verify(&first_use, &expired));
         assert!(first_use.rejection.lock().is_none());
-        let public = verifier(Some(TrustPolicy::PublicCertificate), &[expired.clone()]);
+        let public = verifier(
+            Some(TrustPolicy::PublicCertificate),
+            std::slice::from_ref(&expired),
+        );
         assert!(!verify(&public, &expired));
     }
 }

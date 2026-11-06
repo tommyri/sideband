@@ -43,7 +43,7 @@ impl Client {
         before: Option<Id>,
         filter: &AuditFilter,
     ) -> Result<Vec<AuditEntry>, Error> {
-        let session = self.http_session().await?;
+        let session = self.http_session()?;
         let mut query = vec![("limit", "50".to_owned())];
         for (key, value) in [
             ("before", before.map(|id| id.to_string())),

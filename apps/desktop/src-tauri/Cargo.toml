@@ -35,7 +35,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"
 tokio.workspace = true
-ts-rs = { version = "11", features = ["serde-compat"] }
+ts-rs = { version = "12.0.1", features = ["serde-compat"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
@@ -44,7 +44,7 @@ tauri-plugin-updater = "2"
 moq-video = { workspace = true, features = ["openh264"] }
 moq-net.workspace = true
 tempfile.workspace = true
-ss-server = { path = "../../../crates/ss-server" }
+ss-server = { path = "../../../crates/ss-server", version = "0.1.0" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ss-video = { workspace = true, features = ["pipewire"] }

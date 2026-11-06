@@ -49,7 +49,7 @@ fn encode(bytes: &[u8]) -> String {
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], Error> {
     let mut bytes = [0_u8; N];
-    getrandom::getrandom(&mut bytes).map_err(|_| Error::Random)?;
+    getrandom::fill(&mut bytes).map_err(|_| Error::Random)?;
     Ok(bytes)
 }
 

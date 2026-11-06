@@ -792,7 +792,7 @@ fn terminal(error: &Error) -> bool {
 fn backoff(attempt: u32) -> Duration {
     let base = (2_u64 << attempt.saturating_sub(1).min(4)).min(30) * 1000;
     let mut bytes = [0; 2];
-    let _ = getrandom::getrandom(&mut bytes);
+    let _ = getrandom::fill(&mut bytes);
     // Equal jitter, bounded by 30 seconds. First attempt waits 2–2.5 s.
     let jitter = u64::from(u16::from_le_bytes(bytes)) % (base / 4 + 1);
     Duration::from_millis((base + jitter).min(30_000))

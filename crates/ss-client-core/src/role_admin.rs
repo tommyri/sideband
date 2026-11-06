@@ -18,7 +18,7 @@ impl Client {
         &self,
         channel: ss_core::Id,
     ) -> Result<Vec<ChannelOverride>, Error> {
-        let session = self.http_session().await?;
+        let session = self.http_session()?;
         let url = session
             .base
             .join(&format!("api/v1/channels/{channel}/overrides"))

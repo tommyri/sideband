@@ -29,7 +29,7 @@ pub struct CreatedWebhookUrl {
 impl Client {
     /// Fetch up to 50 records. Requires MANAGE_SERVER.
     pub async fn list_webhooks(&self, before: Option<Id>) -> Result<Vec<WebhookMetadata>, Error> {
-        let session = self.http_session().await?;
+        let session = self.http_session()?;
         let mut request = session
             .http
             .get(session.base.join("api/v1/webhooks").expect("static URL"))
@@ -52,7 +52,7 @@ impl Client {
         command: v1::CreateWebhook,
     ) -> Result<CreatedWebhookUrl, Error> {
         // Resolve the origin and pin before the mutation, avoiding a post-create setup failure.
-        let session = self.http_session().await?;
+        let session = self.http_session()?;
         let webhook = self.create_webhook(command).await?;
         let id = Id::try_from(webhook.id.as_ref())
             .map_err(|_| Error::Protocol("invalid webhook identifier"))?;

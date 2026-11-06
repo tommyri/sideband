@@ -192,6 +192,7 @@ const WORKER_THREADS: &str = "SS_WORKER_THREADS";
 // `SS_WORKER_THREADS=N` (N > 1) selects a multi-threaded runtime for load
 // experiments; docs/plan/notes/load-test.md records the measured effect.
 fn main() -> anyhow::Result<()> {
+    ss_net::tls::install_default_crypto_provider();
     let workers = std::env::var(WORKER_THREADS)
         .ok()
         .map(|value| value.trim().parse::<usize>())

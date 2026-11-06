@@ -44,14 +44,15 @@ pub struct SearchSession {
 }
 impl Client {
     /// Capture the authenticated connection and current visibility store.
-    pub async fn search_session(&self) -> Result<SearchSession, Error> {
+    pub fn search_session(
+        &self,
+    ) -> impl std::future::Future<Output = Result<SearchSession, Error>> {
         let generation = self.store.read().generation;
-        let session = self.http_session().await?;
-        Ok(SearchSession {
+        std::future::ready(self.http_session().map(|session| SearchSession {
             generation,
             store: self.state(),
             session,
-        })
+        }))
     }
     /// Search current visible conversations.
     pub async fn search_messages(&self, query: &SearchRequest) -> Result<Vec<SearchHit>, Error> {

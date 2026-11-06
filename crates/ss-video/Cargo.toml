@@ -17,7 +17,7 @@ vaapi = ["moq-video/vaapi"]
 nvidia = ["moq-video/nvidia"]
 
 [dependencies]
-hang = "=0.21.19"
+hang = "=0.21.22"
 wgpu = { version = "30", optional = true }
 bytes.workspace = true
 moq-net.workspace = true

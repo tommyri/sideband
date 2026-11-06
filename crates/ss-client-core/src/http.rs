@@ -9,7 +9,7 @@ pub struct HttpSession {
 }
 impl Client {
     /// Capture the authenticated server and approved certificate for an authenticated request.
-    pub(crate) async fn http_session(&self) -> Result<HttpSession, Error> {
+    pub(crate) fn http_session(&self) -> Result<HttpSession, Error> {
         if self.store.read().connection != ConnectionState::Connected {
             return Err(Error::Disconnected);
         }

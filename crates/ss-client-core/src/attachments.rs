@@ -6,12 +6,14 @@ use ss_core::Id;
 
 /// Desktop transfer ceiling; server policy may impose a lower limit.
 pub const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
-/// Pinned session used for attachment transfers.
+/// Verified session used for attachment transfers.
 pub type AttachmentSession = crate::http::HttpSession;
 impl Client {
     /// Capture an authenticated session for file transfers.
-    pub async fn attachment_session(&self) -> Result<AttachmentSession, Error> {
-        self.http_session().await
+    pub fn attachment_session(
+        &self,
+    ) -> impl std::future::Future<Output = Result<AttachmentSession, Error>> {
+        std::future::ready(self.http_session())
     }
 }
 impl AttachmentSession {

@@ -56,8 +56,8 @@ testing, not performance acceptance. Browser-only preview screens use sample dat
 
 ## Develop
 
-Use the Rust version pinned in [rust-toolchain.toml](rust-toolchain.toml), Node 24,
-pnpm 11.9.0, CMake, a C/C++ toolchain, and [just](https://github.com/casey/just).
+Use the Rust version pinned in [rust-toolchain.toml](rust-toolchain.toml), Node 26.13.0,
+pnpm 12.18.0, CMake, a C/C++ toolchain, and [just](https://github.com/casey/just).
 Nightly Rust is used only for formatting:
 
 ```sh

@@ -7,7 +7,7 @@
 use super::Error;
 use argon2::{
     Algorithm, Argon2, Params, Version,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use zeroize::Zeroizing;
 
@@ -43,10 +43,9 @@ pub(crate) async fn verify(password: &str, stored: &str) -> Result<bool, Error> 
 
 fn hash_sync(password: &str) -> Result<String, Error> {
     let mut salt_bytes = [0_u8; 16];
-    getrandom::getrandom(&mut salt_bytes).map_err(|_| Error::Random)?;
-    let salt = SaltString::encode_b64(&salt_bytes).map_err(|_| Error::Password)?;
+    getrandom::fill(&mut salt_bytes).map_err(|_| Error::Random)?;
     let hash = hasher()?
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &salt_bytes)
         .map_err(|_| Error::Password)?;
     Ok(hash.to_string())
 }
@@ -55,7 +54,7 @@ fn verify_sync(password: &str, stored: &str) -> Result<bool, Error> {
     let parsed = PasswordHash::new(stored).map_err(|_| Error::Password)?;
     match hasher()?.verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(_) => Err(Error::Password),
     }
 }
@@ -139,6 +138,17 @@ mod tests {
     use std::{thread::ThreadId, time::Duration};
 
     use super::{arm, hash, verify};
+
+    #[tokio::test]
+    async fn verifies_phc_hashes_from_argon2_0_5() {
+        // Reference vector shipped with argon2 0.5.3: existing account hashes
+        // must remain usable after upgrading the hashing implementation.
+        let stored =
+            "$argon2id$v=19$m=256,t=2,p=1$c29tZXNhbHQ$nf65EOgLrQMR/uIPnA4rEsF5h7TKyQwu9U1bMCHGi/4";
+        assert!(verify("password", stored).await.unwrap());
+        assert!(!verify("wrong", stored).await.unwrap());
+        assert!(verify("password", "invalid hash").await.is_err());
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn hash_and_verify_run_off_the_runtime_worker() {

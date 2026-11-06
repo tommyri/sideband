@@ -5,6 +5,9 @@
 version = 2
 yanked = "deny"
 ignore = [
+  # Loom, pulled by media/metrics dependencies, still needs this archived helper.
+  # Maintenance notice only; remove when upstream replaces it.
+  { id = "RUSTSEC-2026-0441", reason = "transitive loom dependency; maintenance-only with no safe upgrade" },
   # gtk-rs 0.18 still uses this macro helper. The advisory is maintenance-only
   # and has no patched release; remove when Tauri moves off the GTK 3 stack.
   { id = "RUSTSEC-2024-0370", reason = "transitive GTK 3 macro dependency; unmaintained with no safe upgrade" },
@@ -39,6 +42,11 @@ allow = [
 # to this dependency; redistribution must include its bundled LICENSE text.
 [[licenses.exceptions]]
 name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+# Same Mozilla root-store data, used by reqwest's platform verifier.
+[[licenses.exceptions]]
+name = "webpki-root-certs"
 allow = ["CDLA-Permissive-2.0"]
 
 # cpal 0.18 promotes its audio threads through this crate. MPL-2.0 is

@@ -489,7 +489,7 @@ async fn two_minute_random_outages_leave_no_stuck_client_or_voice_tracks() {
     let mut sent = 0_i64;
     while tokio::time::Instant::now() < deadline {
         let mut random = [0_u8; 1];
-        getrandom::getrandom(&mut random).unwrap();
+        getrandom::fill(&mut random).unwrap();
         let outage = Duration::from_secs(1 + u64::from(random[0] % 10));
         let content = format!("chaos-{sent}");
         let restart = world.restart_after(outage);

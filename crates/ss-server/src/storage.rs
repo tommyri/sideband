@@ -12,7 +12,7 @@ use std::{
 };
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use image::ImageDecoder;
 use sha2::{Digest, Sha256};
 use ss_core::{Id, Timestamp};
@@ -642,7 +642,7 @@ async fn load_key(data_dir: &Path) -> Result<[u8; 32], std::io::Error> {
         }
     }
     let mut key = [0; 32];
-    getrandom::getrandom(&mut key).map_err(|_| std::io::Error::other("os random failed"))?;
+    getrandom::fill(&mut key).map_err(|_| std::io::Error::other("os random failed"))?;
     write_private(&path, &key).await?;
     restrict_key(&path).await?;
     Ok(key)

@@ -1,2 +1,9 @@
 allowBuilds:
   esbuild: true
+
+# GHSA-g3hv-75wg-m249: remove once lint tools require minimatch >=11.0.1.
+minimumReleaseAgeExclude:
+  - minimatch@11.0.5
+
+overrides:
+  'minimatch@>=7 <11.0.1': ^11.0.5

@@ -20,11 +20,11 @@ rust-version = "1.99"
 version = "0.1.0"
 
 [workspace.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+ashpd = { version = "0.14.0", default-features = false, features = ["tokio", "global_shortcuts"] }
 x11rb = { version = "0.14", features = ["xinput", "xkb"] }
 evdev = "0.13"
 inotify = { version = "0.11", default-features = false }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "6.2.1", default-features = false, features = ["tokio"] }
 # macOS listen-only input taps and their dedicated Core Foundation run loop.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop", "CFDate", "CFString"] }
@@ -43,13 +43,13 @@ anyhow = "1"
 # In-memory permission snapshot. Handlers swap it after a role mutation.
 arc-swap = "1"
 # Argon2id password hashing. The server calls it on a blocking thread.
-argon2 = "0.5"
+argon2 = "0.6.0"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23.1"
 bitflags = "2"
 block2 = "0.6.2"
 bytes = "1"
-criterion = "0.7"
+criterion = "0.8.2"
 # Safe Audio Unit host used only by the optional macOS VoiceProcessingIO path.
 coreaudio = { package = "coreaudio-rs", version = "0.14.2" }
 # OSCE also compiles Deep PLC; DRED remains a separate opt-in feature.
@@ -59,12 +59,12 @@ clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 # ACME's state machine is a `Stream`.
 futures = { version = "0.3", default-features = false, features = ["std"] }
-crossterm = "0.28"
-getrandom = "0.2"
+crossterm = "0.29.0"
+getrandom = "0.4.3"
 # Per-IP login limits. Keyed quotas live in memory for the process lifetime.
 governor = "0.10"
 # Signed download tokens. HMAC-SHA256 over the attachment id and expiry.
-hmac = "0.12"
+hmac = "0.13.0"
 # Image width and height, including EXIF orientation. No re-encode in v1.
 # Public HTTP accept loop: header-read deadline and a connection cap. Axum's
 # `serve` sets neither. Both crates are already in the graph through axum.
@@ -81,11 +81,11 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 metrics = "0.24"
 # The crate's HTTP listener and push gateway pull aws-lc. We render the
 # text ourselves, so those features stay off and the static build stays on ring.
-metrics-exporter-prometheus = { version = "0.17", default-features = false }
-moq-net = "=0.3.18"
-moq-video = { version = "=0.1.18", default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+moq-net = "=0.3.21"
+moq-video = { version = "=0.1.21", default-features = false }
 # Content sniffing for uploads. The client-supplied type is ignored.
-infer = "0.19"
+infer = "0.22.0"
 # Certificate file changes. The QUIC socket stays open across a reload.
 notify = "8"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
@@ -109,7 +109,7 @@ objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = 
   "AudioUnitProperties",
   "block2",
 ] }
-parking_lot = "0.12"
+parking_lot = "0.13.0"
 prost = "0.14"
 prost-build = "0.14"
 proptest = "1"
@@ -117,19 +117,20 @@ proptest = "1"
 protoc-bin-vendored = "3"
 # quinn 0.11 depends on rustls 0.23. rustls 0.24 is still a pre-release.
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+# Must match Quinn 0.11's UDP dependency so macOS batching features unify.
 quinn-udp = { version = "0.5", default-features = false }
 # Preview fetches. No cookies, no system proxy, rustls only.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "query"] }
 rcgen = "0.14"
 # ACME account, orders, and HTTP-01 challenges. Ring, same as QUIC. The cache lives in `tls/acme`.
-rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tls12", "tokio"] }
+rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tls12", "tokio", "webpki-roots"] }
 rtrb = "0.4"
 # Sinc resampling only. The FFT resampler is a different algorithm.
 rubato = { version = "5", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11.1"
 socket2 = "0.6"
 # Optional WebRTC APM port (AEC3, noise suppression, AGC2). Pure Rust; no
 # examples feature, so no second cpal or CLI dependencies.
@@ -137,7 +138,7 @@ sonora = { version = "=0.2.0", default-features = false }
 # Online database snapshot plus the attachments tree.
 tar = "0.4"
 tempfile = "3"
-toml = "0.8"
+toml = "1.2.1"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 webpki-roots = "1"
 # SQLite only. Networked drivers and the `any` driver stay off.

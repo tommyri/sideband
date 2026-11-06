@@ -197,3 +197,9 @@ pub async fn generate_self_signed(data_dir: impl AsRef<Path>) -> Result<TlsConfi
     })
     .await?
 }
+
+/// Configure ring for HTTP libraries that require a process-wide TLS provider.
+/// Repeated calls preserve the provider already installed by this process.
+pub fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}

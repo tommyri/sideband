@@ -41,7 +41,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -52,7 +52,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
       - name: Static binary
@@ -70,7 +70,7 @@ jobs:
           fi
           install -m 0755 "target/${{ matrix.target }}/release/ss-server" \
             "$RUNNER_TEMP/ss-server-${{ matrix.target }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ss-server-${{ matrix.target }}
           path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
@@ -136,10 +136,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
       - name: Publish

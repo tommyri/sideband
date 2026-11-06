@@ -36,6 +36,7 @@ use tauri::{
 };
 
 pub fn run() {
+    ss_net::tls::install_default_crypto_provider();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Pending::default())
