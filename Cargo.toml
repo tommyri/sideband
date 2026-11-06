@@ -85,7 +85,7 @@ metrics-exporter-prometheus = { version = "0.17", default-features = false }
 moq-net = "=0.3.18"
 moq-video = { version = "=0.1.18", default-features = false }
 # Content sniffing for uploads. The client-supplied type is ignored.
-infer = "0.19"
+infer = "0.22"
 # Certificate file changes. The QUIC socket stays open across a reload.
 notify = "8"
 # Hosts are selected by the target. Linux adds PipeWire and the realtime
