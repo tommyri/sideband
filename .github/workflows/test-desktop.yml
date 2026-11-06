@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix || '{"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]}') }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
