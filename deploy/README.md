@@ -47,10 +47,11 @@ Compose `.env` file, for example `SIDEBAND_IMAGE=ghcr.io/tommyri/sideband-server
 During development, rerunning a version replaces its image. The workflow also
 publishes `sha-<full-commit>` tags; use an image digest for immutable deployment.
 
-GitHub initially creates container packages as private. After the first publish,
-set the `sideband-server` package visibility to **Public** in its GitHub package
-settings to allow pulls without login. If keeping it private, authenticate to
-GHCR on the server with a token that has `read:packages` before pulling.
+The official `sideband-server` package is public and can be pulled without login.
+For a fork/new package, GitHub initially defaults to private: set the package
+visibility to **Public** in its GitHub package settings for anonymous pulls.
+If keeping it private, authenticate to GHCR on the server with a token that has
+`read:packages` before pulling.
 
 The container runs as uid 65532. Compose publishes UDP and TCP 443, and
 publishes the metrics port only on `127.0.0.1:9101`. The data volume is
