@@ -51,3 +51,31 @@ vulnerability checks generally.
 Before publishing a dependency refresh, run frontend checks and production build,
 workspace tests and strict Clippy, packaging-script tests, npm audit, and cargo
 deny. Build the selected release platforms to catch native API differences.
+
+## CI runner time
+
+All entry points remain manual. CI and desktop packaging call the same frontend
+workflow once on Linux, and wait for it before starting native builds. Every
+selected OS still compiles and tests the native desktop code; installer builds
+still compile their own platform-specific frontend assets.
+
+The general CI job runs workspace tests/lints once (which already include the
+desktop crate), rather than repeating them through `just check-desktop`. Formatting
+runs only on Linux. Audio feature combinations, input integration, container smoke,
+and reconnect chaos coverage remain. Select the `benchmarks` input when performance
+measurements are needed; these otherwise add separate release-profile builds.
+
+Compatible native CI and packaging jobs share target-specific Rust dependency
+cache keys. Cargo/toolchain/environment hashing remains enabled. Installer archives
+upload without redundant compression and temporary build artifacts expire after
+seven days; published release assets are unaffected.
+
+Linux setup uses `scripts/install-linux-deps.sh`: two network retries, 30-second
+network timeouts, bounded package-lock waits, and separate update/install deadlines.
+Job limits prevent stalled runs consuming the default six hours. A slow mirror now
+fails explicitly instead of occupying a runner indefinitely; rerun only failed jobs
+for transient infrastructure errors. Cold builds still take longer after dependency
+or toolchain upgrades, and cache hits do not eliminate native linking or packaging.
+
+Validate workflow edits with `actionlint` and `bash -n scripts/install-linux-deps.sh`.
+Measure actual run durations before claiming a percentage improvement.

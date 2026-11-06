@@ -21,7 +21,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  frontend:
+    uses: ./.github/workflows/check-frontend.yml
+
   package:
+    needs: frontend
+    timeout-minutes: 75
     name: test package (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -37,12 +42,12 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          shared-key: desktop-${{ matrix.target }}
           cache-on-failure: true
       - name: Linux native dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        timeout-minutes: 10
+        run: bash scripts/install-linux-deps.sh desktop
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 12.18.0
@@ -54,13 +59,8 @@ jobs:
       - name: Frontend dependencies
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: Packaging script tests
-        run: node --test scripts/build-test-desktop.test.mjs
       - name: Desktop tests
         run: cargo test --locked -p socialspeak-desktop
-      - name: Frontend checks
-        working-directory: apps/desktop
-        run: pnpm check
       - name: Import macOS signing certificate
         if: runner.os == 'macOS' && inputs.updates
         env:
@@ -132,4 +132,5 @@ jobs:
           name: sideband-test-${{ matrix.target }}-${{ github.sha }}
           path: ${{ steps.packages.outputs.artifact_directory }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
+          compression-level: 0

@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      benchmarks:
+        description: Run release-profile audio benchmarks on all platforms (extra build time)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,13 +19,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  frontend:
+    uses: ./.github/workflows/check-frontend.yml
+
   check:
+    needs: frontend
+    timeout-minutes: 60
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,35 +46,27 @@ jobs:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
           components: clippy, rustfmt
       - name: Nightly rustfmt
+        if: runner.os == 'Linux'
         run: rustup toolchain install nightly --profile minimal --component rustfmt
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: desktop-${{ matrix.target }}
+          cache-on-failure: true
       - name: Linux audio and desktop build dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 12.18.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26.13.0
-          cache: pnpm
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
-      - name: Desktop dependencies
-        working-directory: apps/desktop
-        run: pnpm install --frozen-lockfile
-      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
-        with:
-          tool: just
-      - name: Desktop checks
-        run: just check-desktop
-      - name: just check
-        run: just check
+        timeout-minutes: 10
+        run: bash scripts/install-linux-deps.sh desktop
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo +nightly fmt --all -- --check
+      - name: Workspace lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Workspace tests (includes desktop)
+        run: cargo test --locked --workspace
       - name: Linux input integration tests
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y dbus xvfb xdotool
+          bash scripts/install-linux-deps.sh input
           dbus-run-session -- cargo test -p ss-input bind_activate_deactivate_session_loss_and_rebind -- --ignored --nocapture
           xvfb-run -a cargo test -p ss-input x11_native_key_mouse_capture_and_stop -- --ignored --nocapture
       - name: Optional Opus DRED
@@ -70,12 +78,14 @@ jobs:
       - name: Optional RNNoise VAD lints
         run: cargo clippy -p ss-audio --all-targets --features rnnoise -- -D warnings
       - name: Opus frame budget
+        if: inputs.benchmarks
         run: cargo bench -p ss-audio --bench codec
       - name: Optional processing chain (AEC, RNNoise, AGC)
         run: cargo test -p ss-audio --all-features
       - name: Optional processing chain lints
         run: cargo clippy -p ss-audio --all-targets --all-features -- -D warnings
       - name: Processing frame budget
+        if: inputs.benchmarks
         run: cargo bench -p ss-audio --all-features --bench processing
       - name: Optional screen-share pipeline
         run: cargo test -p ss-client-core --features screen-share
@@ -86,7 +96,7 @@ jobs:
         run: cargo clippy -p ss-video --all-targets --features pipewire -- -D warnings
       - name: Dependency graph
         if: runner.os == 'Linux'
-        run: just check-deps
+        run: bash scripts/check-deps.sh
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-deny
@@ -96,8 +106,10 @@ jobs:
         run: cargo deny check
 
   smoke:
+    needs: frontend
+    timeout-minutes: 45
     name: container smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,15 +119,16 @@ jobs:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Linux audio build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
+        timeout-minutes: 10
+        run: bash scripts/install-linux-deps.sh audio
       - name: Image, healthz, and two bots
         run: bash deploy/smoke.sh
 
   reconnect-chaos:
+    needs: frontend
+    timeout-minutes: 30
     name: reconnect chaos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,8 +138,7 @@ jobs:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Linux audio build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev pkg-config cmake
+        timeout-minutes: 10
+        run: bash scripts/install-linux-deps.sh audio
       - name: Random 1-10 second outages for two minutes
         run: cargo test -p ss-server --test client_core two_minute_random_outages -- --ignored --nocapture
