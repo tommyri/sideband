@@ -3,7 +3,7 @@
 Status: todo
 Phase: 5
 Size: M
-Depends on: T-070, T-071, T-072
+Depends on: T-070, T-071, T-072, T-100
 Paths: `crates/ss-video/src/abr.rs`, `crates/ss-server/src/media/streams.rs`
 
 ## Goal
@@ -23,6 +23,12 @@ streamer touching anything.
   `SetPreferredQuality` automatically (opt-in "auto quality" default on).
 - Later option noted: simulcast (two encodes) if one viewer is much slower;
   not in scope.
+
+## Open question (2026-11-09 review)
+The second acceptance criterion (one slow viewer does not lower quality for
+the others) cannot be met with one encoded rendition and no transcoding
+while simulcast and SVC are out of scope. T-100 decides the backend and
+rewrites this task's scope and criteria; do not start before it.
 
 ## Out of scope
 Simulcast/SVC.

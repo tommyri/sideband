@@ -16,6 +16,11 @@ requirements remain unchanged.
 | 5 | T-076 — guided tests and evidence | Local diagnostics, reproducible test runs, observations and redacted export bundles. Its report schema and test scripts can be built alongside priorities 2–4. |
 | 6 | Acceptance with the installed app | Run T-011/T-012/T-019, T-048/T-049/T-050 and T-018 on the user's Windows gaming PC, Mac and Linux laptop; fix failures with attached evidence. |
 
+Review of 2026-11-09: before priority 6, complete T-081 to T-085 (audio
+stalls during control commands, voice-activation burst boundaries, playback
+delay growth, device reopen, mute and shortcut reliability). Evidence
+collected before them would record those defects, not the voice design.
+
 Packaging proceeds alongside UI increments after the first pipeline lands.
 No dependency on text chat (T-045), DMs, admin UI, production signing,
 automatic updates or screen sharing is introduced for this milestone.

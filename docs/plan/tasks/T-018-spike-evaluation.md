@@ -3,7 +3,7 @@
 Status: todo
 Phase: 1
 Size: S
-Depends on: T-017
+Depends on: T-017, T-081, T-082, T-083, T-084
 Paths: `docs/plan/notes/spike-results.md`
 
 ## Goal
@@ -29,6 +29,11 @@ packaging, internal test builds, or work needed to collect the evidence.
   OS/device/backend settings, trial IDs and report bundle references.
 - Distinguish network RTT, device estimates and jitter delay from measured
   acoustic/mouth-to-ear latency. Unknown measurements stay unknown.
+
+- Run the comparison on a build that contains T-081 to T-084 (2026-11-09
+  review). Before them, command round trips stall audio, voice activation
+  clips burst starts, and playback delay grows during a call, so a
+  listening test would score those defects and not the codec settings.
 
 ## Out of scope
 Any new features.
