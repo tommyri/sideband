@@ -68,7 +68,7 @@ for the stated reason:
 | No `CreateDm` quota | `opening_new_conversations_has_its_own_quota` | the 11th new conversation succeeded |
 | Truncated DMs must surface when active | `an_older_conversation_is_announced_before_its_new_message` | everything was in the Welcome |
 | DM rename recomputes every session's view | `a_dm_rename_does_not_recompute_other_sessions_channel_views` (counts `Server::channel_view_count`) | 3 recomputations (actor, member, outsider) |
-| Full queue drops frames | `a_full_outbound_queue_closes_the_connection_instead_of_dropping_a_frame`, `a_client_whose_queue_overflowed_is_complete_after_it_reconnects` | frame dropped, connection stayed open; client never learned the change |
+| Full queue drops frames | `a_client_whose_queue_overflowed_is_complete_after_it_reconnects` (queue still full after the grace) | frame dropped, connection stayed open; client never learned the change |
 | Bus not drained during a command | `a_slow_command_does_not_cost_the_session_its_events` (writer held, 285 presence updates) | actor disconnected as lagged. With 90 updates (below the bus size) it stayed connected and received 33 of 90: silent loss |
 | One command overflows the bus | `deleting_a_large_category_keeps_observers_connected` (1,100 children) | observer kicked as a slow consumer (confirmed; was "unconfirmed") |
 | Token Hello takes the writer | `a_token_hello_does_not_wait_for_the_writer` | Hello timed out while the writer was held |
@@ -128,10 +128,10 @@ side of paging.
   writer serves a second queue for frames addressed by other tasks, and a
   kick during a stalled write closes the connection (without a notice, since
   the stream is mid-frame) instead of waiting out the 10 s grace.
-- `registry.rs`: `enqueue` uses that second queue and closes the connection
-  when it is full; the ten-second "blocked since" timer is gone. T-090's
-  voice-state gate is unchanged: `enqueue` still calls `admit`, and the
-  session's own deliveries call `admit_voice`.
+- `registry.rs`: `enqueue` uses that second queue (see the review fixes
+  below for its grace and coalescing). T-090's voice-state gate is
+  unchanged: `enqueue` still calls `admit`, and the session's own deliveries
+  call `admit_voice`.
 - Client core (additive): `State::direct_messages_next` and
   `Client::list_dms()`, which merges a page without overwriting live copies.
 
@@ -172,4 +172,42 @@ no client should miss a message.
   publish into the task. Hello still reloads permissions in full.
 - The desktop app does not call `list_dms` yet; older DMs appear as they get
   activity.
+
+**Review fixes (second commit)**
+
+Two findings from review of the first commit, each with a test that failed
+first:
+
+- *Cross-user forced disconnect.* The first commit closed a connection as
+  soon as its 32-frame queue for frames from other tasks was full, dropping
+  `main`'s ten-second grace. Frames other users cause land there:
+  `SubscriberHint` from `media/streams.rs` is unthrottled, so a viewer
+  changing preferences at the command quota could get a streamer on a slow
+  link kicked at once; `MoveUser` frames too. The queue is now a
+  `registry::DirectQueue`: past 32 frames it keeps accepting for
+  `slow_after` (10 s), then the next frame closes the connection; 1024 frames
+  close it outright. A frame is never dropped on an open connection. A
+  `SubscriberHint` or `RequestKeyframe` replaces the pending one for the same
+  track, in place, so repeats take no slots. Tests:
+  `repeated_track_frames_replace_the_pending_one` (500 hints and 500 keyframe
+  requests for one track while the streamer's writer is stalled; before, the
+  streamer was closed with code 2; now it receives one of each, the newest)
+  and `a_full_direct_queue_holds_frames_through_the_grace` (52 frames with
+  the writer stalled; before, closed with code 2; now all arrive in order).
+  Unit tests cover the grace ending and the 1024 bound. The test is at the
+  registry level: in-process, a real viewer cannot stall the streamer's
+  writer, so the stall is the current-thread runtime not polling it.
+- *DM permission race.* `reload` read the database, then stored. A reload
+  that read before a DM leave and stored after its `set_direct` gave the
+  member who left access back until the next reload. `PermissionService` now
+  counts `set_direct` generations under a mutex; a reload records the
+  generation it started at, and when it stores (under the same mutex)
+  re-applies every DM patch made since, then prunes patches no reload in
+  flight needs. The database read takes no lock, so no slow query sits
+  behind it, and `set_direct` only logs patches while a reload is running.
+  Test: `perms::tests::a_reload_that_read_before_a_dm_leave_does_not_restore_access`
+  interleaves the reload's read, the leave with `set_direct`, and the
+  reload's store; before, the member who left could still view the DM.
+  Reload-versus-reload ordering (an older full reload overwriting a newer
+  one) is still T-094's.
 

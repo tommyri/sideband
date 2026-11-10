@@ -200,7 +200,7 @@ rejection is `Error{code: RATE_LIMITED, retry_after_ms}`; HTTP is `429` with
 | Public HTTP connections | address | 64 open | closed on accept |
 | Public HTTP connection lifetime | connection | closed after 60 s with no bytes either way, and at 10 min of age (graceful, then hard after 300 s); HTTP/1 keep-alive and HTTP/2 alike | connection closed |
 | Link previews | server | queue of 32 (full drops), 2 workers, one fetch per host at a time, 3 URLs per message | dropped silently |
-| Outbound control queues | connection | 32 frames for replies and bus events (the session waits for room), 32 for frames other tasks address to it; event bus 1024 behind; one write stalled 10 s | `ServerNotice`, close with code 2; never a dropped frame on an open connection |
+| Outbound control queues | connection | 32 frames for replies and bus events (the session waits for room); frames other tasks address to it (moves, stream hints, keyframe requests) held past 32 for a 10 s grace, at most 1024, with one pending `SubscriberHint` and one `RequestKeyframe` per track; event bus 1024 behind; one write stalled 10 s | `ServerNotice`, close with code 2; never a dropped frame on an open connection |
 | Guild channel-view diff | session | at most once per 100 ms for a burst of role, override or guild channel changes; DM events never trigger it | — |
 | Session `last_seen_at` write | session token | at most once per 60 s; a token Hello or HTTP request within that reads only | — |
 | Media datagrams | connection | header, track ownership, `SPEAK`, server mute validated; 1.5× the channel profile maximum over 1 s; full send buffers drop | excess dropped and counted; repeated excess gets `RATE_LIMITED` then close; never awaited |

@@ -150,10 +150,12 @@ only and runs at most once per 100 ms per session for a burst.
 ### Delivery
 
 Each session's control frames are delivered in order or not at all. A
-session that cannot keep up (its queue full, the event bus 1024 events ahead
-of it, or one write stalled for 10 s) gets `ServerNotice` and the connection
-closes with code 2; the client reconnects and resyncs from `Welcome`. A
-command that waits on the database does not stop delivery of events.
+session that cannot keep up (the event bus 1024 events ahead of it, frames
+addressed to it backed up for 10 s, or one write stalled for 10 s) gets
+`ServerNotice` and the connection closes with code 2; the client reconnects
+and resyncs from `Welcome`. A newer `SubscriberHint` or `RequestKeyframe`
+for a track replaces one not yet sent. A command that waits on the database
+does not stop delivery of events.
 
 ### Limits
 

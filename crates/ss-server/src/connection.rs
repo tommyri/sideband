@@ -338,7 +338,7 @@ impl Server {
         crate::observe::record_session();
         let mut subscription = self.bus.subscribe();
         let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
-        let (direct, direct_rx) = mpsc::channel(registry::OUTBOUND_CAPACITY);
+        let direct = Arc::new(registry::DirectQueue::default());
         let (kicks, kick_rx) = mpsc::channel(1);
         let quic = connection.quic().clone();
         conn_id = self.attach_voice(conn_id, &authed, &quic);
@@ -347,7 +347,7 @@ impl Server {
             user_id: authed.user.id,
             connection: quic.clone(),
             outbound: outbound.clone(),
-            direct,
+            direct: Arc::clone(&direct),
             kicks,
             client: ClientInfo {
                 name: hello.client_name.clone(),
@@ -387,7 +387,7 @@ impl Server {
                     Pump {
                         outbound,
                         outgoing,
-                        direct: direct_rx,
+                        direct,
                         kicks: kick_rx,
                         quic: quic.clone(),
                     },
@@ -570,7 +570,7 @@ impl Server {
 struct Pump {
     outbound: mpsc::Sender<v1::ServerEnvelope>,
     outgoing: mpsc::Receiver<v1::ServerEnvelope>,
-    direct: mpsc::Receiver<v1::ServerEnvelope>,
+    direct: Arc<registry::DirectQueue>,
     kicks: mpsc::Receiver<Kick>,
     quic: quinn::Connection,
 }
@@ -1128,23 +1128,37 @@ async fn deliver(
 async fn write_outbound(
     mut sender: ss_net::control::ControlSender<v1::ServerEnvelope>,
     mut outgoing: mpsc::Receiver<v1::ServerEnvelope>,
-    mut direct: mpsc::Receiver<v1::ServerEnvelope>,
+    direct: Arc<registry::DirectQueue>,
     mut kick_rx: mpsc::Receiver<Kick>,
     quic: quinn::Connection,
     registry: Arc<ConnectionRegistry>,
 ) -> Result<(), Error> {
     loop {
-        let frame = tokio::select! {
-            biased;
-            kick = kick_rx.recv() => {
-                let Some(kick) = kick else { break };
+        let frame = match kick_rx.try_recv() {
+            Ok(kick) => {
                 notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
                 break;
             }
-            frame = direct.recv() => frame,
-            frame = outgoing.recv() => frame,
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+            Err(mpsc::error::TryRecvError::Empty) => direct.pop(),
         };
-        let Some(frame) = frame else { break };
+        let frame = if let Some(frame) = frame {
+            frame
+        } else {
+            tokio::select! {
+                biased;
+                kick = kick_rx.recv() => {
+                    let Some(kick) = kick else { break };
+                    notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
+                    break;
+                }
+                () = direct.ready() => continue,
+                frame = outgoing.recv() => {
+                    let Some(frame) = frame else { break };
+                    frame
+                }
+            }
+        };
         let outcome = {
             let write = timeout(registry.slow_after(), sender.send(&frame));
             tokio::pin!(write);

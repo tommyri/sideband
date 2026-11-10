@@ -601,34 +601,90 @@ async fn deleting_a_large_category_keeps_observers_connected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_full_outbound_queue_closes_the_connection_instead_of_dropping_a_frame() {
+async fn a_full_direct_queue_holds_frames_through_the_grace() {
     let mut world = World::new().await;
     let (ada, token) = world.account("ada").await;
     let (slow_conn, mut slow) = world.connect().await;
     token_hello(&mut slow, &token).await;
     let conn = world.server.registry().connection_ids(ada)[0];
-    // Long enough that only the full queue, not the stall timer, can close it.
     world
         .server
         .registry()
         .set_slow_after(Duration::from_secs(60));
-    // The writer shares this current-thread runtime and is not polled here.
-    for n in 0..=registry::OUTBOUND_CAPACITY {
+    // The writer shares this current-thread runtime and is not polled here:
+    // a streamer on a slow link, briefly behind.
+    let count = registry::OUTBOUND_CAPACITY + 20;
+    for n in 0..count {
         world
             .server
             .registry()
             .enqueue(conn, notice(&format!("{n}")));
     }
-    let error = timeout(Duration::from_secs(3), slow_conn.quic().closed())
-        .await
-        .expect("a full queue must close the connection, not drop the frame");
-    match error {
-        quinn::ConnectionError::ApplicationClosed(close) => assert_eq!(
-            close.error_code,
-            quinn::VarInt::from_u32(registry::CLOSE_SLOW)
-        ),
-        other => panic!("unexpected close: {other:?}"),
+    for n in 0..count {
+        match recv(&mut slow).await.msg {
+            Some(Event::ServerNotice(notice)) => assert_eq!(notice.text, format!("{n}")),
+            other => panic!("expected notice {n}, got {other:?}"),
+        }
     }
+    assert!(slow_conn.quic().close_reason().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn repeated_track_frames_replace_the_pending_one() {
+    let mut world = World::new().await;
+    let (ada, token) = world.account("ada").await;
+    let (streamer_conn, mut streamer) = world.connect().await;
+    token_hello(&mut streamer, &token).await;
+    let conn = world.server.registry().connection_ids(ada)[0];
+    world
+        .server
+        .registry()
+        .set_slow_after(Duration::from_secs(60));
+    // A viewer changing preferences at the command quota while the
+    // streamer's writer is stalled: 500 hints and keyframe requests.
+    let hint = |track_id, viewer_count| v1::ServerEnvelope {
+        request_id: 0,
+        msg: Some(Event::SubscriberHint(v1::SubscriberHint {
+            track_id,
+            max_height: 720,
+            max_fps: 30,
+            viewer_count,
+        })),
+    };
+    let keyframe = |track_id| v1::ServerEnvelope {
+        request_id: 0,
+        msg: Some(Event::RequestKeyframe(v1::RequestKeyframe { track_id })),
+    };
+    let registry = world.server.registry();
+    registry.enqueue(conn, hint(8, 1));
+    for n in 0..500 {
+        registry.enqueue(conn, hint(7, n));
+        registry.enqueue(conn, keyframe(7));
+    }
+    streamer
+        .send(&v1::ClientEnvelope {
+            request_id: 2,
+            msg: Some(Msg::Ping(v1::Ping { sent_at: 1 })),
+        })
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let frame = recv(&mut streamer).await;
+        match frame.msg {
+            Some(Event::Pong(_)) if frame.request_id == 2 => break,
+            Some(Event::SubscriberHint(hint)) => {
+                seen.push(format!("hint {} {}", hint.track_id, hint.viewer_count));
+            }
+            Some(Event::RequestKeyframe(request)) => {
+                seen.push(format!("keyframe {}", request.track_id));
+            }
+            Some(Event::ServerNotice(notice)) => panic!("streamer kicked: {}", notice.text),
+            _ => {}
+        }
+    }
+    assert_eq!(seen, ["hint 8 1", "hint 7 499", "keyframe 7"]);
+    assert!(streamer_conn.quic().close_reason().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -654,7 +710,7 @@ async fn a_client_whose_queue_overflowed_is_complete_after_it_reconnects() {
     world
         .server
         .registry()
-        .set_slow_after(Duration::from_secs(60));
+        .set_slow_after(Duration::from_millis(200));
 
     // Bea's new name reaches only the database and the frame that would be
     // dropped. After the overflow the client must learn it from Welcome.
@@ -671,12 +727,15 @@ async fn a_client_whose_queue_overflowed_is_complete_after_it_reconnects() {
         .await
         .unwrap()
     };
-    for n in 0..registry::OUTBOUND_CAPACITY {
+    // The writer shares this current-thread runtime and is not polled while
+    // the queue stays full past the grace; the next frame closes it.
+    for n in 0..=registry::OUTBOUND_CAPACITY {
         world
             .server
             .registry()
             .enqueue(conn, notice(&format!("{n}")));
     }
+    std::thread::sleep(Duration::from_millis(250));
     world.server.registry().enqueue(
         conn,
         v1::ServerEnvelope {
