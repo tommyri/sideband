@@ -10,8 +10,10 @@ use ss_core::Id;
 use ss_proto::v1::server_envelope;
 use tokio::sync::broadcast;
 
-/// How many events a slow subscriber can miss before it is lagged.
-const CAPACITY: usize = 256;
+/// How many events a subscriber may fall behind before it is lagged and
+/// closed. Above the connection cap, so one command that moves every seated
+/// member out of voice cannot lag every other session.
+const CAPACITY: usize = 1024;
 
 /// One published event. `origin` is the connection that already received it
 /// on its command reply, so that connection skips the bus copy.

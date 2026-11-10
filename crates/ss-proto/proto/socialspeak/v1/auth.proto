@@ -80,8 +80,32 @@ message Snapshot {
   repeated Track tracks = 5;
   // Read cursors for the connecting user.
   repeated ReadState read_states = 6;
-  // DM and group-DM channels this user belongs to.
+  // DM and group-DM channels this user belongs to, most recently active
+  // first. Only the newest page when `direct_messages_next` is set.
   repeated Channel direct_messages = 7;
+  // Present when `direct_messages` was cut short. Pass it as
+  // `ListDms.cursor` to load older conversations. Read cursors for those
+  // come with each `DmPage`, not in `read_states`.
+  optional bytes direct_messages_next = 8;
+}
+
+// Load older DMs than a `Welcome` carried, most recently active first.
+message ListDms {
+  // `Snapshot.direct_messages_next` or `DmPage.next`. Opaque. Absent starts
+  // from the most recently active conversation.
+  optional bytes cursor = 1;
+  // Page size, at most 100. Zero means 100.
+  uint32 limit = 2;
+}
+
+// One page of `ListDms`.
+message DmPage {
+  // Conversations, most recently active first.
+  repeated Channel channels = 1;
+  // The caller's read cursors for these conversations.
+  repeated ReadState read_states = 2;
+  // Pass as `ListDms.cursor` for the next page. Absent on the last page.
+  optional bytes next = 3;
 }
 
 // Successful `Hello` response. Not an `Ack`.

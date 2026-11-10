@@ -60,6 +60,21 @@ pub struct ChannelUpdate {
 
 const BY_ID: &str = "SELECT id, kind, name, topic, parent_id, position, voice_profile, voice_bitrate, user_limit, created_by, created_at, deleted_at FROM channels WHERE id = ?";
 const LIVE: &str = "SELECT id, kind, name, topic, parent_id, position, voice_profile, voice_bitrate, user_limit, created_by, created_at, deleted_at FROM channels WHERE deleted_at IS NULL ORDER BY position, id";
+const LIVE_GUILD: &str = "SELECT id, kind, name, topic, parent_id, position, voice_profile, voice_bitrate, user_limit, created_by, created_at, deleted_at FROM channels WHERE deleted_at IS NULL AND kind NOT IN (3, 4) ORDER BY position, id";
+/// A member's live conversations with their newest visible message, keyed by
+/// that message id or, without messages, the channel id. Both are ULIDs, so
+/// the key orders conversations by last activity.
+const DIRECT_PAGE: &str = "SELECT * FROM (
+    SELECT c.id, c.kind, c.name, c.topic, c.parent_id, c.position, c.voice_profile, c.voice_bitrate,
+           c.user_limit, c.created_by, c.created_at, c.deleted_at,
+           (SELECT m.id FROM messages m
+             WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+             ORDER BY m.id DESC LIMIT 1) AS last_message_id
+    FROM channel_members cm JOIN channels c ON c.id = cm.channel_id
+    WHERE cm.user_id = ? AND c.kind IN (3, 4) AND c.deleted_at IS NULL
+ ) WHERE ? IS NULL OR coalesce(last_message_id, id) < ?
+ ORDER BY coalesce(last_message_id, id) DESC
+ LIMIT ?";
 
 /// Inserts a channel.
 pub async fn insert(conn: &mut SqliteConnection, channel: NewChannel) -> Result<Channel, Error> {
@@ -264,6 +279,64 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Channel>, Error> {
     rows.into_iter().map(ChannelRow::into_channel).collect()
 }
 
+/// Live guild channels (no DMs), in sibling order.
+pub async fn list_guild(conn: &mut SqliteConnection) -> Result<Vec<Channel>, Error> {
+    let rows = db(sqlx::query_as::<_, ChannelRow>(LIVE_GUILD)
+        .fetch_all(&mut *conn)
+        .await)?;
+    rows.into_iter().map(ChannelRow::into_channel).collect()
+}
+
+/// Up to `limit` of `user`'s live DMs and group DMs, most recently active
+/// first, each with its newest visible message id. `before` is an exclusive
+/// activity key (see [`activity`]); `None` starts from the newest.
+pub async fn direct_page(
+    conn: &mut SqliteConnection,
+    user: Id,
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<(Channel, Option<Id>)>, Error> {
+    let rows = db(sqlx::query_as::<_, DirectRow>(DIRECT_PAGE)
+        .bind(user)
+        .bind(before)
+        .bind(before)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *conn)
+        .await)?;
+    rows.into_iter()
+        .map(|row| Ok((row.channel.into_channel()?, row.last_message_id)))
+        .collect()
+}
+
+/// Activity key [`direct_page`] orders by: the newest message, else the
+/// channel itself.
+pub fn activity(channel: Id, last_message_id: Option<Id>) -> Id {
+    last_message_id.unwrap_or(channel)
+}
+
+/// Live group DMs `user` started, whether or not they are still in them.
+pub async fn groups_created(conn: &mut SqliteConnection, user: Id) -> Result<i64, Error> {
+    db(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM channels WHERE kind = ? AND deleted_at IS NULL AND created_by = ?",
+    )
+    .bind(ChannelKind::GroupDm.as_i64())
+    .bind(user)
+    .fetch_one(&mut *conn)
+    .await)
+}
+
+/// Live group DMs `user` is in.
+pub async fn groups_joined(conn: &mut SqliteConnection, user: Id) -> Result<i64, Error> {
+    db(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM channel_members m JOIN channels c ON c.id = m.channel_id
+         WHERE m.user_id = ? AND c.kind = ? AND c.deleted_at IS NULL",
+    )
+    .bind(user)
+    .bind(ChannelKind::GroupDm.as_i64())
+    .fetch_one(&mut *conn)
+    .await)
+}
+
 /// Every channel membership.
 pub async fn memberships(conn: &mut SqliteConnection) -> Result<Vec<(Id, Id)>, Error> {
     let rows = db(sqlx::query_as::<_, MemberRow>(
@@ -365,6 +438,13 @@ impl ChannelRow {
             deleted_at: stamp_opt(self.deleted_at),
         })
     }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct DirectRow {
+    #[sqlx(flatten)]
+    channel: ChannelRow,
+    last_message_id: Option<Id>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

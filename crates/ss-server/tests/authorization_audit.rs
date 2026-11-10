@@ -189,6 +189,16 @@ const COMMANDS: &[(&str, Command)] = &[
         )]),
     ),
     (
+        "ListDms",
+        Command::Handled(&[(
+            "handlers/dm.rs",
+            scoped(
+                &["direct_page("],
+                "lists only the caller's own conversations, by membership",
+            ),
+        )]),
+    ),
+    (
         "CreateWebhook",
         Command::Handled(&[("handlers/webhooks.rs", perms(&["MANAGE_SERVER"]))]),
     ),

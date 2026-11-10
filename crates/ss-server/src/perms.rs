@@ -2,8 +2,12 @@
 //!
 //! [`PermissionService`] keeps an [`ArcSwap`] snapshot of roles, grants, and
 //! channel overrides. Handlers call [`PermissionService::reload`] after a
-//! committed mutation so the next check sees it. `Hello` still records the
-//! role OR on the connection; command checks do not read that copy.
+//! committed mutation so the next check sees it. DM handlers call
+//! [`PermissionService::set_direct`] instead: roles and overrides never apply
+//! to a DM, so its member list is all that changes, and a full reload would
+//! read every role, channel and membership on the server. `Hello` still
+//! records the role OR on the connection; command checks do not read that
+//! copy.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -30,6 +34,22 @@ pub enum AccessError {
 pub struct PermissionService {
     pool: Arc<db::Pool>,
     cache: ArcSwap<Snapshot>,
+    patches: parking_lot::Mutex<Patches>,
+}
+
+/// DM patches a reload in flight must re-apply. A reload reads the database
+/// without a lock, so a DM change committed and patched after that read
+/// began would otherwise be overwritten when the reload stores, and a member
+/// who left would regain access until the next reload. Every store goes
+/// through this lock; the database read does not.
+#[derive(Default)]
+struct Patches {
+    /// Bumped by every [`PermissionService::set_direct`].
+    generation: u64,
+    /// Reloads in flight, by the generation they started at.
+    active: std::collections::BTreeMap<u64, usize>,
+    /// Patches newer than the oldest reload in flight, in order.
+    log: Vec<(u64, Id, Arc<ChannelView>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -44,10 +64,18 @@ struct ChannelView {
     overrides: HashMap<Id, PermissionOverride>,
 }
 
+/// The patch generation a reload started at.
+#[derive(Clone, Copy)]
+struct ReloadStart(u64);
+
+/// Roles and grants are shared, and each channel is its own allocation, so
+/// [`PermissionService::set_direct`] copies pointers rather than the whole
+/// snapshot.
+#[derive(Clone)]
 struct Snapshot {
-    roles: HashMap<Id, RoleView>,
-    grants: HashMap<Id, Vec<Id>>,
-    channels: HashMap<Id, ChannelView>,
+    roles: Arc<HashMap<Id, RoleView>>,
+    grants: Arc<HashMap<Id, Vec<Id>>>,
+    channels: HashMap<Id, Arc<ChannelView>>,
 }
 
 impl PermissionService {
@@ -57,6 +85,7 @@ impl PermissionService {
         Ok(Self {
             pool,
             cache: ArcSwap::from_pointee(snapshot),
+            patches: parking_lot::Mutex::new(Patches::default()),
         })
     }
 
@@ -67,9 +96,79 @@ impl PermissionService {
 
     /// Replaces the snapshot. Call this after a role or override commit.
     pub async fn reload(&self) -> Result<(), db::Error> {
-        let snapshot = load(&self.pool).await?;
-        self.cache.store(Arc::new(snapshot));
-        Ok(())
+        let started = self.begin_reload();
+        let snapshot = load(&self.pool).await;
+        self.finish_reload(started, snapshot)
+    }
+
+    fn begin_reload(&self) -> ReloadStart {
+        let mut patches = self.patches.lock();
+        let generation = patches.generation;
+        *patches.active.entry(generation).or_default() += 1;
+        ReloadStart(generation)
+    }
+
+    /// Stores a loaded snapshot with every DM patch made since its read
+    /// began applied on top, then forgets patches no reload still needs.
+    fn finish_reload(
+        &self,
+        started: ReloadStart,
+        snapshot: Result<Snapshot, db::Error>,
+    ) -> Result<(), db::Error> {
+        let mut patches = self.patches.lock();
+        if let Some(count) = patches.active.get_mut(&started.0) {
+            *count -= 1;
+            if *count == 0 {
+                patches.active.remove(&started.0);
+            }
+        }
+        let result = snapshot.map(|mut snapshot| {
+            for (generation, channel, view) in &patches.log {
+                if *generation > started.0 {
+                    snapshot.channels.insert(*channel, Arc::clone(view));
+                }
+            }
+            self.cache.store(Arc::new(snapshot));
+        });
+        match patches.active.keys().next().copied() {
+            Some(oldest) => patches.log.retain(|(generation, ..)| *generation > oldest),
+            None => patches.log.clear(),
+        }
+        result
+    }
+
+    /// Records the current members of DM `channel` without reloading. Call
+    /// it after committing a DM create, add, or leave. A reload whose read
+    /// began before this call re-applies it when it stores.
+    pub fn set_direct(&self, channel: Id, kind: ChannelKind, members: &[Id]) {
+        let view = Arc::new(ChannelView {
+            kind,
+            members: members.iter().copied().collect(),
+            overrides: HashMap::new(),
+        });
+        let mut patches = self.patches.lock();
+        patches.generation += 1;
+        if !patches.active.is_empty() {
+            let generation = patches.generation;
+            patches.log.push((generation, channel, Arc::clone(&view)));
+        }
+        let mut next = Snapshot::clone(&self.cache.load());
+        next.channels.insert(channel, view);
+        self.cache.store(Arc::new(next));
+    }
+
+    /// Members of a live DM, ordered by id. `None` for a guild channel or a
+    /// missing one.
+    #[must_use]
+    pub fn direct_members(&self, channel: Id) -> Option<Vec<Id>> {
+        let snapshot = self.cache.load();
+        let view = snapshot.channels.get(&channel)?;
+        if !view.kind.is_direct() {
+            return None;
+        }
+        let mut members: Vec<Id> = view.members.iter().copied().collect();
+        members.sort_unstable();
+        Some(members)
     }
 
     /// Whether `user` holds `permission` on the server, or in `channel`.
@@ -262,8 +361,88 @@ async fn load(pool: &db::Pool) -> Result<Snapshot, db::Error> {
         }
     }
     Ok(Snapshot {
-        roles: role_views,
-        grants,
-        channels: channel_views,
+        roles: Arc::new(role_views),
+        grants: Arc::new(grants),
+        channels: channel_views
+            .into_iter()
+            .map(|(id, view)| (id, Arc::new(view)))
+            .collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use ss_core::{ChannelKind, Id, Permissions};
+
+    use super::{PermissionService, load};
+    use crate::db::{self, NewChannel, channels, testing};
+
+    #[tokio::test]
+    async fn a_reload_that_read_before_a_dm_leave_does_not_restore_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::Pool::open(dir.path().join("perms.db")).await.unwrap());
+        let (ada, bea, cyd) = {
+            let mut conn = pool.write().await;
+            (
+                testing::user(&mut conn, 1).await.id,
+                testing::user(&mut conn, 2).await.id,
+                testing::user(&mut conn, 3).await.id,
+            )
+        };
+        let group = Id::generate();
+        {
+            let mut conn = pool.write().await;
+            channels::insert(
+                &mut conn,
+                NewChannel {
+                    id: group,
+                    kind: ChannelKind::GroupDm,
+                    name: String::new(),
+                    topic: None,
+                    parent_id: None,
+                    position: 0,
+                    voice_profile: None,
+                    voice_bitrate: None,
+                    user_limit: None,
+                    created_by: ada,
+                },
+            )
+            .await
+            .unwrap();
+            for member in [ada, bea, cyd] {
+                channels::add_member(&mut conn, group, member)
+                    .await
+                    .unwrap();
+            }
+        }
+        let perms = PermissionService::open(Arc::clone(&pool)).await.unwrap();
+        let view = |user| {
+            perms
+                .check(user, Some(group), Permissions::VIEW_CHANNEL)
+                .is_ok()
+        };
+        assert!(view(bea));
+
+        // A reload (say, from someone's Hello) reads while Bea is a member...
+        let started = perms.begin_reload();
+        let stale = load(&pool).await;
+        // ...Bea leaves and the handler patches the snapshot...
+        {
+            let mut conn = pool.write().await;
+            channels::remove_member(&mut conn, group, bea)
+                .await
+                .unwrap();
+        }
+        perms.set_direct(group, ChannelKind::GroupDm, &[ada, cyd]);
+        assert!(!view(bea));
+        // ...and only then does the reload store what it read.
+        perms.finish_reload(started, stale).unwrap();
+        assert!(
+            !view(bea),
+            "a stale reload gave a departed member access back"
+        );
+        assert!(view(ada) && view(cyd));
+    }
 }

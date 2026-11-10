@@ -215,6 +215,7 @@ rejection is `Error{code: RATE_LIMITED, retry_after_ms}`; HTTP is `429` with
 | Invite brute force | — | 128-bit codes behind the two rows above | — |
 | Control commands except `Ping` | account | burst 100, then 20 per s | `RATE_LIMITED` + retry |
 | `SendMessage` | account | burst 5, then 1 per 5 s | `RATE_LIMITED` + retry |
+| `CreateDm` that would open a new conversation | account | burst 10, then 1 per 6 s; reopening an existing 1:1 DM is free | `RATE_LIMITED` + retry |
 | `Typing` | account and channel | 1 per 5 s | `RATE_LIMITED` + retry |
 | Webhook posts | webhook | burst 30, then 1 per 2 s | `429` + `Retry-After` |
 | Uploads | account | burst 10, then 1 per 6 s | `429` + `Retry-After` |
@@ -224,7 +225,9 @@ rejection is `Error{code: RATE_LIMITED, retry_after_ms}`; HTTP is `429` with
 | Public HTTP connections | address | 64 open | closed on accept |
 | Public HTTP connection lifetime | connection | closed after 60 s with no bytes either way, and at 10 min of age (graceful, then hard after 300 s); HTTP/1 keep-alive and HTTP/2 alike | connection closed |
 | Link previews | server | queue of 32 (full drops), 2 workers, one fetch per host at a time, 3 URLs per message | dropped silently |
-| Outbound control queue | connection | bounded; a slow reader is closed | `ServerNotice`, close |
+| Outbound control queues | connection | 32 frames for replies and bus events (the session waits for room); frames other tasks address to it (moves, stream hints, keyframe requests) held past 32 for a 10 s grace, at most 1024, with one pending `SubscriberHint` and one `RequestKeyframe` per track; event bus 1024 behind; one write stalled 10 s | `ServerNotice`, close with code 2; never a dropped frame on an open connection |
+| Guild channel-view diff | session | at most once per 100 ms for a burst of role, override or guild channel changes; DM events never trigger it | — |
+| Session `last_seen_at` write | session token | at most once per 60 s; a token Hello or HTTP request within that reads only | — |
 | Media datagrams | connection | header, track ownership, `SPEAK`, server mute validated; 1.5× the channel profile maximum over 1 s; full send buffers drop | excess dropped and counted; repeated excess gets `RATE_LIMITED` then close; never awaited |
 
 The username quota counts failures only and never holds back an address
@@ -249,6 +252,18 @@ stateless Retry before it is counted against any session slot, so spoofed
 source addresses cannot use up a victim's per-address slots or the server's
 pending-handshake budget.
 
+T-091 bounded what one member can make others pay for. Before it, group
+DMs were unlimited and every one went into each member's `Welcome`, so about
+4,000 with long names pushed a target's `Welcome` past 1 MiB and the server
+refused the login ("welcome response is too large"), owner included, until
+someone edited the database. Every DM event made every session re-read every
+channel, and a burst of events larger than the 32-frame queue was dropped
+silently while the connection stayed open (measured: 33 of 90 presence
+updates arrived after one command waited on the writer). One command that
+published more than the bus held (deleting a category of hundreds of
+channels) closed every other session. Each has a test in
+`tests/dm_fanout.rs` that failed first.
+
 ## 7. Input limits
 
 | Field | Limit |
@@ -268,6 +283,9 @@ pending-handshake budget.
 | Presence activity | ≤ 128 |
 | Kick/ban reason | ≤ 500 |
 | Group DM | caller plus 2–9 others |
+| Group DMs started | ≤ 100 live per account, counted even after the creator leaves |
+| Group DMs joined | ≤ 200 live per account; leaving frees a slot. Creating or adding fails with `FORBIDDEN` for anyone at the cap |
+| DMs in `Welcome` | the 100 most recently active, halved further if the frame would pass 1 MiB; `ListDms` pages ≤ 100 load the rest |
 | Voice user limit | 0–99 |
 | History page | ≤ 100 |
 | Upload | ≤ 25 MiB by default (`limits.upload_max_bytes`), one file per request, file name normalized to ≤ 200 |

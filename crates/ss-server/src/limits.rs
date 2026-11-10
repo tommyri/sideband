@@ -47,6 +47,21 @@ pub const HTTP_PERIOD: Duration = Duration::from_millis(20);
 pub const UPLOAD_BURST: u32 = 10;
 /// Refill interval for [`UPLOAD_BURST`].
 pub const UPLOAD_PERIOD: Duration = Duration::from_secs(6);
+/// New conversations per account: a burst of ten, then one every six
+/// seconds. Reopening an existing 1:1 conversation is free.
+pub const DM_CREATE_BURST: u32 = 10;
+/// Refill interval for [`DM_CREATE_BURST`].
+pub const DM_CREATE_PERIOD: Duration = Duration::from_secs(6);
+/// Live group conversations one account may have started, whether or not it
+/// is still in them.
+pub const GROUP_DMS_PER_CREATOR: usize = 100;
+/// Live group conversations one account may be in. Leaving frees a slot.
+pub const GROUP_DMS_PER_MEMBER: usize = 200;
+/// Conversations a `Welcome` carries, most recently active first. The rest
+/// load with `ListDms`.
+pub const WELCOME_DMS: usize = 100;
+/// Largest `ListDms` page.
+pub const DM_PAGE: usize = 100;
 
 /// Keys are pruned once this many checks have passed since the last prune.
 const PRUNE_EVERY: u64 = 4096;

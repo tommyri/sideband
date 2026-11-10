@@ -5,13 +5,27 @@
 //! Explicit idle and do-not-disturb survive a reconnect until the process
 //! restarts.
 //!
+//! Every connection has two control queues. Its own session loop fills the
+//! first, of [`OUTBOUND_CAPACITY`] frames, with replies and bus events and
+//! waits for room, so a reader that falls behind lags on the bus and is
+//! closed. The second, a [`DirectQueue`], carries frames other tasks address
+//! to it with [`ConnectionRegistry::enqueue`]. Past [`OUTBOUND_CAPACITY`] it
+//! keeps accepting frames for [`ConnectionRegistry::slow_after`] (a link that
+//! is briefly slow is not punished for what other users trigger), then the
+//! next frame closes the connection; [`DIRECT_LIMIT`] bounds it outright.
+//! Per-track `SubscriberHint` and `RequestKeyframe` frames replace a pending
+//! one for the same track instead of taking another slot. A frame is never
+//! dropped while the connection stays open: the client resyncs from
+//! `Welcome` instead.
+//!
 //! Each connection also remembers which voice connections it was told are in
 //! a channel. A `VoiceStateUpdated` without a channel (a leave) names no
 //! channel to check visibility against, so it is only sent to connections
 //! that saw the matching arrival. See [`ConnectionRegistry::admit_voice`].
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -31,11 +45,14 @@ pub const CLOSE_KICKED: u32 = 3;
 pub const CLOSE_BANNED: u32 = 4;
 /// Repeated media bitrate violations.
 pub const CLOSE_RATE_LIMITED: u32 = 5;
-/// How long a full outbound queue, or one stalled write, is tolerated.
+/// How long one stalled write to the control stream is tolerated.
 pub const SLOW_CONSUMER_AFTER: Duration = Duration::from_secs(10);
-/// Per-connection outbound control queue. Command replies wait for space.
-/// Fan-out uses `try_send` and starts the slow-consumer timer when it is full.
+/// Size of the session's own control queue, and how full a [`DirectQueue`]
+/// may get before its grace period starts.
 pub const OUTBOUND_CAPACITY: usize = 32;
+/// Frames a [`DirectQueue`] holds at most, grace or not. Reaching it closes
+/// the connection.
+pub const DIRECT_LIMIT: usize = 1024;
 
 const SLOW_REASON: &[u8] = b"control consumer too slow";
 const SHUTDOWN_REASON: &[u8] = b"server shutting down";
@@ -61,8 +78,11 @@ pub(crate) struct Registration {
     pub user_id: Id,
     /// Used to close a slow or shutting-down peer.
     pub connection: quinn::Connection,
-    /// Bounded control queue. The session writer owns the receiver.
+    /// The session loop's own bounded queue, kept for diagnostics.
     pub outbound: mpsc::Sender<v1::ServerEnvelope>,
+    /// Frames other tasks address to this connection. The session writer
+    /// drains it.
+    pub direct: Arc<DirectQueue>,
     /// One-slot signal: send `ServerNotice`, then close.
     pub kicks: mpsc::Sender<Kick>,
     /// Client product strings.
@@ -156,10 +176,10 @@ impl PresenceBook {
 struct Peer {
     connection: quinn::Connection,
     outbound: mpsc::Sender<v1::ServerEnvelope>,
+    direct: Arc<DirectQueue>,
     kicks: mpsc::Sender<Kick>,
     client: ClientInfo,
     rtt: Option<Duration>,
-    blocked_since: Option<Instant>,
     /// Voice connections this peer was told are in a channel.
     voice_seen: HashSet<Id>,
 }
@@ -184,7 +204,8 @@ impl ConnectionRegistry {
             serde_json::json!({"connectionId":id.to_string(),"rttMs":peer.connection.rtt().as_secs_f64()*1000.0,
                 "lostPackets":path.lost_packets,"sentPackets":path.sent_packets,
                 "congestionWindowBytes":path.cwnd,"pathMtuBytes":path.current_mtu,
-                "queuedControlMessages":peer.outbound.max_capacity()-peer.outbound.capacity()})
+                "queuedControlMessages":peer.outbound.max_capacity()-peer.outbound.capacity()
+                    +peer.direct.len()})
         }).collect();
         rows.sort_by(|a, b| a["connectionId"].as_str().cmp(&b["connectionId"].as_str()));
         rows
@@ -213,10 +234,10 @@ impl ConnectionRegistry {
             Peer {
                 connection: registration.connection,
                 outbound: registration.outbound,
+                direct: registration.direct,
                 kicks: registration.kicks,
                 client: registration.client,
                 rtt: None,
-                blocked_since: None,
                 voice_seen: HashSet::new(),
             },
         );
@@ -301,8 +322,8 @@ impl ConnectionRegistry {
         peer.rtt = Some(peer.connection.rtt());
     }
 
-    /// Grace period before a wedged consumer is closed. The server uses
-    /// [`SLOW_CONSUMER_AFTER`]; tests shorten it.
+    /// How long one control-stream write may stall before the connection is
+    /// closed. The server uses [`SLOW_CONSUMER_AFTER`]; tests change it.
     pub fn set_slow_after(&self, slow_after: Duration) {
         self.inner.lock().slow_after = slow_after;
     }
@@ -312,8 +333,11 @@ impl ConnectionRegistry {
         self.inner.lock().slow_after
     }
 
-    /// Queues a fan-out frame. A queue that stays full for [`Self::slow_after`]
-    /// disconnects that connection with a [`v1::ServerNotice`].
+    /// Queues a frame for `conn` from outside its session loop. A queue that
+    /// has stayed past [`OUTBOUND_CAPACITY`] for [`Self::slow_after`], or
+    /// reached [`DIRECT_LIMIT`], closes that connection with a
+    /// [`v1::ServerNotice`] instead of dropping the frame, so the client
+    /// resyncs from `Welcome`.
     pub fn enqueue(&self, conn: Id, frame: v1::ServerEnvelope) {
         let kick = {
             let mut inner = self.inner.lock();
@@ -324,21 +348,7 @@ impl ConnectionRegistry {
             if !admit(&mut peer.voice_seen, &frame) {
                 return;
             }
-            match peer.outbound.try_send(frame) {
-                Ok(()) => {
-                    peer.blocked_since = None;
-                    None
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let start = peer.blocked_since.unwrap_or_else(|| {
-                        let now = Instant::now();
-                        peer.blocked_since = Some(now);
-                        now
-                    });
-                    (start.elapsed() >= slow_after).then(|| peer.kick_pair())
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => None,
-            }
+            (!peer.direct.push(frame, slow_after)).then(|| peer.kick_pair())
         };
         if let Some((kicks, connection)) = kick {
             crate::observe::record_slow_disconnect();
@@ -409,6 +419,86 @@ impl ConnectionRegistry {
 
     fn kick_pair(&self, conn: Id) -> Option<(mpsc::Sender<Kick>, quinn::Connection)> {
         self.inner.lock().peers.get(&conn).map(Peer::kick_pair)
+    }
+}
+
+/// Frames other tasks address to one connection.
+///
+/// Unlike an mpsc channel it can replace a pending per-track frame and hold
+/// frames past its nominal size for a grace period.
+#[derive(Default)]
+pub struct DirectQueue {
+    state: Mutex<DirectState>,
+    ready: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct DirectState {
+    frames: VecDeque<v1::ServerEnvelope>,
+    /// When the queue last reached [`OUTBOUND_CAPACITY`] without draining
+    /// below it.
+    full_since: Option<Instant>,
+}
+
+impl DirectQueue {
+    /// Adds `frame`, or replaces the pending frame for the same track.
+    /// `false` means the connection must be closed: the queue has been full
+    /// for `slow_after`, or holds [`DIRECT_LIMIT`] frames.
+    fn push(&self, frame: v1::ServerEnvelope, slow_after: Duration) -> bool {
+        let mut state = self.state.lock();
+        if let Some(key) = track_key(&frame)
+            && let Some(pending) = state
+                .frames
+                .iter_mut()
+                .find(|pending| track_key(pending) == Some(key))
+        {
+            *pending = frame;
+            return true;
+        }
+        let len = state.frames.len();
+        if len >= DIRECT_LIMIT {
+            return false;
+        }
+        if len >= OUTBOUND_CAPACITY {
+            let since = *state.full_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= slow_after {
+                return false;
+            }
+        }
+        state.frames.push_back(frame);
+        drop(state);
+        self.ready.notify_one();
+        true
+    }
+
+    /// The oldest pending frame. The grace period ends once the queue drains
+    /// below [`OUTBOUND_CAPACITY`].
+    pub(crate) fn pop(&self) -> Option<v1::ServerEnvelope> {
+        let mut state = self.state.lock();
+        let frame = state.frames.pop_front();
+        if state.frames.len() < OUTBOUND_CAPACITY {
+            state.full_since = None;
+        }
+        frame
+    }
+
+    /// Resolves after a push. Check [`Self::pop`] before waiting: a push
+    /// made while nobody waits leaves one stored wake-up.
+    pub(crate) async fn ready(&self) {
+        self.ready.notified().await;
+    }
+
+    fn len(&self) -> usize {
+        self.state.lock().frames.len()
+    }
+}
+
+/// Frames for which only the newest per track matters.
+fn track_key(frame: &v1::ServerEnvelope) -> Option<(u8, u32)> {
+    match &frame.msg {
+        Some(v1::server_envelope::Msg::SubscriberHint(hint)) => Some((0, hint.track_id)),
+        Some(v1::server_envelope::Msg::RequestKeyframe(request)) => Some((1, request.track_id)),
+        _ => None,
     }
 }
 
@@ -503,6 +593,43 @@ mod tests {
             book.get(user).status,
             i32::from(v1::PresenceStatus::Offline)
         );
+    }
+
+    fn note(text: &str) -> v1::ServerEnvelope {
+        notice(text)
+    }
+
+    #[test]
+    fn a_direct_queue_holds_past_capacity_for_the_grace_then_refuses() {
+        let queue = DirectQueue::default();
+        let grace = Duration::from_millis(50);
+        for n in 0..OUTBOUND_CAPACITY + 10 {
+            assert!(
+                queue.push(note(&n.to_string()), grace),
+                "held during the grace"
+            );
+        }
+        std::thread::sleep(grace * 2);
+        assert!(
+            !queue.push(note("late"), grace),
+            "still full after the grace"
+        );
+        // Draining below capacity ends the grace period.
+        while queue.len() >= OUTBOUND_CAPACITY {
+            let _ = queue.pop();
+        }
+        assert!(queue.push(note("fresh"), grace));
+        assert_eq!(queue.pop().map(|frame| frame.msg), Some(note("11").msg));
+    }
+
+    #[test]
+    fn a_direct_queue_never_grows_past_its_limit() {
+        let queue = DirectQueue::default();
+        let forever = Duration::from_secs(3600);
+        for n in 0..DIRECT_LIMIT {
+            assert!(queue.push(note(&n.to_string()), forever));
+        }
+        assert!(!queue.push(note("one more"), forever));
     }
 
     #[test]

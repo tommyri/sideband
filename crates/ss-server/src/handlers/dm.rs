@@ -1,9 +1,15 @@
-//! `CreateDm`, `LeaveDm`, `AddDmMembers`, and group-DM renames.
+//! `CreateDm`, `LeaveDm`, `AddDmMembers`, `ListDms`, and group-DM renames.
 //!
 //! A 1:1 conversation is unique per unordered pair. A group conversation is
 //! created fresh and holds the caller plus two to nine other people. Members
 //! receive `VIEW|SEND|ATTACH` from [`ss_core::Permissions::resolve`]; roles
 //! do not apply. Disabled and banned users cannot be added.
+//!
+//! Every DM a member is in goes into their `Welcome`, so group DMs are capped
+//! per creator and per member ([`limits::GROUP_DMS_PER_CREATOR`],
+//! [`limits::GROUP_DMS_PER_MEMBER`]) and new conversations have their own
+//! quota. Mutations patch the permission snapshot with
+//! [`PermissionService::set_direct`] instead of reloading it.
 
 use sqlx::Connection;
 use ss_core::{ChannelKind, Id, Timestamp};
@@ -17,6 +23,7 @@ use crate::{
     db::{
         self, ChannelUpdate, NewAuditEntry, NewChannel, audit_log, bans, channels, messages, users,
     },
+    limits::{self, KeyedLimiter, quota},
     perms::PermissionService,
     snapshot,
 };
@@ -27,16 +34,20 @@ const MAX_OTHERS: usize = 9;
 const MAX_PEOPLE: usize = 10;
 const MAX_NAME: usize = 64;
 
-/// Direct-message commands. Mutations reload [`PermissionService`].
+/// Direct-message commands. Mutations patch [`PermissionService`].
 pub struct DirectMessages {
     perms: Arc<PermissionService>,
+    creations: KeyedLimiter<Id>,
 }
 
 impl DirectMessages {
     /// Shares `perms` with the snapshot and the other handlers.
     #[must_use]
     pub fn new(perms: Arc<PermissionService>) -> Self {
-        Self { perms }
+        Self {
+            perms,
+            creations: KeyedLimiter::new(quota(limits::DM_CREATE_BURST, limits::DM_CREATE_PERIOD)),
+        }
     }
 
     /// Dispatches a DM command. Guild `UpdateChannel` returns `None`.
@@ -49,6 +60,7 @@ impl DirectMessages {
             v1::client_envelope::Msg::CreateDm(command) => Some(self.create(actor, command).await),
             v1::client_envelope::Msg::LeaveDm(command) => Some(self.leave(actor, command).await),
             v1::client_envelope::Msg::AddDmMembers(command) => Some(self.add(actor, command).await),
+            v1::client_envelope::Msg::ListDms(command) => Some(self.list(actor, command).await),
             v1::client_envelope::Msg::UpdateChannel(command) => {
                 self.rename_if_direct(actor, command).await
             }
@@ -57,8 +69,24 @@ impl DirectMessages {
     }
 
     /// Opens a 1:1 DM or creates a group DM.
+    ///
+    /// Reopening an existing 1:1 conversation is answered from a read
+    /// connection and costs no quota. Anything that would insert a channel
+    /// spends one cell of the creation quota first.
     async fn create(&self, actor: Id, command: &v1::CreateDm) -> Result<CommandReply, Error> {
         let people = participants(actor, &command.user_ids)?;
+        if let [only] = people.as_slice() {
+            let mut conn = self.perms.pool().read().await?;
+            reachable(&mut conn, *only).await?;
+            if let Some(existing) = channels::find_pair(&mut conn, actor, *only).await? {
+                let members = channels::members(&mut conn, existing.id).await?;
+                tracing::info!(%actor, channel_id = %existing.id, "dm reused");
+                return conversation(&existing, &members, None, false);
+            }
+        }
+        self.creations
+            .check(&actor)
+            .map_err(|wait| Error::RateLimited("creating conversations too quickly", wait))?;
         let mut guard = self.perms.pool().write().await;
         let mut tx = guard.begin().await.map_err(db::Error::from)?;
         for person in &people {
@@ -72,12 +100,47 @@ impl DirectMessages {
             tracing::info!(%actor, channel_id = %existing.id, "dm reused");
             return conversation(&existing, &members, None, false);
         }
+        if people.len() > 1 {
+            if count(channels::groups_created(&mut tx, actor).await?)
+                >= limits::GROUP_DMS_PER_CREATOR
+            {
+                return Err(Error::Forbidden(
+                    "you have started too many group conversations",
+                ));
+            }
+            let mut everyone = people.clone();
+            everyone.push(actor);
+            room_for(&mut tx, &everyone).await?;
+        }
         let channel = insert_conversation(&mut tx, actor, &people).await?;
         let members = channels::members(&mut tx, channel.id).await?;
         tx.commit().await.map_err(db::Error::from)?;
-        self.perms.reload().await?;
+        self.perms.set_direct(channel.id, channel.kind, &members);
         tracing::info!(%actor, channel_id = %channel.id, "dm created");
         conversation(&channel, &members, None, true)
+    }
+
+    /// A page of the caller's conversations, most recently active first.
+    async fn list(&self, actor: Id, command: &v1::ListDms) -> Result<CommandReply, Error> {
+        let before = command
+            .cursor
+            .as_deref()
+            .map(|bytes| id_from_bytes(bytes).map_err(|_| Error::Invalid("unknown cursor")))
+            .transpose()?;
+        let limit = match usize::try_from(command.limit) {
+            Ok(0) | Err(_) => limits::DM_PAGE,
+            Ok(limit) => limit.min(limits::DM_PAGE),
+        };
+        let mut conn = self.perms.pool().read().await?;
+        let page = snapshot::direct_page(&self.perms, &mut conn, actor, before, limit).await?;
+        Ok(CommandReply {
+            ack: ack::Result::DmPage(v1::DmPage {
+                channels: page.channels,
+                read_states: page.read_states,
+                next: page.next,
+            }),
+            events: Vec::new(),
+        })
     }
 
     /// Removes the caller from a group DM.
@@ -95,7 +158,7 @@ impl DirectMessages {
             let members = channels::members(&mut tx, id).await?;
             let last = messages::latest_id(&mut tx, id).await?;
             tx.commit().await.map_err(db::Error::from)?;
-            self.perms.reload().await?;
+            self.perms.set_direct(id, channel.kind, &members);
             (channel, members, last)
         };
         tracing::info!(%actor, channel_id = %id, "dm left");
@@ -127,6 +190,7 @@ impl DirectMessages {
                     "a group conversation can include at most 9 other people",
                 ));
             }
+            room_for(&mut tx, &incoming).await?;
             for person in &incoming {
                 channels::add_member(&mut tx, id, *person).await?;
             }
@@ -134,7 +198,7 @@ impl DirectMessages {
             let members = channels::members(&mut tx, id).await?;
             let last = messages::latest_id(&mut tx, id).await?;
             tx.commit().await.map_err(db::Error::from)?;
-            self.perms.reload().await?;
+            self.perms.set_direct(id, channel.kind, &members);
             (channel, members, last)
         };
         tracing::info!(%actor, channel_id = %id, "dm members added");
@@ -148,14 +212,8 @@ impl DirectMessages {
         command: &v1::UpdateChannel,
     ) -> Option<Result<CommandReply, Error>> {
         let id = required_id(&command.channel_id).ok()?;
-        let direct = {
-            let mut conn = self.perms.pool().read().await.ok()?;
-            match channels::get(&mut conn, id).await {
-                Ok(Some(channel)) => channel.deleted_at.is_none() && channel.kind.is_direct(),
-                _ => false,
-            }
-        };
-        if direct {
+        // The permission snapshot holds every live channel's kind.
+        if self.perms.direct_members(id).is_some() {
             Some(self.rename(actor, id, command).await)
         } else {
             None
@@ -196,7 +254,6 @@ impl DirectMessages {
             let members = channels::members(&mut tx, id).await?;
             let last = messages::latest_id(&mut tx, id).await?;
             tx.commit().await.map_err(db::Error::from)?;
-            self.perms.reload().await?;
             (channel, members, last)
         };
         tracing::info!(%actor, channel_id = %id, "dm renamed");
@@ -237,6 +294,21 @@ async fn insert_conversation(
     }
     audit(conn, actor, "dm.create", id).await?;
     Ok(channel)
+}
+
+/// Fails when any of `people` is already in [`limits::GROUP_DMS_PER_MEMBER`]
+/// group conversations.
+async fn room_for(conn: &mut sqlx::SqliteConnection, people: &[Id]) -> Result<(), Error> {
+    for person in people {
+        if count(channels::groups_joined(conn, *person).await?) >= limits::GROUP_DMS_PER_MEMBER {
+            return Err(Error::Forbidden("user is in too many group conversations"));
+        }
+    }
+    Ok(())
+}
+
+fn count(rows: i64) -> usize {
+    usize::try_from(rows).unwrap_or(usize::MAX)
 }
 
 async fn membership(

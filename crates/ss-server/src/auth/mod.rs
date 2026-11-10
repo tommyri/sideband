@@ -45,6 +45,8 @@ pub const SESSION_IDLE_MS: i64 = 90 * DAY_MS;
 /// Absolute lifetime: 180 days after login the token stops working however
 /// often it is used, and the user logs in with their password again.
 pub const SESSION_MAX_AGE_MS: i64 = 180 * DAY_MS;
+/// A token used again within this long is not re-stamped.
+const SEEN_EVERY_MS: i64 = 60 * 1000;
 
 /// A failure a `Hello` handler can turn into a control-stream error.
 #[derive(Debug, thiserror::Error)]
@@ -187,7 +189,8 @@ impl Auth {
         }
     }
 
-    /// Resolves a bearer session token and slides its expiry.
+    /// Resolves a bearer session token and slides its expiry, at most once a
+    /// minute.
     pub async fn authenticate_bearer(&self, token: &str) -> Result<Authenticated, Error> {
         self.resume(token).await
     }
@@ -286,6 +289,23 @@ impl Auth {
         let now = Timestamp::now();
         if !session_alive(&session, now) {
             return Err(Error::Unauthenticated);
+        }
+        // A token seen in the last minute keeps its stamp and expiry, so
+        // HTTP requests and reconnects do not queue on the single writer.
+        if now
+            .as_millis()
+            .saturating_sub(session.last_seen_at.as_millis())
+            < SEEN_EVERY_MS
+        {
+            let mut conn = self.pool.read().await?;
+            let user = load_active(&mut conn, session.user_id).await?;
+            let permissions = permissions_for(&mut conn, user.id).await?;
+            return Ok(Authenticated {
+                user,
+                resume_token: token.to_owned(),
+                session_id: session.id,
+                permissions,
+            });
         }
         let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, session.user_id).await?;

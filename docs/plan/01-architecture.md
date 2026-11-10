@@ -82,7 +82,15 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   size 1 for writes plus a read pool).
 - **Event fan-out**: domain mutations produce `ServerEvent`s published to a
   `tokio::sync::broadcast` channel; each connection task filters by
-  permission/visibility and forwards to its control stream.
+  permission/visibility and forwards to its control stream, waiting for room
+  in its own bounded queue. Each command runs on its own task so the session
+  keeps draining the bus meanwhile. A session that falls behind the bus, or
+  whose queue for frames addressed to it by other tasks fills, is closed and
+  resyncs from `Welcome`; no frame is dropped on an open connection. DM
+  channel events are applied from the event by that DM's members only; role,
+  override and guild channel changes trigger a debounced diff of the guild
+  channel view, and one command publishes one such trigger however many
+  channels it changed.
 - **HTTP** (`axum`) shares `ServerState`; used only for things that are
   awkward over the control stream: history pagination, uploads/downloads,
   webhooks, server info, avatars.

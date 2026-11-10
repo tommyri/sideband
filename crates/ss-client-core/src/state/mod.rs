@@ -29,6 +29,9 @@ pub struct State {
     pub channels: BTreeMap<Id, v1::Channel>,
     /// Direct and group conversations.
     pub direct_messages: BTreeMap<Id, v1::Channel>,
+    /// Set when the server sent only the most recently active conversations.
+    /// [`crate::Client::list_dms`] loads the rest; `None` once all are here.
+    pub direct_messages_next: Option<bytes::Bytes>,
     /// Roles keyed by id.
     pub roles: BTreeMap<Id, v1::Role>,
     /// Members, including current presence and role ids.
@@ -202,6 +205,8 @@ impl StateStore {
         for channel in snapshot.channels.iter().chain(&snapshot.direct_messages) {
             next.channel(channel.clone())?;
         }
+        next.direct_messages_next
+            .clone_from(&snapshot.direct_messages_next);
         for role in &snapshot.roles {
             next.roles.insert(id(&role.id)?, role.clone());
         }
@@ -225,6 +230,28 @@ impl StateStore {
         next.revision = state.revision.wrapping_add(1);
         next.generation = state.generation.wrapping_add(1);
         *state = next;
+        Ok(())
+    }
+
+    /// Merges a `ListDms` page fetched for snapshot `generation`. Live
+    /// copies already held win: the page is never newer than an event.
+    pub(crate) fn direct_page(&self, generation: u64, page: &v1::DmPage) -> Result<(), Error> {
+        let mut state = self.0.write();
+        if state.generation != generation {
+            return Err(Error::StateChanged);
+        }
+        for channel in &page.channels {
+            let key = id(&channel.id)?;
+            if !state.direct_messages.contains_key(&key) {
+                state.channel(channel.clone())?;
+            }
+        }
+        for read in &page.read_states {
+            let key = id(&read.channel_id)?;
+            state.read_states.entry(key).or_insert_with(|| read.clone());
+        }
+        state.direct_messages_next.clone_from(&page.next);
+        state.revision = state.revision.wrapping_add(1);
         Ok(())
     }
 

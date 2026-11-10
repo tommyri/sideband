@@ -6,7 +6,7 @@
 //! diffs [`channel_view`] for channel/permission events, including revocation;
 //! [`delivers`] filters other fan-out events against current visibility.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ss_core::{ChannelKind, Id, Permissions, UserKind, VoiceProfile};
 use ss_proto::{
@@ -16,6 +16,7 @@ use ss_proto::{
 
 use crate::{
     db::{self, EVERYONE_ROLE_ID, NewChannel, channels, messages, read_states, roles, users},
+    limits,
     perms::PermissionService,
 };
 
@@ -26,6 +27,10 @@ pub async fn build(perms: &PermissionService, user: Id) -> Result<v1::Snapshot, 
 }
 
 /// Like [`build`], with `presence` supplying each member's status.
+///
+/// DMs are the [`limits::WELCOME_DMS`] most recently active; when there are
+/// more, `direct_messages_next` is set and `ListDms` loads the rest. Read
+/// states cover guild channels and the DMs included.
 pub async fn build_with(
     perms: &PermissionService,
     user: Id,
@@ -34,36 +39,20 @@ pub async fn build_with(
     ensure_defaults(perms, user).await?;
     perms.reload().await?;
     let mut conn = perms.pool().read().await?;
-    let listed = channels::list(&mut conn).await?;
-    let mut members_of: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (channel_id, user_id) in channels::memberships(&mut conn).await? {
-        members_of.entry(channel_id).or_default().push(user_id);
-    }
     let visible = perms.visible_channels(user);
     let mut tree = Vec::new();
-    let mut direct_messages = Vec::new();
-    for channel in &listed {
+    for channel in channels::list_guild(&mut conn).await? {
         if !visible.contains(&channel.id) {
             continue;
         }
-        let empty: &[Id] = &[];
-        let members = members_of.get(&channel.id).map_or(empty, Vec::as_slice);
-        let last_message_id = if channel.kind.is_direct() {
-            messages::latest_id(&mut conn, channel.id).await?
-        } else {
-            None
-        };
-        let mut wire = wire_channel(channel, members, last_message_id)?;
+        let mut wire = wire_channel(&channel, &[], None)?;
         wire.effective_permissions = perms
             .channel_permissions(user, channel.id)
             .ok()
             .map(|p| p.bits());
-        if channel.kind.is_direct() {
-            direct_messages.push(wire);
-        } else {
-            tree.push(wire);
-        }
+        tree.push(wire);
     }
+    let page = direct_page(perms, &mut conn, user, None, limits::WELCOME_DMS).await?;
     let role_rows = roles::list(&mut conn).await?;
     let mut position_of: HashMap<Id, i64> = HashMap::new();
     let mut wire_roles = Vec::with_capacity(role_rows.len());
@@ -89,23 +78,12 @@ pub async fn build_with(
             presence: Some(presence(account.id)),
         });
     }
-    let mut reads = Vec::new();
-    for state in read_states::list_for_user(&mut conn, user).await? {
-        if !visible.contains(&state.channel_id) {
-            continue;
-        }
-        reads.push(v1::ReadState {
-            channel_id: id_to_bytes(state.channel_id),
-            last_read_message_id: id_to_bytes(state.last_read_message_id),
-            mention_count: messages::unread_mentions(
-                &mut conn,
-                state.channel_id,
-                user,
-                state.last_read_message_id,
-            )
-            .await?,
-        });
-    }
+    let guild: HashSet<Id> = tree
+        .iter()
+        .filter_map(|channel| id_from_bytes(&channel.id).ok())
+        .collect();
+    let mut reads = read_states_for(&mut conn, user, &guild).await?;
+    reads.extend(page.read_states);
     Ok(v1::Snapshot {
         channels: tree,
         roles: wire_roles,
@@ -113,8 +91,147 @@ pub async fn build_with(
         voice_states: Vec::new(),
         tracks: Vec::new(),
         read_states: reads,
-        direct_messages,
+        direct_messages: page.channels,
+        direct_messages_next: page.next,
     })
+}
+
+/// One page of a member's DMs, most recently active first.
+pub(crate) struct DirectPage {
+    /// Wire channels with members, newest message and permissions.
+    pub channels: Vec<v1::Channel>,
+    /// The member's read cursors for those channels.
+    pub read_states: Vec<v1::ReadState>,
+    /// Cursor for the next page, when there is one.
+    pub next: Option<bytes::Bytes>,
+}
+
+/// Up to `limit` of `user`'s DMs older than the activity key `before`.
+/// Members come from the permission snapshot, which DM handlers keep current.
+pub(crate) async fn direct_page(
+    perms: &PermissionService,
+    conn: &mut sqlx::SqliteConnection,
+    user: Id,
+    before: Option<Id>,
+    limit: usize,
+) -> Result<DirectPage, db::Error> {
+    let fetch = u32::try_from(limit.saturating_add(1)).unwrap_or(u32::MAX);
+    let mut rows = channels::direct_page(conn, user, before, fetch).await?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let next = if more {
+        rows.last()
+            .map(|(channel, last)| id_to_bytes(channels::activity(channel.id, *last)))
+    } else {
+        None
+    };
+    let mut wires = Vec::with_capacity(rows.len());
+    let mut ids = HashSet::with_capacity(rows.len());
+    for (channel, last) in &rows {
+        wires.push(direct_wire(perms, user, channel, *last)?);
+        ids.insert(channel.id);
+    }
+    let read_states = read_states_for(conn, user, &ids).await?;
+    Ok(DirectPage {
+        channels: wires,
+        read_states,
+        next,
+    })
+}
+
+/// Wire form of one DM for `user`, members from the permission snapshot.
+pub(crate) fn direct_wire(
+    perms: &PermissionService,
+    user: Id,
+    channel: &db::Channel,
+    last_message_id: Option<Id>,
+) -> Result<v1::Channel, db::Error> {
+    let members = perms.direct_members(channel.id).unwrap_or_default();
+    let mut wire = wire_channel(channel, &members, last_message_id)?;
+    wire.effective_permissions = perms
+        .channel_permissions(user, channel.id)
+        .ok()
+        .map(|p| p.bits());
+    Ok(wire)
+}
+
+/// Loads one live DM `user` belongs to, for announcing a conversation the
+/// session was never sent. `None` when it is gone or `user` left it.
+pub(crate) async fn direct_channel(
+    perms: &PermissionService,
+    user: Id,
+    channel: Id,
+) -> Result<Option<v1::Channel>, db::Error> {
+    if !perms
+        .direct_members(channel)
+        .is_some_and(|members| members.contains(&user))
+    {
+        return Ok(None);
+    }
+    let mut conn = perms.pool().read().await?;
+    let Some(row) = channels::get(&mut conn, channel).await? else {
+        return Ok(None);
+    };
+    if row.deleted_at.is_some() {
+        return Ok(None);
+    }
+    let last = messages::latest_id(&mut conn, channel).await?;
+    direct_wire(perms, user, &row, last).map(Some)
+}
+
+/// Drops all but the `keep` most recently active DMs from `snapshot`, with
+/// their read states, and points `direct_messages_next` past the last one
+/// kept. Used when a `Welcome` would not fit in one frame.
+pub(crate) fn keep_direct(snapshot: &mut v1::Snapshot, keep: usize) {
+    if snapshot.direct_messages.len() <= keep {
+        return;
+    }
+    let dropped: HashSet<bytes::Bytes> = snapshot
+        .direct_messages
+        .drain(keep..)
+        .map(|channel| channel.id)
+        .collect();
+    snapshot
+        .read_states
+        .retain(|state| !dropped.contains(&state.channel_id));
+    // With nothing kept the cursor is the largest key, which pages from the top.
+    snapshot.direct_messages_next = Some(snapshot.direct_messages.last().map_or_else(
+        || bytes::Bytes::from_static(&[0xff; 16]),
+        |channel| {
+            channel
+                .last_message_id
+                .clone()
+                .unwrap_or_else(|| channel.id.clone())
+        },
+    ));
+}
+
+async fn read_states_for(
+    conn: &mut sqlx::SqliteConnection,
+    user: Id,
+    channels: &HashSet<Id>,
+) -> Result<Vec<v1::ReadState>, db::Error> {
+    let mut reads = Vec::new();
+    if channels.is_empty() {
+        return Ok(reads);
+    }
+    for state in read_states::list_for_user(conn, user).await? {
+        if !channels.contains(&state.channel_id) {
+            continue;
+        }
+        reads.push(v1::ReadState {
+            channel_id: id_to_bytes(state.channel_id),
+            last_read_message_id: id_to_bytes(state.last_read_message_id),
+            mention_count: messages::unread_mentions(
+                conn,
+                state.channel_id,
+                user,
+                state.last_read_message_id,
+            )
+            .await?,
+        });
+    }
+    Ok(reads)
 }
 
 /// Offline presence used when the caller has no connection registry.
@@ -171,7 +288,15 @@ pub(crate) fn wire_channel(
     })
 }
 
+/// Seeds the default tree once. Checked on a read connection first, so an
+/// ordinary `Hello` never waits for the single writer.
 async fn ensure_defaults(perms: &PermissionService, creator: Id) -> Result<(), db::Error> {
+    {
+        let mut conn = perms.pool().read().await?;
+        if channels::guild_count(&mut conn).await? > 0 {
+            return Ok(());
+        }
+    }
     let mut guard = perms.pool().write().await;
     if channels::guild_count(&mut guard).await? > 0 {
         return Ok(());
@@ -236,7 +361,7 @@ fn guild_channel(
     }
 }
 
-fn event_channel(event: &server_envelope::Msg) -> Option<Id> {
+pub(crate) fn event_channel(event: &server_envelope::Msg) -> Option<Id> {
     let bytes = match event {
         server_envelope::Msg::ChannelCreated(message) => {
             message.channel.as_ref().map(|channel| &channel.id)
@@ -331,18 +456,16 @@ fn wire_user(user: &db::User) -> v1::User {
     }
 }
 
-/// Current personalized channel view. Used after visibility/permission changes
-/// so connected clients gain newly visible channels and purge revoked ones.
+/// Current personalized view of the guild channels. Used after role,
+/// override and guild channel changes so connected clients gain newly visible
+/// channels and purge revoked ones. DMs are not included: roles never apply
+/// to them, and the connection tracks them from DM events.
 pub(crate) async fn channel_view(
     perms: &PermissionService,
     user: Id,
 ) -> Result<std::collections::BTreeMap<Id, v1::Channel>, db::Error> {
     let mut conn = perms.pool().read().await?;
-    let listed = channels::list(&mut conn).await?;
-    let mut members: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (channel, member) in channels::memberships(&mut conn).await? {
-        members.entry(channel).or_default().push(member);
-    }
+    let listed = channels::list_guild(&mut conn).await?;
     let mut view = std::collections::BTreeMap::new();
     for channel in listed {
         let Ok(permissions) = perms.channel_permissions(user, channel.id) else {
@@ -351,16 +474,7 @@ pub(crate) async fn channel_view(
         if !permissions.contains(Permissions::VIEW_CHANNEL) {
             continue;
         }
-        let last = if channel.kind.is_direct() {
-            messages::latest_id(&mut conn, channel.id).await?
-        } else {
-            None
-        };
-        let mut wire = wire_channel(
-            &channel,
-            members.get(&channel.id).map_or(&[], Vec::as_slice),
-            last,
-        )?;
+        let mut wire = wire_channel(&channel, &[], None)?;
         wire.effective_permissions = Some(permissions.bits());
         view.insert(channel.id, wire);
     }

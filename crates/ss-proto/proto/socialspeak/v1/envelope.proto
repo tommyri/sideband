@@ -69,6 +69,7 @@ message ClientEnvelope {
     Logout logout = 42;
     ListSessions list_sessions = 43;
     RevokeSession revoke_session = 44;
+    ListDms list_dms = 45;
   }
 }
 
@@ -138,6 +139,8 @@ message Ack {
     uint32 track_id = 10;
     // `ListSessions` returned the caller's sessions.
     SessionList sessions = 11;
+    // `ListDms` returned this page.
+    DmPage dm_page = 13;
   }
 }
 
