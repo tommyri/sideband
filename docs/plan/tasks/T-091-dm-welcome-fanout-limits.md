@@ -211,3 +211,16 @@ first:
   Reload-versus-reload ordering (an older full reload overwriting a newer
   one) is still T-094's.
 
+
+**Merge follow-up (on main)**
+
+- Review of the second commit: `reload` runs inside command tasks, which
+  are aborted when their connection drops. A reload aborted during its
+  database read never deregistered, so every later `set_direct` was logged
+  and never trimmed for the life of the process. The reload registration
+  is now a drop guard (`ReloadStart`); `finish_reload` and `Drop` both go
+  through `Patches::release`. Test:
+  `an_abandoned_reload_does_not_keep_the_patch_log_growing`, covering an
+  explicit drop and a zero timeout.
+- Merging T-091 with T-093 pushed `Server::session` past clippy's
+  100-line limit; the pre-auth `Hello` checks moved to `hello_refusal`.

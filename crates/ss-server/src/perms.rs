@@ -64,9 +64,42 @@ struct ChannelView {
     overrides: HashMap<Id, PermissionOverride>,
 }
 
-/// The patch generation a reload started at.
-#[derive(Clone, Copy)]
-struct ReloadStart(u64);
+impl Patches {
+    /// Deregisters one reload that started at `generation`, then forgets
+    /// patches no remaining reload needs.
+    fn release(&mut self, generation: u64) {
+        if let Some(count) = self.active.get_mut(&generation) {
+            *count -= 1;
+            if *count == 0 {
+                self.active.remove(&generation);
+            }
+        }
+        match self.active.keys().next().copied() {
+            Some(oldest) => self.log.retain(|(patched, ..)| *patched > oldest),
+            None => self.log.clear(),
+        }
+    }
+}
+
+/// A reload in flight, registered at the patch generation it started at.
+///
+/// Reloads run inside command tasks, which are aborted when their connection
+/// drops. Dropping this guard without [`PermissionService::finish_reload`]
+/// still deregisters the reload, so an abandoned read cannot keep the patch
+/// log growing for the life of the process.
+struct ReloadStart<'a> {
+    service: &'a PermissionService,
+    generation: u64,
+    finished: bool,
+}
+
+impl Drop for ReloadStart<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.service.patches.lock().release(self.generation);
+        }
+    }
+}
 
 /// Roles and grants are shared, and each channel is its own allocation, so
 /// [`PermissionService::set_direct`] copies pointers rather than the whole
@@ -101,39 +134,35 @@ impl PermissionService {
         self.finish_reload(started, snapshot)
     }
 
-    fn begin_reload(&self) -> ReloadStart {
+    fn begin_reload(&self) -> ReloadStart<'_> {
         let mut patches = self.patches.lock();
         let generation = patches.generation;
         *patches.active.entry(generation).or_default() += 1;
-        ReloadStart(generation)
+        ReloadStart {
+            service: self,
+            generation,
+            finished: false,
+        }
     }
 
     /// Stores a loaded snapshot with every DM patch made since its read
     /// began applied on top, then forgets patches no reload still needs.
     fn finish_reload(
         &self,
-        started: ReloadStart,
+        mut started: ReloadStart<'_>,
         snapshot: Result<Snapshot, db::Error>,
     ) -> Result<(), db::Error> {
+        started.finished = true;
         let mut patches = self.patches.lock();
-        if let Some(count) = patches.active.get_mut(&started.0) {
-            *count -= 1;
-            if *count == 0 {
-                patches.active.remove(&started.0);
-            }
-        }
         let result = snapshot.map(|mut snapshot| {
             for (generation, channel, view) in &patches.log {
-                if *generation > started.0 {
+                if *generation > started.generation {
                     snapshot.channels.insert(*channel, Arc::clone(view));
                 }
             }
             self.cache.store(Arc::new(snapshot));
         });
-        match patches.active.keys().next().copied() {
-            Some(oldest) => patches.log.retain(|(generation, ..)| *generation > oldest),
-            None => patches.log.clear(),
-        }
+        patches.release(started.generation);
         result
     }
 
@@ -444,5 +473,37 @@ mod tests {
             "a stale reload gave a departed member access back"
         );
         assert!(view(ada) && view(cyd));
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_reload_does_not_keep_the_patch_log_growing() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::Pool::open(dir.path().join("perms.db")).await.unwrap());
+        let perms = PermissionService::open(Arc::clone(&pool)).await.unwrap();
+        let group = Id::generate();
+
+        // A reload whose command task is aborted during its read...
+        let started = perms.begin_reload();
+        perms.set_direct(group, ChannelKind::GroupDm, &[Id::generate()]);
+        assert_eq!(perms.patches.lock().log.len(), 1);
+        drop(started);
+        // ...is deregistered, so later DM changes are not logged forever.
+        for _ in 0..3 {
+            perms.set_direct(group, ChannelKind::GroupDm, &[Id::generate()]);
+        }
+        {
+            let patches = perms.patches.lock();
+            assert!(
+                patches.active.is_empty(),
+                "the dropped reload stayed registered"
+            );
+            assert!(patches.log.is_empty(), "the patch log kept growing");
+        }
+
+        // A reload cancelled by a timeout while it reads behaves the same.
+        let _ = tokio::time::timeout(std::time::Duration::ZERO, perms.reload()).await;
+        perms.set_direct(group, ChannelKind::GroupDm, &[Id::generate()]);
+        let patches = perms.patches.lock();
+        assert!(patches.active.is_empty() && patches.log.is_empty());
     }
 }
