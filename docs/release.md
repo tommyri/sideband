@@ -16,7 +16,7 @@ approved the publication.
 | Version | the `version` input (mutable during development) | from the tag; must equal the `ss-server` crate version |
 | Tested | `ci.yml` runs as a required job of the same run | `ci.yml` runs as a required job of the same run |
 | Approval | `desktop-release` environment: when the run starts (`prepare`) and before signing and publishing (`publish`) | `server-release` environment, before `publish` |
-| Secrets | updater key only in the `sign` step of `publish`; OS signing credentials in `desktop-signing` for the platform builds | none; `GITHUB_TOKEN` only |
+| Secrets | updater key only in the `sign` step of `publish`; Apple certificate and notarization key only in the `macos-signing` job; Windows certificate in the Windows build job (`desktop-signing`) | none; `GITHUB_TOKEN` only |
 | Overwrites | same-version assets are replaced; feeds never move backwards | an existing version tag or release fails unless `force` is set; `latest` only moves forward |
 | Provenance | `SHA256SUMS` per platform and a build provenance attestation for every asset | `SHA256SUMS` and attestations for the binaries and the image |
 
@@ -34,11 +34,17 @@ and are not fixed by any workflow file:
 - Any branch with write access can dispatch a workflow that uses `GITHUB_TOKEN`
   with `contents: write` or `packages: write` to change releases or push to
   GHCR. Restrict who has write access; protect `main` and `server-v*` tags.
-- Steps in one job share a runner. A build script or proc macro that leaves a
-  background process running can watch later steps of the same job. This is why
-  the updater key is used in a different job from the build. Apple and Windows
-  code signing still happen in the build job, because Tauri signs while
-  bundling; their certificates are imported there when configured.
+- Steps in one job share a runner. A build script or proc macro can leave a
+  background process, a changed script or a PATH shim behind for later steps of
+  the same job. This is why the updater key and all Apple credentials are used
+  only in jobs on fresh runners that run no build output. Windows code signing
+  is the exception: Tauri signs the app, the NSIS uninstaller and both
+  installers while bundling, so the certificate is imported into the Windows
+  build job's user store, before any dependency code runs. A build script there
+  cannot read the PFX or its password, but it can sign with the key, and the
+  runner user is an administrator. Moving Windows signing out of the build
+  (build unsigned, then sign the binary and rebundle, or sign with a remote
+  signing service) is a recorded follow-up.
 
 ### One-time GitHub setup (repository admin)
 
@@ -54,10 +60,12 @@ workflow.
      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (see below).
 2. **New environment `desktop-signing`.** No reviewer (the run was approved
    at `prepare`). Selected branches and tags: branch `main` only. Environment
-   secrets, only when you configure OS signing: `APPLE_CERTIFICATE`,
-   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-   `APPLE_PASSWORD`, `APPLE_TEAM_ID`, `WINDOWS_CERTIFICATE`,
-   `WINDOWS_CERTIFICATE_PASSWORD`.
+   secrets, only when you configure OS signing (see
+   [operating-system signing](#optional-operating-system-signing)):
+   `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+   `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_PRIVATE_KEY`,
+   `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`. Do not add
+   `APPLE_ID`/`APPLE_PASSWORD`: notarization no longer accepts them.
 3. **New environment `server-release`.** Required reviewer: yourself.
    Selected branches and tags: add a **tag** rule `server-v*`. No secrets.
 4. **Repository secrets: none.** Delete any of the names above from
@@ -120,9 +128,11 @@ for the existing manual test-installer path.
 ### Where signing happens
 
 The platform builds run `tauri build` with the public key and endpoint only.
-`scripts/build-test-desktop.mjs` refuses to start if an updater key or Apple
-notarization credential is in its environment, and Tauri's own updater signing
-is off (`createUpdaterArtifacts: false`). The installers are the update payloads
+`scripts/build-test-desktop.mjs` refuses to start if an updater key, Apple or
+Windows certificate, or notarization credential is in its environment, and
+Tauri's own updater signing is off (`createUpdaterArtifacts: false`). macOS
+builds are always ad-hoc signed there; Developer ID signing happens in
+`macos-signing` (see [macOS](#macos)). The installers are the update payloads
 on Windows and Linux; on macOS the script writes `Sideband-test-X.Y.Z.app.tar.gz`
 in Tauri's layout. `build-info.json` lists the payloads unsigned.
 
@@ -255,30 +265,57 @@ For Developer ID distribution configure these secrets:
 
 - `APPLE_CERTIFICATE`: base64-encoded exported Developer ID Application `.p12`.
 - `APPLE_CERTIFICATE_PASSWORD`: password for that `.p12`.
-- `APPLE_SIGNING_IDENTITY`: full Developer ID Application identity.
-- `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `APPLE_TEAM_ID`: notarization credentials.
+- `APPLE_SIGNING_IDENTITY`: full Developer ID Application identity, as
+  `security find-identity -v -p codesigning` prints it.
+- Notarization, optional but needed for Gatekeeper: an App Store Connect API key
+  (*Users and Access → Integrations → App Store Connect API*, role Developer):
+  `APPLE_API_KEY_ID` (the key ID), `APPLE_API_ISSUER` (the issuer ID) and
+  `APPLE_API_PRIVATE_KEY` (the complete contents of `AuthKey_<id>.p8`).
 
-These are `desktop-signing` environment secrets. The workflow imports the
-certificate into a temporary runner keychain and Tauri signs with the selected
-identity during the build. Notarization is a separate step after the build
-(**Notarize macOS DMG**), so `APPLE_PASSWORD` never reaches `tauri build`. It
-submits the DMG with `xcrun notarytool --wait` and staples the DMG. The app
-inside is notarized by that submission, but the app ZIP and updater archive are
-not stapled, so their first launch needs Gatekeeper to reach Apple. This path
-has not run with real credentials.
+These are `desktop-signing` environment secrets. They are used only by the
+`macos-signing` job of the desktop build workflow, which runs after the platform
+builds on a fresh macOS runner and runs nothing the build produced:
+
+1. ref and environment checks, as in the other release jobs;
+2. imports the `.p12` into a temporary keychain and checks that it holds
+   `APPLE_SIGNING_IDENTITY`. This happens before any build output is
+   downloaded; the `.p12` password is on `security import`'s command line, the
+   one secret that still is, with nothing from the build on the runner yet;
+3. downloads the ad-hoc macOS packages and checks them against `build-info.json`;
+4. `build-test-desktop.mjs sign-macos`, calling only `/usr/bin` tools:
+   re-signs the app from the ZIP with the Developer ID, hardened runtime and
+   `apps/desktop/src-tauri/Entitlements.plist` from the checkout; rebuilds the
+   app ZIP, the updater archive and the DMG from that app; signs the DMG;
+   writes the API key to a `0600` file in a private temporary directory,
+   submits the DMG with `xcrun notarytool submit --key --key-id --issuer --wait`,
+   deletes the key, and staples the DMG; rewrites `build-info.json` and
+   `SHA256SUMS`;
+5. deletes the keychain and replaces the platform's build artifact, so the
+   release signs the updater payload, checksums, attests and uploads the signed,
+   stapled packages.
+
+Without `APPLE_CERTIFICATE` the job leaves the ad-hoc packages as they are; an
+API key without a certificate fails the run. The DMG is created by `hdiutil`
+with the app and an Applications link, without the window layout of Tauri's
+DMG. The app inside is notarized by the DMG submission, but the app ZIP and
+updater archive are not stapled, so their first launch needs Gatekeeper to reach
+Apple. This path has run here only with an ad-hoc identity, not with a real
+Developer ID or notarization.
 Keep the bundle identifier `com.socialspeak.desktop` and signing team stable to
 preserve macOS permission identity. The existing hardened-runtime audio-input
 entitlement and microphone usage description are retained.
 
 Validate an installed release using `codesign --verify --deep --strict`,
-`spctl --assess --type execute`, and `xcrun stapler validate` on the app bundle.
+`spctl --assess --type execute` on the app bundle, and `xcrun stapler validate` on the DMG.
 Verify Input Monitoring permissions survive N→N+1, including background PTT.
 
 ### Windows
 
 Optional `desktop-signing` environment secrets `WINDOWS_CERTIFICATE` (base64 PFX) and
 `WINDOWS_CERTIFICATE_PASSWORD` import a signing certificate into the runner's
-current-user certificate store. Packaging passes its thumbprint to Tauri and
+current-user certificate store, as the first step of the Windows build job after
+the release checks. The build itself does not see either secret, but it runs
+with the imported key in the store; see [release gates](#release-gates). Packaging passes its thumbprint to Tauri and
 uses SHA-256 with a timestamp service. Hardware-token/cloud signing is not wired
 by this PFX path. Without a certificate, document/expect SmartScreen warnings;
 updater signatures do not establish Windows publisher reputation.

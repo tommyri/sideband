@@ -1,7 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -71,13 +72,16 @@ export function parseUpdaterPublicKey(text) {
 }
 
 // Credentials that must never be visible to `tauri build`, its build scripts or proc
-// macros. The updater key is used only by the release workflow's signing step and
-// notarization credentials only by the separate notarize step.
+// macros. The updater key is used only by the release workflow's signing step; the
+// Apple certificate and notarization key only by the separate macOS signing job.
+// WINDOWS_CERTIFICATE* are imported by an earlier step of the Windows build job, which
+// is a recorded limitation (docs/release.md), but never passed to the build itself.
 export const signingSecrets = [
   'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'TAURI_SIGNING_PRIVATE_KEY_PATH',
   'TAURI_PRIVATE_KEY', 'TAURI_PRIVATE_KEY_PASSWORD', 'TAURI_PRIVATE_KEY_PATH',
   'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_API_ISSUER', 'APPLE_API_KEY', 'APPLE_API_KEY_PATH',
-  'APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'WINDOWS_CERTIFICATE', 'WINDOWS_CERTIFICATE_PASSWORD',
+  'APPLE_API_KEY_ID', 'APPLE_API_PRIVATE_KEY', 'APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD',
+  'WINDOWS_CERTIFICATE', 'WINDOWS_CERTIFICATE_PASSWORD',
 ]
 
 export function assertNoSigningSecrets(env) {
@@ -89,9 +93,8 @@ export function assertNoSigningSecrets(env) {
 
 export function buildEnvironment(env, options, identity, targetDir, updaterConfig) {
   const result = { ...env, CI: 'true', CARGO_TARGET_DIR: targetDir, SS_BUILD_IDENTITY: JSON.stringify(identity) }
-  for (const key of [...signingSecrets, 'CARGO_BUILD_TARGET', 'SS_UPDATE_PUBLIC_KEY', 'SS_UPDATE_ENDPOINT']) delete result[key]
-  // Manual test installers stay ad-hoc signed; --updates opts in to the OS signing identity.
-  if (!options.updates || !env.APPLE_SIGNING_IDENTITY) delete result.APPLE_SIGNING_IDENTITY
+  // The build is always ad-hoc signed on macOS; signMacos adds the Developer ID later.
+  for (const key of [...signingSecrets, 'APPLE_SIGNING_IDENTITY', 'CARGO_BUILD_TARGET', 'SS_UPDATE_PUBLIC_KEY', 'SS_UPDATE_ENDPOINT']) delete result[key]
   if (options.updates) {
     result.SS_UPDATE_PUBLIC_KEY = env.TAURI_UPDATER_PUBLIC_KEY.trim()
     result.SS_UPDATE_ENDPOINT = updaterConfig.plugins.updater.endpoints[0]
@@ -113,7 +116,7 @@ export function updateConfiguration(env, target) {
     // Tauri would sign updater artifacts inside `tauri build`, which needs the private key
     // there. The installers are the payloads on Windows and Linux; the macOS archive is
     // made by createUpdaterArchive. The release workflow signs them in a separate job.
-    bundle: { createUpdaterArtifacts: false, macOS: { signingIdentity: env.APPLE_SIGNING_IDENTITY || '-' }, ...windows },
+    bundle: { createUpdaterArtifacts: false, macOS: { signingIdentity: '-' }, ...windows },
     plugins: { updater: { requireSignedVersion: true, pubkey: env.TAURI_UPDATER_PUBLIC_KEY.trim(),
       endpoints: [`https://github.com/${repo}/releases/download/desktop-updates/${target}.json`],
       windows: { installMode: 'passive' } } },
@@ -154,9 +157,11 @@ export function updaterPayloads(collected, os) {
 
 // Same layout as Tauri's own updater bundle: the .app directory is the only root entry,
 // which the updater strips when extracting. No AppleDouble or extended-attribute entries.
+const archiveArgs = (app, destination) => ['--no-mac-metadata', '--no-xattrs', '--no-acls', '-czf', destination,
+  '-C', path.dirname(app), path.basename(app)]
+
 export function createUpdaterArchive(app, destination) {
-  execFileSync('tar', ['--no-mac-metadata', '--no-xattrs', '--no-acls', '-czf', destination,
-    '-C', path.dirname(app), path.basename(app)], { env: { ...process.env, COPYFILE_DISABLE: '1' }, stdio: 'inherit' })
+  execFileSync('/usr/bin/tar', archiveArgs(app, destination), { env: { ...process.env, COPYFILE_DISABLE: '1' }, stdio: 'inherit' })
 }
 
 // Updater payloads are listed unsigned; the release workflow adds `<file>.sig`.
@@ -173,30 +178,116 @@ export async function writeManifest(output, identity, collected, updater) {
   return info
 }
 
-const capture = async (command, args) => execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+const capture = async (command, args, options = {}) =>
+  execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options })
+const tool = (name) => `/usr/bin/${name}`
 
-// Runs as its own workflow step after the build, so the Apple password never reaches
-// `tauri build`. The DMG contains the signed app, so one submission notarizes the app
-// in the ZIP and updater archive too; only the DMG carries a stapled ticket.
-export async function notarize(directory, env, run = capture) {
-  const missing = ['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'].filter((key) => !env[key])
-  if (missing.length) throw new Error(`Notarization requires ${missing.join(', ')}`)
-  const { artifacts, updater, ...identity } = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
-  const dmgs = artifacts.filter((artifact) => artifact.file.endsWith('.dmg'))
-  if (dmgs.length !== 1) throw new Error('Expected exactly one DMG to notarize')
-  const dmg = path.join(directory, dmgs[0].file)
-  const result = JSON.parse(await run('xcrun', ['notarytool', 'submit', dmg, '--apple-id', env.APPLE_ID,
-    '--team-id', env.APPLE_TEAM_ID, '--password', env.APPLE_PASSWORD, '--wait', '--output-format', 'json']))
-  if (result.status !== 'Accepted') throw new Error(`Notarization ${result.id ?? ''} finished as ${result.status}; see xcrun notarytool log`)
-  await run('xcrun', ['stapler', 'staple', dmg])
-  return writeManifest(directory, identity, artifacts.map((artifact) => artifact.file), updater?.map((item) => item.file))
+// App Store Connect API key. notarytool reads it from a file, so nothing secret goes
+// on a command line. The Apple ID path would put the app password in argv.
+export function notarizationKey(env) {
+  const names = ['APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_API_PRIVATE_KEY']
+  const present = names.filter((name) => env[name])
+  if (!present.length) {
+    if (env.APPLE_ID || env.APPLE_PASSWORD) throw new Error('Notarization uses an App Store Connect API key (APPLE_API_*), not APPLE_ID/APPLE_PASSWORD')
+    return null
+  }
+  if (present.length !== names.length) throw new Error(`Notarization needs all of ${names.join(', ')}`)
+  if (!/^[A-Z0-9]{8,12}$/.test(env.APPLE_API_KEY_ID)) throw new Error('APPLE_API_KEY_ID is not an App Store Connect key ID')
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(env.APPLE_API_ISSUER)) throw new Error('APPLE_API_ISSUER is not an issuer ID')
+  if (!env.APPLE_API_PRIVATE_KEY.includes('-----BEGIN PRIVATE KEY-----')) throw new Error('APPLE_API_PRIVATE_KEY must be the contents of the AuthKey .p8 file')
+  return { id: env.APPLE_API_KEY_ID, issuer: env.APPLE_API_ISSUER, key: env.APPLE_API_PRIVATE_KEY }
+}
+
+async function notarize(file, credentials, work, run) {
+  const keyFile = path.join(work, `AuthKey_${credentials.id}.p8`)
+  await writeFile(keyFile, credentials.key, { mode: 0o600, flag: 'wx' })
+  try {
+    const result = JSON.parse(await run(tool('xcrun'), ['notarytool', 'submit', file, '--key', keyFile,
+      '--key-id', credentials.id, '--issuer', credentials.issuer, '--wait', '--output-format', 'json']))
+    if (result.status !== 'Accepted') throw new Error(`Notarization ${result.id ?? ''} finished as ${result.status}; see xcrun notarytool log`)
+  } finally {
+    await rm(keyFile, { force: true })
+  }
+}
+
+// Build artifacts come from a job that ran dependency code: treat them as data.
+async function verifiedManifest(directory) {
+  const info = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
+  for (const artifact of info.artifacts) {
+    if (path.basename(artifact.file) !== artifact.file) throw new Error('Invalid artifact path')
+    const file = path.join(directory, artifact.file)
+    if ((await stat(file)).size !== artifact.bytes || await checksum(file) !== artifact.sha256) throw new Error(`Artifact checksum mismatch: ${artifact.file}`)
+  }
+  return info
+}
+
+// Runs in its own job on a fresh macOS runner, after the ad-hoc build: re-signs the
+// app with the Developer ID, rebuilds the ZIP, updater archive and DMG from it, signs
+// the DMG, notarizes and staples it, and rewrites build-info.json and SHA256SUMS. Only
+// system tools by absolute path run here. The DMG is created anew rather than mounting
+// the build's image; it has the app and an Applications link but no window layout.
+export async function signMacos(directory, env, { run = capture, entitlements, scratch = tmpdir() } = {}) {
+  const identity = env.APPLE_SIGNING_IDENTITY, keychain = env.APPLE_KEYCHAIN
+  if (!identity || !keychain || !entitlements) throw new Error('macOS signing needs APPLE_SIGNING_IDENTITY, APPLE_KEYCHAIN and the entitlements file')
+  const credentials = notarizationKey(env)
+  const { artifacts, updater, ...info } = await verifiedManifest(directory)
+  const only = (suffix, required = true) => {
+    const matches = artifacts.filter((artifact) => artifact.file.endsWith(suffix))
+    if (matches.length > 1 || (required && !matches.length)) throw new Error(`Expected exactly one ${suffix} artifact`)
+    return matches[0] && path.join(directory, matches[0].file)
+  }
+  const zip = only('.app.zip'), dmg = only('.dmg'), archive = only('.app.tar.gz', false)
+  const work = await mkdtemp(path.join(scratch, 'sideband-macos-sign-'))
+  try {
+    const unpacked = path.join(work, 'unpacked')
+    await run(tool('ditto'), ['-x', '-k', zip, unpacked])
+    const apps = (await readdir(unpacked)).filter((name) => name.endsWith('.app'))
+    if (apps.length !== 1) throw new Error('The app ZIP must contain exactly one .app')
+    const app = path.join(unpacked, apps[0])
+    const timestamp = identity === '-' ? [] : ['--timestamp']
+    await run(tool('codesign'), ['--force', '--options', 'runtime', ...timestamp, '--entitlements', entitlements,
+      '--keychain', keychain, '--sign', identity, app])
+    await run(tool('codesign'), ['--verify', '--deep', '--strict', '--verbose=2', app])
+    await rm(zip)
+    await run(tool('ditto'), ['-c', '-k', '--sequesterRsrc', '--keepParent', app, zip])
+    if (archive) {
+      await rm(archive)
+      await run(tool('tar'), archiveArgs(app, archive), { env: { PATH: '/usr/bin:/bin', COPYFILE_DISABLE: '1' } })
+    }
+    const root = path.join(work, 'dmg')
+    await mkdir(root)
+    await run(tool('ditto'), [app, path.join(root, apps[0])])
+    await symlink('/Applications', path.join(root, 'Applications'))
+    await rm(dmg)
+    await run(tool('hdiutil'), ['create', '-volname', apps[0].slice(0, -'.app'.length), '-srcfolder', root,
+      '-fs', 'HFS+', '-format', 'UDZO', '-ov', dmg])
+    await run(tool('codesign'), ['--force', ...timestamp, '--keychain', keychain, '--sign', identity, dmg])
+    if (credentials) {
+      // The submission covers the app inside the DMG, so the ZIP and updater archive
+      // are notarized too; only the DMG carries a stapled ticket.
+      await notarize(dmg, credentials, work, run)
+      await run(tool('xcrun'), ['stapler', 'staple', dmg])
+    }
+  } finally {
+    await rm(work, { recursive: true, force: true })
+  }
+  return writeManifest(directory, info, artifacts.map((artifact) => artifact.file), updater?.map((item) => item.file))
 }
 
 async function main() {
-  if (process.argv[2] === 'notarize') {
-    if (!process.argv[3]) throw new Error('Usage: node scripts/build-test-desktop.mjs notarize ARTIFACT_DIRECTORY')
-    await notarize(process.argv[3], process.env)
-    console.log('Notarized and stapled the DMG in ' + process.argv[3])
+  if (process.argv[2] === 'sign-macos') {
+    // INPUT holds one downloaded artifact directory per macOS target.
+    const input = process.argv[3]
+    if (!input) throw new Error('Usage: node scripts/build-test-desktop.mjs sign-macos INPUT_DIRECTORY')
+    const entitlements = path.join(desktop, 'src-tauri', 'Entitlements.plist')
+    let signed = 0
+    for (const entry of await readdir(input, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      await signMacos(path.join(input, entry.name), process.env, { entitlements, scratch: process.env.RUNNER_TEMP || tmpdir() })
+      console.log('Signed ' + entry.name + (notarizationKey(process.env) ? ' and notarized its DMG' : ' (not notarized: no APPLE_API_* key)'))
+      signed++
+    }
+    if (!signed) throw new Error('No macOS artifacts to sign')
     return
   }
   assertNoSigningSecrets(process.env)

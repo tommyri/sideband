@@ -88,10 +88,20 @@ What changed:
   signature against the public key and version (`stage`), attests all assets
   with `actions/attest`, then uploads.
 - `test-desktop.yml`: optional `environment` input; ref and environment checks
-  first when set. The build step has no updater key or Apple password, and
+  first when set. The build step has no signing secret, and
   `build-test-desktop.mjs` refuses to start if one is present. Updater payloads
   are listed unsigned; the script writes the macOS `.app.tar.gz` in Tauri's
-  layout. Notarization is a separate `notarize` step that staples the DMG.
+  layout. macOS is always built ad-hoc. A separate `macos-signing` job (fresh
+  `macos-15` runner, `desktop-signing` environment, ref and environment checks)
+  is the only place the Apple certificate and notarization key appear. It
+  imports the `.p12` before downloading any build output, then
+  `build-test-desktop.mjs sign-macos` re-signs the app with the Developer ID,
+  rebuilds the ZIP, updater archive and DMG, signs the DMG, and notarizes it with
+  an App Store Connect API key from a `0600` file (`--key --key-id --issuer`),
+  then staples it. It uses only `/usr/bin` tools and replaces the build artifact,
+  so `publish` signs the updater payload for, checksums, attests and uploads the
+  signed packages. Apple ID and app-password notarization was removed rather than
+  kept as a fallback: notarytool takes that password only in argv.
 - `release-server.yml`: runs only on a `server-vX.Y.Z` tag whose commit is on
   `main` (compare API). The version comes from the tag and must equal the
   `ss-server` crate version. An existing image tag or release fails unless
@@ -104,11 +114,21 @@ What changed:
 - `ci.yml`: `workflow_call`. `deploy/Dockerfile*`: digests pinned;
   `Dockerfile.release` copies `ss-server-${TARGETARCH}`. `dependabot.yml`:
   `cargo` for `/fuzz`, `docker` for `/deploy`.
+- Windows: the certificate import moved to before any dependency code in the
+  Windows build job. Signing stays inside `tauri build`, because Tauri signs the
+  app, the NSIS uninstaller and both installers while bundling. A build script
+  there cannot read the PFX or its password but can sign with the key (and the
+  runner user is an administrator). Follow-up: build unsigned and sign plus
+  rebundle in a separate job, or use a remote signing service.
 - New `scripts/release-gate.mjs` and its test (outside the listed Paths), and
   small fixes to `deploy/README.md` and `docs/desktop-releases.md`, which
   described the old server flow.
 
-Validated here: all script tests (`node --test scripts/*.test.mjs`, 23 pass).
+Validated here: all script tests (`node --test scripts/*.test.mjs`, 25 pass).
+`sign-macos` ran for real on this Mac with an ad-hoc identity and a compiled
+app. The app came out signed with the hardened runtime and the audio-input
+entitlement, the DMG holds the app and an Applications link, and the
+checksums match.
 Signature verification is tested against real `tauri signer` 2.12.4 output; a
 local sign-and-stage ran with the real CLI and a disposable key. The gate's
 `server-plan` was run against live GHCR and the API for this repository
@@ -119,8 +139,9 @@ the workflows were parsed with js-yaml and checked for SHA pins, `needs`,
 reusable-workflow inputs and a ref check before any secret, nothing more.
 Unverified until a real run: `environment: ''` meaning no environment for
 standalone test builds, the environment API with `GITHUB_TOKEN`, attestation
-and GHCR push, notarization, and the macOS updater archive installing through
-the updater.
+and GHCR push, Developer ID signing, the keychain import and notarization (no real
+certificate or API key), the artifact `overwrite`, and the macOS updater archive
+installing through the updater.
 
 Not pinned: the BuildKit image is pinned by digest inside a `run:` step, which
 Dependabot does not update; `dtolnay/rust-toolchain` stays on its `master`
@@ -134,7 +155,12 @@ GitHub setup"):
       policy `main` only. Add secrets `TAURI_SIGNING_PRIVATE_KEY` and
       `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` there.
 - [ ] Create environment `desktop-signing`: branch policy `main` only, no
-      reviewer. Apple and Windows signing secrets go there when configured.
+      reviewer. When you configure OS signing, its secrets go there:
+      `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+      `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`,
+      `APPLE_API_PRIVATE_KEY` (App Store Connect API key, Developer role),
+      `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`. Not `APPLE_ID` or
+      `APPLE_PASSWORD`.
 - [ ] Create environment `server-release`: required reviewer, tag policy
       `server-v*` only.
 - [ ] Keep no release secrets at repository level; keep the variable
@@ -151,5 +177,8 @@ GitHub setup"):
 - [ ] First update-enabled desktop release: confirm the build step log shows no
       signing variables and the `sign` step signs every payload (acceptance 3);
       verify an asset with `gh attestation verify` (acceptance 4).
+- [ ] With Apple credentials configured: check that `macos-signing` reports
+      notarization `Accepted`, and that `spctl --assess` and
+      `xcrun stapler validate` pass on the downloaded DMG.
 - [ ] Leave the old `build-42280236293-1-*` GHCR tags, or delete them only
       together with `0.0.1`.

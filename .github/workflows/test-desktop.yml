@@ -60,6 +60,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
         run: node scripts/release-gate.mjs environment "$RELEASE_ENVIRONMENT"
+      # Windows signing happens inside `tauri build` (the app, the NSIS uninstaller and
+      # both installers), so the certificate must be in the store during the build. It
+      # is imported before any dependency code runs in this job, so no build script sees
+      # the PFX or its password. The key is marked non-exportable, but a build script
+      # can still sign with it, and the runner user is an administrator. Moving Windows
+      # signing out of the build is a recorded follow-up (docs/release.md).
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows' && inputs.updates
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE) {
+            $certPath = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            try {
+              $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey | Select-Object -First 1
+              if (-not $cert) { throw "PFX contains no signing identity" }
+              "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+            } finally { Remove-Item $certPath }
+          }
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
@@ -85,45 +108,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Desktop tests
         run: cargo test --locked -p socialspeak-desktop
-      - name: Import macOS signing certificate
-        if: runner.os == 'macOS' && inputs.updates
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
-            test -n "$APPLE_CERTIFICATE"
-            keychain_password=$(openssl rand -hex 32)
-            echo "::add-mask::$keychain_password"
-            printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-            security create-keychain -p "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
-            security set-keychain-settings -lut 21600 "$RUNNER_TEMP/sideband.keychain"
-            security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
-            security import "$RUNNER_TEMP/signing.p12" -k "$RUNNER_TEMP/sideband.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/sideband.keychain"
-            security list-keychains -d user -s "$RUNNER_TEMP/sideband.keychain" login.keychain-db
-            rm "$RUNNER_TEMP/signing.p12"
-          fi
-      - name: Import Windows signing certificate
-        if: runner.os == 'Windows' && inputs.updates
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if ($env:WINDOWS_CERTIFICATE) {
-            $certPath = Join-Path $env:RUNNER_TEMP 'signing.pfx'
-            [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-            try {
-              $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-              $cert = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey | Select-Object -First 1
-              if (-not $cert) { throw "PFX contains no signing identity" }
-              "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
-            } finally { Remove-Item $certPath }
-          }
-      # No updater key or notarization password here: build scripts and proc macros
-      # run in this step. The script refuses to start if one is present.
+      # No signing secret here: build scripts and proc macros run in this step, and
+      # the script refuses to start if one is present. macOS is built ad-hoc and
+      # signed by the macos-signing job below.
       - name: Create labelled test packages
         id: packages
         shell: bash
@@ -132,24 +119,10 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           BUILD_UPDATES: ${{ inputs.updates }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           args=()
           if [ "$BUILD_UPDATES" = "true" ]; then args+=(--updates); fi
           node scripts/build-test-desktop.mjs --target ${{ matrix.target }} --version "$BUILD_VERSION" "${args[@]}"
-      - name: Notarize macOS DMG
-        if: runner.os == 'macOS' && inputs.updates
-        env:
-          ARTIFACT_DIRECTORY: ${{ steps.packages.outputs.artifact_directory }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ -n "$APPLE_ID" ]; then
-            node scripts/build-test-desktop.mjs notarize "$ARTIFACT_DIRECTORY"
-          else
-            echo "No notarization credentials; the DMG is signed but not notarized."
-          fi
       - name: Validate macOS bundle
         if: runner.os == 'macOS'
         run: |
@@ -165,6 +138,108 @@ jobs:
         with:
           name: sideband-test-${{ matrix.target }}-${{ github.sha }}
           path: ${{ steps.packages.outputs.artifact_directory }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # Developer ID signing and notarization on a fresh runner: nothing from the build
+  # job runs here, its packages are only data. System tools run by absolute path, the
+  # notarization key is a 0600 file, and no secret is on a command line except the
+  # .p12 password for `security import`, before any build output is downloaded.
+  macos-signing:
+    name: macOS signing and notarization
+    needs: package
+    if: inputs.environment != '' && inputs.updates && contains(inputs.matrix, 'apple-darwin')
+    timeout-minutes: 60
+    runs-on: macos-15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Refuse refs other than main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Signing runs only from refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+        run: node scripts/release-gate.mjs environment "$RELEASE_ENVIRONMENT"
+      - name: Signing configuration
+        id: config
+        env:
+          CERTIFICATE_SET: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          NOTARIZATION_SET: ${{ secrets.APPLE_API_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$CERTIFICATE_SET" = true ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          elif [ "$NOTARIZATION_SET" = true ]; then
+            echo "::error::APPLE_API_* is set without APPLE_CERTIFICATE; an ad-hoc app cannot be notarized"
+            exit 1
+          else
+            echo "No APPLE_CERTIFICATE; the macOS packages stay ad-hoc signed."
+          fi
+      - name: Import signing certificate
+        if: steps.config.outputs.sign == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$APPLE_SIGNING_IDENTITY"
+          keychain="$RUNNER_TEMP/sideband.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          umask 077
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          trap 'rm -f "$RUNNER_TEMP/signing.p12"' EXIT
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\""
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.config.outputs.sign == 'true'
+        with:
+          pattern: sideband-test-*-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input
+      - name: Sign, notarize and staple
+        if: steps.config.outputs.sign == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_KEYCHAIN: ${{ runner.temp }}/sideband.keychain-db
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: node scripts/build-test-desktop.mjs sign-macos "$RUNNER_TEMP/macos-input"
+      - name: Remove signing keychain
+        if: always() && steps.config.outputs.sign == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/sideband.keychain-db" || true
+      # Replace the ad-hoc packages, so the release uploads, checksums and attests the
+      # signed and stapled ones.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.config.outputs.sign == 'true' && contains(inputs.matrix, 'aarch64-apple-darwin')
+        with:
+          name: sideband-test-aarch64-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input/sideband-test-aarch64-apple-darwin-${{ github.sha }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.config.outputs.sign == 'true' && contains(inputs.matrix, 'x86_64-apple-darwin')
+        with:
+          name: sideband-test-x86_64-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input/sideband-test-x86_64-apple-darwin-${{ github.sha }}
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
