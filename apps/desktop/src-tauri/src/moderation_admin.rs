@@ -113,9 +113,8 @@ pub async fn get_moderation_page(
         .map(|value| value.parse::<Id>().map_err(|_| invalid("Invalid cursor")))
         .transpose()?;
     let session = {
-        let clients = state.clients.lock().await;
-        let client = clients
-            .get(&server)
+        let client = state
+            .client(&server)
             .ok_or_else(|| invalid("Server is disconnected"))?;
         client.attachment_session().await.map_err(api_error)?
     };
@@ -142,9 +141,8 @@ pub async fn moderate_member(
         return Err(invalid("Reason must be at most 500 characters"));
     }
     let user_id = user.as_bytes().to_vec().into();
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
     match action.kind.as_str() {
         "kick" => {

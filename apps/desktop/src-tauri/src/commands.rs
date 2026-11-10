@@ -270,13 +270,10 @@ pub async fn connect(
             );
         }
     });
-    let previous = state
-        .clients
-        .lock()
-        .await
-        .insert(client)
-        .map_err(api_error)?;
-    drop(previous);
+    let previous = state.clients().insert(client).map_err(api_error)?;
+    if let Some(previous) = previous {
+        crate::state::close(previous).await;
+    }
     Ok(ConnectResult {
         server_id,
         label,
@@ -304,16 +301,16 @@ pub async fn disconnect(state: State<'_, AppState>, server_id: String) -> Result
     let _operation = state.operations.lock().await;
     crate::voice::stop(&state, Some(&server_id)).await?;
     let id = parse_server_id(&server_id)?;
-    let client = state.clients.lock().await.remove(&id);
+    let client = state.clients().remove(&id);
     if let Some(client) = client {
-        client.close().await;
+        crate::state::close(client).await;
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, ApiError> {
-    let clients = state.clients.lock().await;
+    let clients = state.clients();
     let servers = state
         .storage
         .servers()
@@ -373,9 +370,8 @@ pub async fn send_message(
             .collect::<Result<_, _>>()?,
         nonce: input.nonce,
     };
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     client
         .send_message(command)
@@ -398,9 +394,8 @@ pub async fn create_channel(
         topic: input.topic,
         voice: None,
     };
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     client
         .create_channel(command)
@@ -414,12 +409,18 @@ pub async fn load_history(
     state: State<'_, AppState>,
     request: HistoryRequest,
 ) -> Result<Vec<BridgeMessage>, ApiError> {
+    history(&state, request).await
+}
+
+pub(crate) async fn history(
+    state: &AppState,
+    request: HistoryRequest,
+) -> Result<Vec<BridgeMessage>, ApiError> {
     let server = parse_server_id(&request.server_id)?;
     let channel = id(&request.channel_id)?;
     let before = request.before.as_deref().map(id).transpose()?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     client
         .load_older(channel, before)

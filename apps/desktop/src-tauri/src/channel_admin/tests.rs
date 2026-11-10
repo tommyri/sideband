@@ -78,7 +78,7 @@ impl World {
             .create_invite(v1::CreateInvite::default())
             .await
             .unwrap();
-        owner.clients.lock().await.insert(client).unwrap();
+        owner.clients().insert(client).unwrap();
         let guest = AppState::open(&dir.path().join("guest")).unwrap();
         guest.pins.set(&key, fingerprint).unwrap();
         let client = Client::connect_with_storage(
@@ -93,7 +93,7 @@ impl World {
         )
         .await
         .unwrap();
-        guest.clients.lock().await.insert(client).unwrap();
+        guest.clients().insert(client).unwrap();
         Self {
             owner,
             guest,
@@ -118,7 +118,7 @@ impl World {
             s.channels.values().any(|c| c.name == name)
         })
         .await;
-        let clients = self.owner.clients.lock().await;
+        let clients = self.owner.clients();
         let store = clients
             .get(&parse_server_id(&self.key).unwrap())
             .unwrap()
@@ -134,8 +134,7 @@ impl World {
     }
 }
 async fn wait(state: &AppState, server: &str, predicate: impl Fn(&ClientState) -> bool) {
-    let clients = state.clients.lock().await;
-    let client = clients.get(&parse_server_id(server).unwrap()).unwrap();
+    let client = state.client(&parse_server_id(server).unwrap()).unwrap();
     let mut events = client.subscribe();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -224,8 +223,10 @@ async fn real_bridge_creates_edits_moves_and_cascade_deletes() {
     .await;
     // The server independently rejects a stale/malicious client even without the native guard.
     {
-        let clients = world.guest.clients.lock().await;
-        let client = clients.get(&parse_server_id(&world.key).unwrap()).unwrap();
+        let client = world
+            .guest
+            .client(&parse_server_id(&world.key).unwrap())
+            .unwrap();
         assert!(
             client
                 .delete_channel(v1::DeleteChannel {

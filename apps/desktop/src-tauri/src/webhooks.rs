@@ -56,8 +56,7 @@ pub async fn webhook_page(
 ) -> Result<Vec<WebhookView>, ApiError> {
     let server = parse_server_id(&server_id)?;
     let before = before.as_deref().map(parse_id).transpose()?;
-    let clients = state.clients.lock().await;
-    let client = clients.get(&server).ok_or_else(disconnected)?;
+    let client = state.client(&server).ok_or_else(disconnected)?;
     Ok(client
         .list_webhooks(before)
         .await
@@ -75,8 +74,7 @@ pub async fn create_server_webhook(
 ) -> Result<CreatedWebhook, ApiError> {
     let server = parse_server_id(&server_id)?;
     let channel = parse_id(&channel_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients.get(&server).ok_or_else(disconnected)?;
+    let client = state.client(&server).ok_or_else(disconnected)?;
     let created = client
         .create_webhook_url(v1::CreateWebhook {
             channel_id: channel.as_bytes().to_vec().into(),
@@ -97,8 +95,7 @@ pub async fn revoke_server_webhook(
 ) -> Result<(), ApiError> {
     let server = parse_server_id(&server_id)?;
     let webhook = parse_id(&webhook_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients.get(&server).ok_or_else(disconnected)?;
+    let client = state.client(&server).ok_or_else(disconnected)?;
     client
         .delete_webhook(v1::DeleteWebhook {
             webhook_id: webhook.as_bytes().to_vec().into(),

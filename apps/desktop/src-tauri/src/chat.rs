@@ -92,9 +92,8 @@ async fn snapshot_for(
 ) -> Result<ChatSnapshot, ApiError> {
     let server = parse_server_id(server_id)?;
     let channel = id(channel_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     let store = client.state();
     store.retain_loaded_messages(channel);
@@ -157,9 +156,8 @@ pub async fn chat_action(
 }
 async fn action_for(state: &AppState, server_id: &str, action: ChatAction) -> Result<(), ApiError> {
     let server = parse_server_id(server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     match action {
         ChatAction::Typing { channel } => {
@@ -204,9 +202,8 @@ pub async fn message_context(
     message_id: String,
 ) -> Result<(), ApiError> {
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     let message_id = id(&message_id)?.to_string();
     let messages = client
@@ -316,7 +313,7 @@ mod tests {
             })
             .await
             .unwrap();
-        state.clients.lock().await.insert(client).unwrap();
+        state.clients().insert(client).unwrap();
         async fn wait_for(
             state: &AppState,
             server: &str,

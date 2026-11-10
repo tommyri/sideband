@@ -98,9 +98,8 @@ async fn transfer(
     }
     let session = {
         let server = parse_server_id(&request.server)?;
-        let clients = state.clients.lock().await;
-        clients
-            .get(&server)
+        state
+            .client(&server)
             .ok_or_else(|| error("Server is disconnected"))?
             .attachment_session()
             .await

@@ -130,9 +130,8 @@ pub async fn dm_action(
 }
 async fn perform(state: &AppState, server: &str, action: DmAction) -> Result<DmResult, ApiError> {
     let server = parse_server_id(server)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
     let mut warning = None;
     let channel = match action {
@@ -315,7 +314,7 @@ mod tests {
             .create_invite(v1::CreateInvite::default())
             .await
             .unwrap();
-        owner.clients.lock().await.insert(client).unwrap();
+        owner.clients().insert(client).unwrap();
         let mut peers = Vec::new();
         let mut users = Vec::new();
         for username in ["alice", "bob", "carol"] {
@@ -334,7 +333,7 @@ mod tests {
             .await
             .unwrap();
             users.push(display(&client.state().read().own_user.as_ref().unwrap().id).unwrap());
-            state.clients.lock().await.insert(client).unwrap();
+            state.clients().insert(client).unwrap();
             peers.push(state);
         }
         let pair = || DmAction::Create {
@@ -363,7 +362,7 @@ mod tests {
         ) {
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
-                    if predicate(&state.clients.lock().await.get(key).unwrap().state().read()) {
+                    if predicate(&state.clients().get(key).unwrap().state().read()) {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -380,9 +379,7 @@ mod tests {
         .await;
         let own_id = display(
             &owner
-                .clients
-                .lock()
-                .await
+                .clients()
                 .get(&key)
                 .unwrap()
                 .state()
@@ -394,10 +391,7 @@ mod tests {
         )
         .unwrap();
         let sent = peers[0]
-            .clients
-            .lock()
-            .await
-            .get(&key)
+            .client(&key)
             .unwrap()
             .send_message(v1::SendMessage {
                 channel_id: id(&first.channel_id).unwrap(),
@@ -414,10 +408,7 @@ mod tests {
         })
         .await;
         owner
-            .clients
-            .lock()
-            .await
-            .get(&key)
+            .client(&key)
             .unwrap()
             .mark_read(v1::MarkRead {
                 channel_id: id(&first.channel_id).unwrap(),

@@ -71,9 +71,8 @@ pub async fn audit_page(
         since: query.since,
         until: query.until,
     };
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "Server is disconnected"))?;
     Ok(client
         .audit_page(before, &filter)

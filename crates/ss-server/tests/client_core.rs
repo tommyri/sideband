@@ -335,6 +335,97 @@ async fn voice_session_routes_test_tone_and_releases_workers() {
     }
 }
 
+/// Waits for the open-mic tone to stop, then requires a full second with no
+/// encoded frame. Published stats lag the worker by up to 500 ms.
+async fn assert_transmission_stopped(session: &VoiceSession, own: Id) {
+    timeout(Duration::from_millis(200), async {
+        while session.speaking_users().contains(&own) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the talk gate stays open after mute returned");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let before = session.stats().sent_packets;
+    for _ in 0..50 {
+        assert!(!session.speaking_users().contains(&own), "gate reopened");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        session.stats().sent_packets,
+        before,
+        "frames sent while muted"
+    );
+}
+
+#[tokio::test]
+async fn mute_closes_the_gate_before_the_server_and_reconciles_after_reconnect() {
+    let mut world = World::new().await;
+    let owner = world.owner().await;
+    let mut events = owner.subscribe();
+    let own_bytes = owner.state().read().own_user.as_ref().unwrap().id.clone();
+    let own = id_from_bytes(&own_bytes).unwrap();
+    let voice = named(&owner.state().read(), "General", v1::ChannelKind::Voice);
+    let session = VoiceSession::start(
+        &owner,
+        voice,
+        AudioConfig {
+            source: AudioSource::Test,
+            gate: TalkGate::OpenMic,
+            ..AudioConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let talking = || async {
+        timeout(WAIT, async {
+            while !session.speaking_users().contains(&own) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    };
+    talking().await;
+
+    // The gate closes when mute is requested, before the server round trip.
+    let pending = session.set_self_mute(true);
+    assert!(session.self_muted());
+    assert_transmission_stopped(&session, own).await;
+    pending.await.unwrap();
+    session.set_self_mute(false).await.unwrap();
+    talking().await;
+
+    // While reconnecting the server cannot be told, but the microphone stops.
+    world.restart().await;
+    until(&owner, &mut events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    assert!(matches!(
+        session.set_self_mute(true).await,
+        Err(Error::Disconnected)
+    ));
+    assert!(session.self_muted());
+    // An unmute the server never confirmed leaves the gate closed.
+    assert!(session.set_self_mute(false).await.is_err());
+    assert!(session.self_muted());
+    assert_transmission_stopped(&session, own).await;
+    until(&owner, &mut events, |s| {
+        s.connection == ConnectionState::Connected
+            && s.voice_states
+                .values()
+                .any(|v| v.user_id == own_bytes && v.channel_id == Some(wire(voice)) && v.self_mute)
+    })
+    .await;
+    assert_transmission_stopped(&session, own).await;
+
+    // Unmuting still waits for the server, then reopens the gate.
+    session.set_self_mute(false).await.unwrap();
+    talking().await;
+    session.leave().await.unwrap();
+}
+
 #[tokio::test]
 async fn permission_changes_refresh_existing_and_newly_visible_channels() {
     let world = World::new().await;

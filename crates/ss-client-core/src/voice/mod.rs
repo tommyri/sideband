@@ -5,11 +5,11 @@ mod worker;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use ss_audio::{device::DeviceId, processing::ProcessingConfig, vad};
 use ss_core::{Id, VoiceProfile};
 use ss_proto::{v1, validate::id_to_bytes};
@@ -27,8 +27,10 @@ use crate::{
 
 use self::{
     graph::TrackSpec,
-    worker::{Update, WorkerHandle},
+    worker::{Shared, Update, WorkerHandle},
 };
+
+type AckReceiver = oneshot::Receiver<Result<v1::Ack, Error>>;
 
 /// Where capture samples come from. Test and silent sources avoid hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,6 +208,8 @@ pub struct VoiceStats {
     pub speakers: Vec<SpeakerStats>,
     /// Current encoder bitrate after adaptation.
     pub encoder_bitrate: u32,
+    /// Encoded voice frames handed to the transport since the call started.
+    pub sent_packets: u64,
     /// Smoothed QUIC round-trip time.
     pub rtt: Duration,
     /// Playback ring underruns.
@@ -259,12 +263,36 @@ pub struct VoiceSession {
     worker: Option<WorkerHandle>,
     tasks: Vec<JoinHandle<()>>,
     stats: Arc<RwLock<VoiceStats>>,
+    requested: Arc<Mutex<SelfState>>,
+}
+
+/// The latest self-mute/deafen request. `revision` orders requests so only
+/// the newest one may open the gate when its acknowledgement arrives.
+#[derive(Debug, Clone, Copy, Default)]
+struct SelfState {
+    muted: bool,
+    deaf: bool,
+    revision: u64,
+}
+
+impl SelfState {
+    const fn message(self) -> v1::SetVoiceState {
+        v1::SetVoiceState {
+            self_mute: self.muted,
+            self_deaf: self.deaf,
+        }
+    }
 }
 
 impl VoiceSession {
     /// Join a channel, start devices/codecs, and bind them to this client.
     pub async fn start(client: &Client, channel: Id, config: AudioConfig) -> Result<Self, Error> {
         let (profile, bitrate) = channel_profile(&client.store, channel)?;
+        let requested = Arc::new(Mutex::new(SelfState {
+            muted: config.start_muted,
+            deaf: config.start_deafened,
+            revision: 0,
+        }));
         let mut events = client.subscribe();
         client
             .join_voice(v1::JoinVoice {
@@ -310,7 +338,7 @@ impl VoiceSession {
             remote: initial.remote,
         });
         let stats = Arc::new(RwLock::new(VoiceStats::default()));
-        let tasks = spawn_tasks(
+        let mut tasks = spawn_tasks(
             client,
             channel,
             &worker,
@@ -319,6 +347,7 @@ impl VoiceSession {
             profile,
             bitrate,
         );
+        tasks.push(reconcile_after_reconnect(client, Arc::clone(&requested)));
         Ok(Self {
             channel,
             commands: client.commands.clone(),
@@ -328,6 +357,7 @@ impl VoiceSession {
             worker: Some(worker),
             tasks,
             stats,
+            requested,
         })
     }
 
@@ -393,45 +423,99 @@ impl VoiceSession {
             .map_or(-96.0, |w| w.shared.stats.read().input_dbfs)
     }
 
-    /// Update self mute locally and on the server.
-    pub async fn set_self_mute(&self, muted: bool) -> Result<(), Error> {
-        let deaf = self.worker.as_ref().is_some_and(|worker| {
-            worker
-                .shared
-                .deaf
-                .load(std::sync::atomic::Ordering::Relaxed)
-        });
-        self.set_voice_state(muted, deaf).await?;
-        if let Some(worker) = &self.worker {
-            worker
-                .shared
-                .muted
-                .store(muted, std::sync::atomic::Ordering::Relaxed);
-            let _ =
-                worker
-                    .updates
-                    .try_send(Update::Cue(if muted { Cue::Mute } else { Cue::Unmute }));
-        }
-        Ok(())
+    /// Whether self-mute currently holds the local microphone gate closed.
+    pub fn self_muted(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| worker.shared.muted.load(Ordering::Relaxed))
     }
 
-    /// Update self deafen locally and on the server. Deafening also gates send.
-    pub async fn set_self_deaf(&self, deaf: bool) -> Result<(), Error> {
-        let muted = self.worker.as_ref().is_some_and(|worker| {
-            worker
-                .shared
-                .muted
-                .load(std::sync::atomic::Ordering::Relaxed)
-        });
-        self.set_voice_state(muted, deaf).await?;
-        if let Some(worker) = &self.worker {
-            worker
-                .shared
-                .deaf
-                .store(deaf, std::sync::atomic::Ordering::Relaxed);
+    /// Whether self-deafen currently silences playback and holds the gate closed.
+    pub fn self_deafened(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| worker.shared.deaf.load(Ordering::Relaxed))
+    }
+
+    /// Mute or unmute the microphone and tell the server.
+    ///
+    /// Muting fails closed: the local gate closes before this returns the
+    /// future, whatever the connection is doing, and stays closed if the
+    /// server cannot be told. The server is corrected after a reconnect.
+    /// Unmuting opens the gate only after the server accepted it. A later
+    /// mute or deafen request supersedes a pending one.
+    pub fn set_self_mute(
+        &self,
+        muted: bool,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+        self.request_self_state(Some(muted), None)
+    }
+
+    /// Deafen or undeafen and tell the server. Deafening also gates send.
+    ///
+    /// Like [`Self::set_self_mute`], deafening applies locally first and
+    /// undeafening waits for the server.
+    pub fn set_self_deaf(
+        &self,
+        deaf: bool,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+        self.request_self_state(None, Some(deaf))
+    }
+
+    fn request_self_state(
+        &self,
+        muted: Option<bool>,
+        deaf: Option<bool>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+        let shared = self
+            .worker
+            .as_ref()
+            .map(|worker| Arc::clone(&worker.shared));
+        let updates = self.worker.as_ref().map(|worker| worker.updates.clone());
+        let requested = Arc::clone(&self.requested);
+        // Closing, recording the request and queueing it happen together, so
+        // concurrent requests reach the server in the order they were made.
+        let (revision, sent) = {
+            let mut current = requested.lock();
+            current.muted = muted.unwrap_or(current.muted);
+            current.deaf = deaf.unwrap_or(current.deaf);
+            current.revision = current.revision.wrapping_add(1);
+            if let (Some(shared), Some(updates)) = (&shared, &updates) {
+                close_gate(shared, updates, muted == Some(true), deaf == Some(true));
+            }
+            (current.revision, self.send_voice_state(*current))
+        };
+        async move {
+            let result = match sent {
+                Ok(response) => match response.await {
+                    Ok(reply) => reply.map(|_| ()),
+                    Err(_) => Err(Error::Disconnected),
+                },
+                Err(error) => Err(error),
+            };
+            let mut current = requested.lock();
+            if current.revision != revision {
+                return result;
+            }
+            if let (Some(shared), Some(updates)) = (&shared, &updates) {
+                if result.is_ok() {
+                    open_gate(shared, updates, *current);
+                } else {
+                    // Only the effective state may be pushed on reconnect.
+                    current.muted = shared.muted.load(Ordering::Relaxed);
+                    current.deaf = shared.deaf.load(Ordering::Relaxed);
+                }
+            }
+            result
         }
-        self.play_cue(if deaf { Cue::Deafen } else { Cue::Unmute });
-        Ok(())
+    }
+
+    fn send_voice_state(&self, state: SelfState) -> Result<AckReceiver, Error> {
+        send_command(
+            &self.store,
+            &self.commands,
+            v1::client_envelope::Msg::SetVoiceState(state.message()),
+        )
     }
 
     /// Persist and apply a remote user's 0–200% volume.
@@ -578,33 +662,10 @@ impl VoiceSession {
         result.map(|_| ())
     }
 
-    async fn set_voice_state(&self, muted: bool, deaf: bool) -> Result<(), Error> {
-        self.command(v1::client_envelope::Msg::SetVoiceState(v1::SetVoiceState {
-            self_mute: muted,
-            self_deaf: deaf,
-        }))
-        .await
-        .map(|_| ())
-    }
-
     async fn command(&self, message: v1::client_envelope::Msg) -> Result<v1::Ack, Error> {
-        let generation = {
-            let state = self.store.read();
-            if state.connection != ConnectionState::Connected {
-                return Err(Error::Disconnected);
-            }
-            state.generation
-        };
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .try_send(Command {
-                message,
-                generation,
-                replayable: false,
-                reply,
-            })
-            .map_err(|_| Error::Disconnected)?;
-        response.await.map_err(|_| Error::Disconnected)?
+        send_command(&self.store, &self.commands, message)?
+            .await
+            .map_err(|_| Error::Disconnected)?
     }
 
     async fn shutdown(&mut self) {
@@ -624,6 +685,85 @@ impl Drop for VoiceSession {
         }
         self.worker.take();
     }
+}
+
+/// Queue a voice command for the current connection without awaiting it.
+fn send_command(
+    store: &StateStore,
+    commands: &tokio::sync::mpsc::Sender<Command>,
+    message: v1::client_envelope::Msg,
+) -> Result<AckReceiver, Error> {
+    let generation = {
+        let state = store.read();
+        if state.connection != ConnectionState::Connected {
+            return Err(Error::Disconnected);
+        }
+        state.generation
+    };
+    let (reply, response) = oneshot::channel();
+    commands
+        .try_send(Command {
+            message,
+            generation,
+            replayable: false,
+            reply,
+        })
+        .map_err(|_| Error::Disconnected)?;
+    Ok(response)
+}
+
+/// Apply the closing half of a request immediately.
+fn close_gate(
+    shared: &Shared,
+    updates: &std::sync::mpsc::SyncSender<Update>,
+    mute: bool,
+    deaf: bool,
+) {
+    if mute && !shared.muted.swap(true, Ordering::Relaxed) {
+        let _ = updates.try_send(Update::Cue(Cue::Mute));
+    }
+    if deaf && !shared.deaf.swap(true, Ordering::Relaxed) {
+        let _ = updates.try_send(Update::Cue(Cue::Deafen));
+    }
+}
+
+/// Make the gate match a request the server accepted.
+fn open_gate(shared: &Shared, updates: &std::sync::mpsc::SyncSender<Update>, state: SelfState) {
+    let unmuted = shared.muted.swap(state.muted, Ordering::Relaxed) && !state.muted;
+    let undeafened = shared.deaf.swap(state.deaf, Ordering::Relaxed) && !state.deaf;
+    if unmuted || undeafened {
+        let _ = updates.try_send(Update::Cue(Cue::Unmute));
+    }
+}
+
+/// A mute made while the server was unreachable only took effect locally.
+/// After every reconnect, send the requested state so the server matches.
+fn reconcile_after_reconnect(client: &Client, requested: Arc<Mutex<SelfState>>) -> JoinHandle<()> {
+    let mut events = client.subscribe();
+    let store = client.store.clone();
+    let commands = client.commands.clone();
+    tokio::spawn(async move {
+        loop {
+            // A lagged receiver may have missed a reconnect; resending is harmless.
+            match events.recv().await {
+                Ok(ClientEvent::Connection(ConnectionState::Connected))
+                | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Ok(_) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+            let sent = {
+                let current = requested.lock();
+                send_command(
+                    &store,
+                    &commands,
+                    v1::client_envelope::Msg::SetVoiceState(current.message()),
+                )
+            };
+            if let Ok(response) = sent {
+                let _ = response.await;
+            }
+        }
+    })
 }
 
 fn channel_profile(store: &StateStore, channel: Id) -> Result<(VoiceProfile, u32), Error> {
@@ -845,6 +985,7 @@ fn public_stats(stats: &worker::WorkerStats, transport: TransportStats) -> Voice
     VoiceStats {
         speakers,
         encoder_bitrate: stats.graph.bitrate,
+        sent_packets: stats.graph.sent_packets,
         rtt: transport.rtt,
         underruns: stats.underruns,
         overruns: stats.overruns,

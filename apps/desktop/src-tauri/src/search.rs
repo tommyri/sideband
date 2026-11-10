@@ -56,12 +56,10 @@ pub async fn search_messages(
         has: query.has,
     };
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "Server is disconnected"))?;
     let session = client.search_session().await.map_err(api_error)?;
-    drop(clients);
     Ok(session
         .search_messages(&request)
         .await
