@@ -58,6 +58,26 @@ fn bind_endpoint(
     )?)
 }
 
+// Outbound datagrams wait here for the congestion window. Quinn's
+// `send_datagram` drops the oldest queued datagram only once this buffer is
+// full (quinn-proto 0.11.19 `DatagramState::make_space_for`), so the size is
+// the worst-case queueing delay on a congested link. Each queued frame costs
+// its payload, a header of at most 10 bytes, and quinn's 32-byte entry. One
+// sender's 3 KiB holds about 240 ms at the voice profile's 80 kb/s, 160 ms of
+// music at 128 kb/s and 100 ms at its 192 kb/s maximum, 250 ms low-latency.
+const CLIENT_DATAGRAM_SEND_BUFFER: usize = 3 * 1024;
+// The server multiplexes every speaker in a channel onto each member's
+// connection: about 200 ms for six default-profile speakers.
+const SERVER_DATAGRAM_SEND_BUFFER: usize = 16 * 1024;
+// Inbound bursts are drained by the media pump; keep that side large.
+const DATAGRAM_RECEIVE_BUFFER: usize = 4 * 1024 * 1024;
+// Quinn rejects a datagram larger than the send buffer minus one entry.
+const _: () = assert!(
+    CLIENT_DATAGRAM_SEND_BUFFER
+        > media::MAX_AUDIO_PAYLOAD + 10 + 2 * std::mem::size_of::<bytes::Bytes>()
+);
+const _: () = assert!(SERVER_DATAGRAM_SEND_BUFFER > CLIENT_DATAGRAM_SEND_BUFFER);
+
 fn transport_config(client: bool) -> quinn::TransportConfig {
     let mut config = quinn::TransportConfig::default();
     let mut discovery = quinn::MtuDiscoveryConfig::default();
@@ -65,8 +85,12 @@ fn transport_config(client: bool) -> quinn::TransportConfig {
     config.mtu_discovery_config(Some(discovery));
     config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
     config.keep_alive_interval(None);
-    config.datagram_receive_buffer_size(Some(4 * 1024 * 1024));
-    config.datagram_send_buffer_size(4 * 1024 * 1024);
+    config.datagram_receive_buffer_size(Some(DATAGRAM_RECEIVE_BUFFER));
+    config.datagram_send_buffer_size(if client {
+        CLIENT_DATAGRAM_SEND_BUFFER
+    } else {
+        SERVER_DATAGRAM_SEND_BUFFER
+    });
     // Only clients initiate the single control stream. Video uses uni streams.
     config.max_concurrent_bidi_streams(u32::from(!client).into());
     config.max_concurrent_uni_streams(64_u32.into());
@@ -98,6 +122,29 @@ mod tests {
             state.max_gso_segments() > 1,
             "macOS socket batching must stay enabled"
         );
+    }
+
+    /// Milliseconds of one sender's audio the client send buffer holds.
+    fn buffered_ms(profile: ss_core::VoiceProfile, bitrate_bps: u32) -> u128 {
+        let frame = profile.encoder_params().frame_size;
+        let payload = usize::try_from(u128::from(bitrate_bps) * frame.as_millis() / 8000).unwrap();
+        let per_frame = payload + 10 + 32;
+        (super::CLIENT_DATAGRAM_SEND_BUFFER / per_frame) as u128 * frame.as_millis()
+    }
+
+    #[test]
+    fn client_send_buffer_holds_a_quarter_second_of_audio_at_most() {
+        for profile in [
+            ss_core::VoiceProfile::Voice,
+            ss_core::VoiceProfile::Music,
+            ss_core::VoiceProfile::LowLatency,
+        ] {
+            let params = profile.encoder_params();
+            let default = buffered_ms(profile, params.default_bitrate_bps);
+            let max = buffered_ms(profile, params.max_bitrate_bps);
+            assert!((100..=250).contains(&default), "{profile:?}: {default} ms");
+            assert!(max >= 100, "{profile:?} at max bitrate: {max} ms");
+        }
     }
 
     #[test]

@@ -287,10 +287,13 @@ async fn over_bitrate_sender_is_disconnected_without_stopping_other_audio() {
     drain(&mut ada_stream).await;
 
     let flood = packet_with_payload(ada_track, 1_000);
+    // Paced so the flood leaves ada: a burst larger than the client's small
+    // datagram send buffer would be cut down to its newest entries locally.
     for _ in 0..24 {
         if ada_conn.send_datagram(flood.clone()).is_err() {
             break;
         }
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     let notice = timeout(DEADLINE, async {
         loop {
@@ -459,6 +462,108 @@ async fn disconnect_and_channel_delete_clear_membership_quickly() {
     assert_eq!(gone.len(), 1);
     assert!(gone[0].channel_id.is_none());
     ada_conn.close(0, b"bye");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chat_message_awaiting_its_ack_does_not_pause_the_callers_voice() {
+    use ss_client_core::{AudioConfig, AudioSource, TalkGate, VoiceSession};
+    let world = World::new().await;
+    let client = ss_client_core::Client::connect(
+        ss_client_core::ServerAddr::new("127.0.0.1", world.port).unwrap(),
+        ss_client_core::Credentials::Register(v1::Register {
+            invite_code: world.code.clone(),
+            username: "ada".into(),
+            password: PASSWORD.into(),
+        }),
+        world.pins.clone(),
+    )
+    .await
+    .unwrap();
+    let (ada_id, voice, text) = {
+        let state = client.state().snapshot();
+        let channel = |kind: v1::ChannelKind, name: &str| {
+            *state
+                .channels
+                .iter()
+                .find(|(_, c)| c.kind == i32::from(kind) && c.name == name)
+                .unwrap()
+                .0
+        };
+        (
+            id_from_bytes(&state.own_user.as_ref().unwrap().id).unwrap(),
+            channel(v1::ChannelKind::Voice, "General"),
+            channel(v1::ChannelKind::Text, "general"),
+        )
+    };
+    let (bea_conn, mut bea_stream) = world.connect().await;
+    hello(&mut bea_stream, invite(&world, ada_id, "bea").await).await;
+    command(&mut bea_stream, 2, join(&id_to_bytes(voice), false, false)).await;
+    let _session = VoiceSession::start(
+        &client,
+        voice,
+        AudioConfig {
+            source: AudioSource::Test,
+            gate: TalkGate::OpenMic,
+            ..AudioConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    timeout(DEADLINE, bea_conn.read_datagram())
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Arrival time minus media time: constant while audio flows on time.
+    let quic = bea_conn.quic().clone();
+    let listen = tokio::spawn(async move {
+        let mut arrivals = Vec::new();
+        let end = tokio::time::Instant::now() + Duration::from_millis(1500);
+        while let Ok(Ok(packet)) = tokio::time::timeout_at(end, quic.read_datagram()).await {
+            let (header, _) = DatagramHeader::parse(&packet).unwrap();
+            arrivals.push((std::time::Instant::now(), header.timestamp));
+        }
+        let Some(&(first, start)) = arrivals.first() else {
+            return (0, f64::INFINITY);
+        };
+        let offsets: Vec<f64> = arrivals
+            .iter()
+            .map(|(at, timestamp)| {
+                at.duration_since(first).as_secs_f64()
+                    - f64::from(timestamp.wrapping_sub(start)) / 48_000.0
+            })
+            .collect();
+        let spread = offsets.iter().copied().fold(f64::MIN, f64::max)
+            - offsets.iter().copied().fold(f64::MAX, f64::min);
+        (offsets.len(), spread)
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The server's SendMessage handler waits for the write connection.
+    let writer = world.pool.write().await;
+    let release = async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(writer);
+    };
+    let started = std::time::Instant::now();
+    let (sent, ()) = tokio::join!(
+        client.send_message(v1::SendMessage {
+            channel_id: id_to_bytes(text),
+            content: "while talking".into(),
+            ..Default::default()
+        }),
+        release
+    );
+    let _ = sent.unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(450),
+        "Ack was not held"
+    );
+    let (count, spread) = listen.await.unwrap();
+    assert!(count >= 50, "only {count} datagrams");
+    assert!(
+        spread < 0.1,
+        "voice was held back by {spread:.3} s while the Ack was pending"
+    );
 }
 
 async fn register_owner(world: &World, username: &str) -> (Id, v1::Hello) {

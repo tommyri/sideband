@@ -97,6 +97,28 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   cache per channel, read states), `VoiceSession` (owns the audio graph while
   joined to a voice channel), and an outbound `broadcast` of `ClientEvent`s
   the UI subscribes to.
+- Each live QUIC connection has two tasks. The **media pump** owns datagram
+  send and receive and the transport stats. It stamps each inbound datagram
+  as it is read and is never blocked by the control stream. It starts once
+  the connection may carry voice (at connect, and on resume right after the
+  voice seat is restored) and ends with the connection. The **connection
+  loop** selects over events, the heartbeat, one in-flight command and the
+  message resync. Commands still run one at a time and in order, but the
+  pending Ack is just another branch, so events and the heartbeat keep
+  running while it waits.
+- The heartbeat compares `Instant` with the wall clock once a second. On
+  macOS `Instant` stops while the machine sleeps, so a wall-clock jump of more
+  than 3 s reconnects with the resume token.
+- On resume the client installs the snapshot, rejoins voice and replays
+  queued sends, then reports `Connected`. Messages missed while offline are
+  fetched over HTTPS (one pinned client for the whole run) on a separate task.
+  The connection loop merges each page between live events, and a live edit
+  or delete wins over the older copy in a page.
+- Datagram send buffers are small because quinn drops the oldest queued
+  datagram only when the buffer is full: 3 KiB on the client (about
+  100–250 ms of one sender's audio, depending on profile) and 16 KiB on the
+  server, which carries every speaker to each member. Receive buffers stay
+  at 4 MiB.
 - With its optional `screen-share` feature, `ss-client-core` owns a pull-driven
   `ScreenShareSession`: `ss-video` captures/scales/encodes and the session maps
   each IDR-led GOP onto the T-070 QUIC stream transport.
