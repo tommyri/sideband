@@ -132,7 +132,7 @@ enum UserAction {
         #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
-    /// Replace a user's password hash.
+    /// Replace a user's password hash and end every session of the account.
     SetPassword {
         /// Login name. Matching is case-insensitive.
         #[arg(long)]
@@ -161,6 +161,40 @@ enum UserAction {
         /// Login name. Matching is case-insensitive.
         #[arg(long)]
         username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// List or end an account's login sessions.
+    Sessions {
+        #[command(subcommand)]
+        action: SessionsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionsAction {
+    /// Print the account's live sessions, oldest first. Tokens are never shown.
+    List {
+        /// Login name. Matching is case-insensitive.
+        #[arg(long)]
+        username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// End one session or all of them. The token stops working at once; a
+    /// running server closes its connections within 30 seconds.
+    Revoke {
+        /// Login name. Matching is case-insensitive.
+        #[arg(long)]
+        username: String,
+        /// Session id from `user sessions list`.
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        id: Option<String>,
+        /// End every session of the account.
+        #[arg(long)]
+        all: bool,
         /// Directory containing `socialspeak.db`.
         #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
@@ -288,6 +322,9 @@ async fn start() -> anyhow::Result<()> {
                 Some(Command::User {
                     action: UserAction::Unban { username, data_dir },
                 }) => unban_user(data_dir, &username).await?,
+                Some(Command::User {
+                    action: UserAction::Sessions { action },
+                }) => user_sessions(action).await?,
                 Some(Command::Role {
                     action: RoleAction::GrantAdmin { username, data_dir },
                 }) => grant_admin(data_dir, &username).await?,
@@ -361,9 +398,92 @@ async fn grant_admin(data_dir: PathBuf, username: &str) -> anyhow::Result<()> {
 
 async fn reset_password(data_dir: PathBuf, username: &str, password: &str) -> anyhow::Result<()> {
     let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
-    ss_server::auth::set_password(&pool, username, password).await?;
+    let ended = ss_server::auth::set_password(&pool, username, password).await?;
     println!("password updated");
+    println!("{ended} session(s) ended");
     Ok(())
+}
+
+async fn user_sessions(action: SessionsAction) -> anyhow::Result<()> {
+    match action {
+        SessionsAction::List { username, data_dir } => list_sessions(data_dir, &username).await,
+        SessionsAction::Revoke {
+            username,
+            id,
+            all: _,
+            data_dir,
+        } => revoke_sessions(data_dir, &username, id.as_deref()).await,
+    }
+}
+
+async fn list_sessions(data_dir: PathBuf, username: &str) -> anyhow::Result<()> {
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    let sessions = match ss_server::auth::list_sessions(&pool, username).await {
+        Err(ss_server::auth::Error::NotFound) => anyhow::bail!("no account named {username}"),
+        other => other?,
+    };
+    for session in sessions {
+        let expires = session.expires_at.map_or_else(|| "never".to_owned(), utc);
+        println!(
+            "{}  {}  created {}  last seen {}  expires {}",
+            session.id,
+            session.device_name,
+            utc(session.created_at),
+            utc(session.last_seen_at),
+            expires,
+        );
+    }
+    Ok(())
+}
+
+async fn revoke_sessions(
+    data_dir: PathBuf,
+    username: &str,
+    id: Option<&str>,
+) -> anyhow::Result<()> {
+    let session = id
+        .map(|id| {
+            id.parse::<ss_core::Id>()
+                .map_err(|_| anyhow::anyhow!("--id must be a session id from `user sessions list`"))
+        })
+        .transpose()?;
+    let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+    match ss_server::auth::revoke_sessions(&pool, username, session).await {
+        Ok(ended) => {
+            println!("{ended} session(s) ended");
+            Ok(())
+        }
+        Err(ss_server::auth::Error::NotFound) => {
+            anyhow::bail!("no such account, or no such session for it")
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// `YYYY-MM-DD HH:MM UTC` for a Unix-millisecond timestamp.
+fn utc(at: ss_core::Timestamp) -> String {
+    let seconds = at.as_millis().div_euclid(1000);
+    let (days, of_day) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    // Howard Hinnant's days-to-civil, proleptic Gregorian.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        of_day / 3600,
+        of_day % 3600 / 60
+    )
 }
 
 async fn serve(data_dir: PathBuf, bind: SocketAddr, check_migrations: bool) -> anyhow::Result<()> {

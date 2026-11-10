@@ -107,3 +107,50 @@ message UpdateProfile {
   // 16-byte attachment id. Absent leaves the avatar unchanged.
   optional bytes avatar_attachment_id = 2;
 }
+
+// End the session that authenticated this connection. The token stops
+// working for QUIC and HTTPS at once. The `Ack` is the last frame on this
+// connection; the server then closes it with code 6 (signed out). Other
+// connections that used the same token get `SessionRevoked` and are closed.
+message Logout {}
+
+// List the caller's own sessions. Answered with `Ack.sessions`.
+message ListSessions {}
+
+// End one of the caller's own sessions. Revoking the current one is a
+// `Logout`. Another account's session id is `NOT_FOUND`.
+message RevokeSession {
+  // 16-byte session id from `ListSessions`.
+  bytes session_id = 1;
+}
+
+// One login session. Tokens and token hashes are never sent.
+message SessionInfo {
+  // 16-byte session id.
+  bytes id = 1;
+  // `Hello.client_name` at login, at most 64 characters.
+  string device_name = 2;
+  // Login time, Unix milliseconds.
+  int64 created_at = 3;
+  // Last `Hello` or HTTPS request with this token, Unix milliseconds.
+  int64 last_seen_at = 4;
+  // When the token stops working unless it is used again first. Never later
+  // than `created_at` plus the absolute lifetime.
+  int64 expires_at = 5;
+  // The session this connection authenticated with.
+  bool current = 6;
+}
+
+// `ListSessions` result, oldest first.
+message SessionList {
+  // The caller's live sessions.
+  repeated SessionInfo sessions = 1;
+}
+
+// The server ended this connection's session: a logout or revoke elsewhere,
+// a password reset, or the operator. Sent, then the connection is closed with
+// code 6. The token no longer works; do not reconnect with it.
+message SessionRevoked {
+  // Human-readable reason. Not a stable token.
+  string reason = 1;
+}

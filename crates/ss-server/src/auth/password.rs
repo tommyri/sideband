@@ -16,6 +16,11 @@ const MEMORY_KIB: u32 = 19_456;
 const TIME_COST: u32 = 2;
 const PARALLELISM: u32 = 1;
 
+/// A well-formed PHC string with the production parameters that no password
+/// matches. Login verifies against it when the username is unknown, so both
+/// failures cost one argon2 run.
+pub(crate) const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2lkZWJhbmQtZHVtbXkhIQ$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 /// Hashes `password` off the runtime.
 pub(crate) async fn hash(password: &str) -> Result<String, Error> {
     let password = Zeroizing::new(password.to_owned());
@@ -118,7 +123,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn arm() -> (
+pub(super) fn arm() -> (
     tokio::sync::oneshot::Receiver<std::thread::ThreadId>,
     std::sync::mpsc::Sender<()>,
 ) {
@@ -138,6 +143,19 @@ mod tests {
     use std::{thread::ThreadId, time::Duration};
 
     use super::{arm, hash, verify};
+
+    #[tokio::test]
+    async fn the_dummy_hash_uses_production_parameters_and_matches_nothing() {
+        let params = format!(
+            "m={},t={},p={}",
+            super::MEMORY_KIB,
+            super::TIME_COST,
+            super::PARALLELISM
+        );
+        assert!(super::DUMMY_HASH.contains(&params), "{}", super::DUMMY_HASH);
+        assert!(!verify("password-ok", super::DUMMY_HASH).await.unwrap());
+        assert!(!verify("", super::DUMMY_HASH).await.unwrap());
+    }
 
     #[tokio::test]
     async fn verifies_phc_hashes_from_argon2_0_5() {

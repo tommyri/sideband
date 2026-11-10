@@ -12,7 +12,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Asset | Where it lives | Why it matters |
 |---|---|---|
 | Password hashes | `users.password_hash` (argon2id PHC strings) | Offline cracking leads to reuse on other services |
-| Session tokens | Client only. Server stores SHA-256 hex in `sessions.token_hash` | A token is a full login for 90 days |
+| Session tokens | Client only. Server stores SHA-256 hex in `sessions.token_hash` | A token is a full login, on QUIC and HTTPS, until it is unused for 90 days or 180 days after login, whichever is first, or until the session is ended (section 4) |
 | Owner bootstrap code | `server_settings.owner_invite` until the first registration | Grants `Admin` |
 | Invite codes | Client only. Server stores SHA-256 hex in `invites.code_hash` | Registration on an invite-only server |
 | Webhook tokens | Client only. SHA-256 hex in `webhooks.token_hash` | Posting into a channel as a bot |
@@ -88,15 +88,40 @@ It does not protect against:
   iterations, 1 lane, 16-byte random salt, PHC string output
   (`auth::password`). This is the OWASP minimum recommendation. Hashing runs
   on `spawn_blocking`. Passwords are 8 to 128 bytes; a longer login is
-  rejected before hashing.
+  rejected before hashing. A login for an unknown username is verified
+  against a fixed dummy argon2id hash with the same parameters, so it takes
+  as long as a wrong password (tested).
 - **Usernames**: 3 to 32 of `a-z 0-9 _ .`. ASCII only, so NFC is the identity
   on every accepted name. A new name is refused when its confusable skeleton
   (`rn`→`m`, `vv`→`w`, `cl`→`d`, `0`→`o`, `1`/`i`→`l`, `_`→`.`) matches an
   existing account (`auth::username_skeleton`).
 - **Session tokens**: 32 bytes from the OS RNG, base64url. Only the SHA-256
-  hex digest is stored. Expiry slides to 90 days on each use. A presented
-  token is looked up on a read connection first so a flood of bogus bearer
-  tokens never queues on the SQLite writer.
+  hex digest is stored. Two lifetimes (T-093): a token unused for 90 days
+  expires, and every token expires 180 days after the login that issued it
+  however often it is used. Each use moves expiry to the earlier of now +
+  90 days and login + 180 days, so a token presented every 89 days still
+  dies. `Welcome.resume_token` is this session token, and it is also the
+  HTTPS bearer. There is no separate short-lived resume token; the only
+  short-lived part of a resume is the 60-second voice-seat lease keyed by
+  the token (T-060). A presented token is looked up on a read connection
+  first so a flood of bogus bearer tokens never queues on the SQLite writer.
+- **Ending sessions** (T-093): a token stops working when its `sessions` row
+  is deleted. That happens on `Logout` (this session), `RevokeSession` (one
+  of the caller's own sessions), `ss-server user sessions revoke --username U
+  --id ID` or `--all` (the operator), and `ss-server user set-password`
+  (every session of the account, in the same transaction as the new hash).
+  Every `Hello` and every HTTPS request reads the row, so the next request
+  fails at once. Live QUIC connections that used the token get
+  `SessionRevoked` and close code 6: at once when the server itself ran the
+  revoke, and within 30 seconds (the sweep interval) when the CLI changed the
+  database from another process. Expired rows are deleted at startup and then
+  hourly. A stolen token can therefore be killed without banning the victim
+  or editing the database.
+- **Kicks and bans**: a kick is only a disconnect. The session stays valid
+  and the member can reconnect at once (tested). A ban keeps the rows but
+  refuses every token of the account, on `Hello` and HTTPS, while it lasts;
+  lifting it makes them work again. After a theft, reset the password or
+  revoke the sessions instead.
 - **Owner code**: 16 random bytes, stored in `server_settings` until the
   first registration, deleted when any user exists. Printed to stdout only;
   it is not written to the log files.

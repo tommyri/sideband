@@ -470,7 +470,7 @@ async fn cli_prints_an_owner_invite_and_resets_the_password() {
         "--password",
         "replacement-ok",
     ]);
-    assert_eq!(updated.trim(), "password updated");
+    assert_eq!(updated.lines().next(), Some("password updated"));
     let old = auth
         .hello(&login("ada", PASSWORD), peer(2))
         .await

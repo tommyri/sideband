@@ -49,6 +49,8 @@ pub struct AuthedContext {
     pub user_id: Id,
     /// This QUIC connection, distinct from the account.
     pub conn_id: Id,
+    /// The login session whose token authenticated this connection.
+    pub session_id: Id,
     /// OR of the user's roles at Hello. Command checks use [`crate::perms`],
     /// so a role change applies on the next command without reconnecting.
     pub perms_cache: Permissions,
@@ -58,6 +60,7 @@ pub struct AuthedContext {
 pub struct Server {
     pool: Arc<crate::db::Pool>,
     auth: Auth,
+    sessions: Arc<auth::Sessions>,
     perms: Arc<PermissionService>,
     roles: Roles,
     dms: DirectMessages,
@@ -109,6 +112,7 @@ impl Server {
         Ok(Self {
             pool: Arc::clone(&pool),
             auth: Auth::new(Arc::clone(&pool)),
+            sessions: Arc::new(auth::Sessions::new(Arc::clone(&pool))),
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
@@ -214,6 +218,11 @@ impl Server {
         &self.registry
     }
 
+    /// Logout, revoke, and the session sweep and prune timer.
+    pub fn sessions(&self) -> &auth::Sessions {
+        &self.sessions
+    }
+
     /// Notifies every connection, closes them, and stops [`Self::run`].
     pub fn shutdown(&self) {
         self.registry.shutdown();
@@ -227,6 +236,7 @@ impl Server {
         if *stop.borrow() {
             return;
         }
+        let _sweeper = AbortOnDrop(tokio::spawn(Arc::clone(&self.sessions).run()));
         loop {
             tokio::select! {
                 biased;
@@ -312,6 +322,9 @@ impl Server {
         let (kicks, kick_rx) = mpsc::channel(1);
         let quic = connection.quic().clone();
         conn_id = self.attach_voice(conn_id, &authed, &quic);
+        let _attached =
+            self.sessions
+                .attach(conn_id, authed.session_id, kicks.clone(), quic.clone());
         let event = self.registry.register(Registration {
             conn_id,
             user_id: authed.user.id,
@@ -343,6 +356,7 @@ impl Server {
         let context = AuthedContext {
             user_id: authed.user.id,
             conn_id,
+            session_id: authed.session_id,
             perms_cache: authed.permissions,
         };
         let result = match self
@@ -553,6 +567,7 @@ fn welcome_envelope(
                     "dms".into(),
                     "previews".into(),
                     "attachments".into(),
+                    "sessions".into(),
                 ],
             }),
             resume_token: authed.resume_token.clone(),
@@ -870,6 +885,10 @@ async fn replies(
             events: Vec::new(),
         };
     };
+    let caller = auth::sessions_caller(context.user_id, context.session_id, context.conn_id);
+    if let Some(result) = server.sessions.dispatch(caller, request_id, msg).await {
+        return session_answer(request_id, result);
+    }
     if let Some(result) = server
         .voice
         .dispatch(context.conn_id, context.user_id, msg)
@@ -958,6 +977,27 @@ fn voice_answer(request_id: u32, result: Result<voice::Outcome, crate::handlers:
                 events: Vec::new(),
             }
         }
+    }
+}
+
+/// `Ok(None)`: the `Ack` already went out as the connection's last frame.
+fn session_answer(
+    request_id: u32,
+    result: Result<Option<v1::ack::Result>, crate::handlers::Error>,
+) -> Answer {
+    let frames = match result {
+        Ok(None) => Vec::new(),
+        Ok(Some(ack)) => vec![v1::ServerEnvelope::ack(request_id, ack)],
+        Err(error) => vec![error_envelope(
+            request_id,
+            error.code(),
+            error.wire_message(),
+            error.retry_after(),
+        )],
+    };
+    Answer {
+        frames,
+        events: Vec::new(),
     }
 }
 
@@ -1083,6 +1123,14 @@ impl Drop for Unregister {
         if let Some(event) = self.registry.unregister(self.conn_id) {
             self.bus.publish(None, event);
         }
+    }
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

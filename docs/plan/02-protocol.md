@@ -19,6 +19,44 @@ port UDP 443 (configurable). HTTPS on TCP 443 for REST.
    30 s on both sides. On loss, client reconnects with `Hello{resume_token}`;
    server restores voice membership if the previous connection is gone.
 
+### 1.1 Session tokens
+
+`Welcome.resume_token` is the session token itself: 32 random bytes,
+base64url. It is the credential for `Hello.session_token` and
+`Hello.resume_token` (the server treats both the same) and the HTTPS bearer
+(section 6). There is no separate short-lived resume token. The short-lived
+part of a resume is the 60-second voice-seat lease the server keys by this
+token after a dropped connection (T-060).
+
+Lifetimes: a token unused for **90 days** expires (idle lifetime), and every
+token expires **180 days** after the login or registration that issued it,
+however often it is used (absolute lifetime). Each successful `Hello` or
+HTTPS request moves expiry to the earlier of now + 90 days and login + 180
+days. An expired token is `UNAUTHENTICATED`; the user logs in with their
+password again.
+
+A token stops working on both transports as soon as its session is ended:
+`Logout`, `RevokeSession`, a password reset, or the operator's
+`ss-server user sessions revoke`. Connections that used it receive
+`SessionRevoked` and are closed with code 6, at once for commands and within
+30 s for changes the CLI makes. A client must then stop reconnecting with that
+token and ask for the password. Expired sessions are deleted at startup and
+every hour. A kick (`Kicked`) only disconnects; the token keeps working.
+
+QUIC application close codes (`ss_server::registry` and
+`ss_server::auth::CLOSE_SIGNED_OUT`):
+
+| Code | Sent by | Meaning |
+|---|---|---|
+| 0 | either | normal close |
+| 1 | server | shutting down; `ServerNotice` first |
+| 2 | server | control consumer too slow |
+| 3 | server | kicked; `Kicked` first |
+| 4 | server | banned; `Banned` first |
+| 5 | server | media rate limit; `Error RATE_LIMITED` first |
+| 6 | server | signed out: the `Ack` of `Logout` (or of `RevokeSession` for the current session) is the last frame, or `SessionRevoked` came first. The token is dead |
+| 73 | client | reconnecting |
+
 ## 2. Control stream framing
 
 ```
@@ -87,13 +125,16 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `SubscribeTrack` / `UnsubscribeTrack` | `track_id` | Video (phase 5); audio is auto-subscribed |
 | `RequestKeyframe` | `track_id` | Video (phase 5) |
 | `SetPreferredQuality` | `track_id`, `max_height`, `max_fps` | Video (phase 5) |
+| `Logout` | — | Ends this connection's session (section 1.1). The `Ack` is the last frame; the server then closes with code 6 and closes the session's other connections with `SessionRevoked` |
+| `ListSessions` | — | The caller's own live sessions; `Ack.sessions` lists `SessionInfo{id, device_name, created_at, last_seen_at, expires_at, current}`. Never tokens or hashes |
+| `RevokeSession` | `session_id` | Ends one of the caller's own sessions and closes its connections. Another account's id is `NOT_FOUND`; the current session behaves as `Logout` |
 
 ### Server → Client
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot`, `conn_id` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id. `conn_id` names this connection (see below) |
-| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId }` | `Webhook.token` is only on `CreateWebhook` |
+| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token` (the session token, section 1.1), `Snapshot`, `conn_id` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id. `conn_id` names this connection (see below) |
+| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId, Sessions }` | `Webhook.token` is only on `CreateWebhook`; `Sessions` answers `ListSessions` |
 | `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
@@ -112,6 +153,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `RequestKeyframe` | `track_id` | Private relay to publisher, at most once per 500 ms per track |
 | `SubscriberHint` | `track_id`, `max_height`, `max_fps`, `viewer_count` | Private aggregate to publisher; server never transcodes |
 | `ServerNotice` | `text` | shutdown warnings etc. |
+| `SessionRevoked` | `reason` | This connection's session was ended elsewhere (logout, revoke, password reset, operator); sent, then closed with code 6. Do not reconnect with the token |
 
 `Welcome.conn_id` (bytes, tag 5) is the receiving connection's 16-byte id: the
 `conn_id` on its own `VoiceState` and tracks. A user may be signed in on several
@@ -274,7 +316,9 @@ publisher, not promises that the server filters or re-encodes frames.
 History JSON uses camelCase fields, base64 bytes, decimal strings for 64-bit
 integers, and named protocol enums. Pages contain at most 100 messages (the
 client requests 50). The client sends the Welcome token as the HTTPS bearer
-and verifies the same leaf certificate pin as QUIC. No redirects are followed.
+and verifies the same leaf certificate pin as QUIC. It is the same session
+token as on QUIC, with the same lifetimes (section 1.1); ending the session
+makes the next request `401`. No redirects are followed.
 The public listener terminates TLS itself with the same hot-reloaded leaf
 certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
 the public port is refused; only the loopback health/metrics listener remains
@@ -330,6 +374,13 @@ Servers advertise `role-management-v2` in Welcome server features for `MoveRole`
 and explicit color clearing. Clients disable those additions on older servers.
 Role moves and deletion compaction emit `RoleUpdated` for every changed position.
 Override reads use the session bearer and the approved HTTPS certificate pin.
+
+### Session commands
+
+Servers advertise `sessions` in Welcome server features for `Logout`,
+`ListSessions`, `RevokeSession`, `SessionRevoked` and close code 6. An older
+server answers those commands `INVALID` ("unsupported command"); a client
+that is signing out then only forgets the token locally.
 
 ### Server settings
 
