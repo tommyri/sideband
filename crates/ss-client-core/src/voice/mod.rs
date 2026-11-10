@@ -1,6 +1,7 @@
 //! Voice-session orchestration for headless and desktop clients.
 
 mod graph;
+mod host;
 mod worker;
 
 use std::{
@@ -251,7 +252,22 @@ pub enum VoiceDeviceState {
     },
     /// A stream could not be reopened.
     Unavailable(String),
+    /// Where the capture and playback streams are. Sent when the call's
+    /// devices open and whenever either changes: a missing device is
+    /// [`DeviceRoute::Missing`] while it is retried, a missing selected
+    /// device runs on the system default as [`DeviceRoute::Fallback`], and
+    /// both are [`DeviceRoute::Wanted`] once recovered. With Apple's
+    /// VoiceProcessingIO both carry the state of its one unit.
+    Routes {
+        /// Microphone.
+        capture: DeviceRoute,
+        /// Speakers or headphones.
+        playback: DeviceRoute,
+    },
 }
+
+/// Where one direction's stream is; see [`VoiceDeviceState::Routes`].
+pub use ss_audio::device::Route as DeviceRoute;
 
 /// Owns one joined channel's device, codec, network, and stats workers.
 pub struct VoiceSession {

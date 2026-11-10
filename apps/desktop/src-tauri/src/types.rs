@@ -180,6 +180,24 @@ pub enum VoiceDevicePayload {
     Unavailable {
         message: String,
     },
+    /// Where the call's microphone and output streams are. Sent when the
+    /// call's devices open and on every change.
+    Routes {
+        capture: DeviceRoutePayload,
+        playback: DeviceRoutePayload,
+    },
+}
+
+/// `wanted`: on the chosen device (or the system default when none is
+/// chosen). `fallback`: the chosen device is gone and the system default
+/// stands in. `missing`: no device; reconnecting.
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub enum DeviceRoutePayload {
+    Wanted,
+    Fallback,
+    Missing,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

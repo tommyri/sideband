@@ -11,8 +11,9 @@
 //!
 //! Both streams follow the host default. A lost device, or a new default
 //! (AirPods connecting, for example), drops that stream and opens it again
-//! without restarting. Each reopen is printed. Use headphones: with built-in
-//! speakers and microphone this loop can feed back.
+//! without restarting, with the same retry policy as a voice call
+//! ([`ss_audio::device::Recovery`]). Each reopen is printed. Use headphones:
+//! with built-in speakers and microphone this loop can feed back.
 
 use std::{
     env,
@@ -23,26 +24,33 @@ use std::{
 
 use rtrb::{Consumer, Producer};
 use ss_audio::device::{
-    CaptureStream, DeviceEvent, DeviceManager, Direction, Error, GraphConfig, PlaybackStream,
+    CaptureStream, DeviceEvent, DeviceId, DeviceManager, Direction, Error, GraphConfig,
+    PlaybackStream, Recovery,
 };
-
-/// Wait this long before trying again after a failed reopen.
-const RETRY: Duration = Duration::from_millis(500);
 
 struct Side<S, R> {
     open: Option<(S, R)>,
-    reopen: bool,
-    next_try: Instant,
+    recovery: Recovery,
     reopens: u32,
 }
 
-impl<S, R> Side<S, R> {
-    fn new(open: (S, R)) -> Self {
+impl<S: Opened, R> Side<S, R> {
+    fn new(direction: Direction, open: (S, R)) -> Self {
+        let now = Instant::now();
+        let mut recovery = Recovery::new(direction, None, now);
+        recovery.opened(open.0.device(), now);
         Self {
             open: Some(open),
-            reopen: false,
-            next_try: Instant::now(),
+            recovery,
             reopens: 0,
+        }
+    }
+
+    /// The host error callback flagged the stream before the poll did.
+    fn check_lost(&mut self) {
+        if self.open.as_ref().is_some_and(|(stream, _)| stream.lost()) {
+            self.open = None;
+            self.recovery.closed(Instant::now());
         }
     }
 }
@@ -55,14 +63,14 @@ fn main() -> ExitCode {
     let manager = DeviceManager::new();
     let config = GraphConfig::MONO;
     let mut capture = match manager.open_capture(None, config) {
-        Ok(open) => Side::new(open),
+        Ok(open) => Side::new(Direction::Capture, open),
         Err(error) => {
             eprintln!("capture failed: {error}");
             return ExitCode::FAILURE;
         }
     };
     let mut playback = match manager.open_playback(None, config) {
-        Ok(open) => Side::new(open),
+        Ok(open) => Side::new(Direction::Playback, open),
         Err(error) => {
             eprintln!("playback failed: {error}");
             return ExitCode::FAILURE;
@@ -84,20 +92,8 @@ fn main() -> ExitCode {
         for event in manager.poll() {
             mark_reopens(&event, &mut capture, &mut playback);
         }
-        if capture
-            .open
-            .as_ref()
-            .is_some_and(|(stream, _)| stream.is_lost())
-        {
-            capture.reopen = true;
-        }
-        if playback
-            .open
-            .as_ref()
-            .is_some_and(|(stream, _)| stream.is_lost())
-        {
-            playback.reopen = true;
-        }
+        capture.check_lost();
+        playback.check_lost();
         if let Err(error) = reopen(&mut capture, "capture", |id| {
             manager.open_capture(id, config)
         }) {
@@ -137,73 +133,79 @@ fn mark_reopens(
              Privacy & Security > Microphone"
         );
     }
-    let capture_id = capture.open.as_ref().map(|(stream, _)| stream.device_id());
-    if capture_id.is_some_and(|id| event.requires_reopen(Direction::Capture, id, true)) {
-        capture.reopen = true;
+    let now = Instant::now();
+    if capture.recovery.observe(event, now) {
+        capture.open = None;
     }
-    let playback_id = playback.open.as_ref().map(|(stream, _)| stream.device_id());
-    if playback_id.is_some_and(|id| event.requires_reopen(Direction::Playback, id, true)) {
-        playback.reopen = true;
+    if playback.recovery.observe(event, now) {
+        playback.open = None;
     }
 }
 
-/// Drop and reopen one side on the current default. A missing device is
-/// retried; a refused permission ends the example.
+/// Open a side on the current default when [`Recovery`] says it is due. The
+/// old stream, if any, is dropped only once the new one is open. A missing
+/// device is retried; a refused permission ends the example.
 fn reopen<S, R>(
     side: &mut Side<S, R>,
     label: &str,
-    open: impl FnOnce(Option<&ss_audio::device::DeviceId>) -> Result<(S, R), Error>,
+    open: impl FnOnce(Option<&DeviceId>) -> Result<(S, R), Error>,
 ) -> Result<(), Error>
 where
     S: Opened,
 {
-    if !side.reopen || Instant::now() < side.next_try {
+    let Some(attempt) = side.recovery.attempt(Instant::now()) else {
         return Ok(());
-    }
-    side.open = None;
+    };
     let began = Instant::now();
-    match open(None) {
+    match open(attempt.device.as_ref()) {
         Ok(opened) => {
             println!(
                 "reopened {label} on {} at {} Hz in {:?}",
-                opened.0.id(),
+                opened.0.device(),
                 opened.0.rate(),
                 began.elapsed()
             );
+            side.recovery.opened(opened.0.device(), Instant::now());
             side.open = Some(opened);
-            side.reopen = false;
             side.reopens += 1;
             Ok(())
         }
         Err(Error::PermissionDenied) => Err(Error::PermissionDenied),
         Err(error) => {
             println!("{label} did not reopen yet: {error}");
-            side.next_try = Instant::now() + RETRY;
+            side.recovery.failed(Instant::now());
             Ok(())
         }
     }
 }
 
 trait Opened {
-    fn id(&self) -> String;
+    fn device(&self) -> DeviceId;
     fn rate(&self) -> u32;
+    fn lost(&self) -> bool;
 }
 
 impl Opened for CaptureStream {
-    fn id(&self) -> String {
-        self.device_id().to_string()
+    fn device(&self) -> DeviceId {
+        self.device_id().clone()
     }
     fn rate(&self) -> u32 {
         self.device_rate()
+    }
+    fn lost(&self) -> bool {
+        self.is_lost()
     }
 }
 
 impl Opened for PlaybackStream {
-    fn id(&self) -> String {
-        self.device_id().to_string()
+    fn device(&self) -> DeviceId {
+        self.device_id().clone()
     }
     fn rate(&self) -> u32 {
         self.device_rate()
+    }
+    fn lost(&self) -> bool {
+        self.is_lost()
     }
 }
 

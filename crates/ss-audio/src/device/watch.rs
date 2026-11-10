@@ -17,7 +17,10 @@ pub enum Direction {
 pub struct DeviceId(String);
 
 impl DeviceId {
-    pub(crate) fn new(raw: impl Into<String>) -> Self {
+    /// Wrap a `host:device` string, as stored in settings. Opening a device
+    /// that no longer exists fails with [`super::Error::NoDevice`].
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
         Self(raw.into())
     }
 

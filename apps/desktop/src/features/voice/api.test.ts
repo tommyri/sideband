@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { invokeBridge } from '../../lib/tauri'
-import { voiceControl } from './api'
+import { deviceRouteText, voiceControl } from './api'
 
 vi.mock('../../lib/tauri', () => ({ invokeBridge: vi.fn() }))
 vi.mock('../testing/report', () => ({ record: vi.fn() }))
@@ -46,4 +46,16 @@ test('mute is not queued behind a pending PTT change', async () => {
   expect(invokeBridge).toHaveBeenLastCalledWith('voice_control', { action: 'mute', enabled: true })
   finishPress()
   await press
+})
+
+test('the device indicator names what is missing or on the fallback and clears on recovery', () => {
+  expect(deviceRouteText('wanted', 'wanted')).toBe('')
+  expect(deviceRouteText('missing', 'wanted')).toBe('Microphone disconnected. Reconnecting…')
+  expect(deviceRouteText('wanted', 'fallback')).toBe(
+    'Audio output unavailable; using the system default.',
+  )
+  expect(deviceRouteText('fallback', 'missing')).toBe(
+    'Microphone unavailable; using the system default. Audio output disconnected. Reconnecting…',
+  )
+  expect(deviceRouteText('missing', 'missing')).toBe('Audio devices disconnected. Reconnecting…')
 })

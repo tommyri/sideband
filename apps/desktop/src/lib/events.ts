@@ -8,6 +8,7 @@ import { useAppStore } from '../store/app-store'
 import { isTauri } from './tauri'
 import { getSnapshot } from './api'
 import { scheduleVoiceRefresh, useVoiceStore } from '../features/voice/store'
+import { deviceRouteText } from '../features/voice/api'
 import type { SpeakingView } from './generated/SpeakingView'
 
 let subscription: Promise<UnlistenFn> | undefined
@@ -36,6 +37,10 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
             }
             if (payload.event.kind === 'voiceDevice') {
               const device = payload.event.state
+              if (device.kind === 'routes')
+                useVoiceStore.setState({
+                  deviceRoute: deviceRouteText(device.capture, device.playback),
+                })
               const message =
                 device.kind === 'permissionDenied'
                   ? 'Microphone access was denied. Allow it in system settings and rejoin voice.'

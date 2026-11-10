@@ -3,13 +3,13 @@ use crate::{
     types::{
         ApiError, AppEvent, AppSnapshot, ApproveFingerprintInput, BridgeMessage,
         ClientEventPayload, ConnectInput, ConnectResult, ConnectionStatus, CreateChannelInput,
-        HistoryRequest, MicrophoneModePayload, SendMessageInput, ServerSummary,
+        DeviceRoutePayload, HistoryRequest, MicrophoneModePayload, SendMessageInput, ServerSummary,
         SpeakerStatsPayload, VoiceDevicePayload, VoiceStatsPayload,
     },
 };
 use ss_client_core::{
-    Client, ClientEvent, ConnectionState, Credentials, Error as ClientError, ServerAddr,
-    VoiceDeviceState, VoiceStats,
+    Client, ClientEvent, ConnectionState, Credentials, DeviceRoute, Error as ClientError,
+    ServerAddr, VoiceDeviceState, VoiceStats,
 };
 use ss_net::{
     Error as NetworkError,
@@ -153,6 +153,18 @@ fn voice_device(state: VoiceDeviceState) -> VoiceDevicePayload {
         }
         VoiceDeviceState::MutedSpeech { active } => VoiceDevicePayload::MutedSpeech { active },
         VoiceDeviceState::Unavailable(message) => VoiceDevicePayload::Unavailable { message },
+        VoiceDeviceState::Routes { capture, playback } => VoiceDevicePayload::Routes {
+            capture: device_route(capture),
+            playback: device_route(playback),
+        },
+    }
+}
+
+fn device_route(route: DeviceRoute) -> DeviceRoutePayload {
+    match route {
+        DeviceRoute::Wanted => DeviceRoutePayload::Wanted,
+        DeviceRoute::Fallback => DeviceRoutePayload::Fallback,
+        DeviceRoute::Missing => DeviceRoutePayload::Missing,
     }
 }
 

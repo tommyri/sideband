@@ -14,6 +14,7 @@ mod convert;
 #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
 mod macos_voiceio;
 mod manager;
+mod recovery;
 mod select;
 mod stream;
 mod watch;
@@ -21,6 +22,7 @@ mod watch;
 #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
 pub use macos_voiceio::{MutedSpeechActivity, VoiceProcessingConfig, VoiceProcessingStream};
 pub use manager::DeviceManager;
+pub use recovery::{Attempt, RETRY_INTERVAL, Recovery, Route};
 pub use select::GraphConfig;
 pub use stream::{CaptureStream, Counters, PlaybackStream, promote_audio_thread};
 pub use watch::{DeviceEvent, DeviceId, DeviceInfo, Direction, MicrophoneAccess};

@@ -166,7 +166,16 @@ The capture and playback streams expose `cpal`'s hardware timestamps
 screen share up with a voice both use that clock.
 
 A device that disappears, or a new default device, reopens the stream
-without leaving the voice channel.
+without leaving the voice channel. `ss_audio::device::Recovery` holds the
+policy, shared with the loopback example. A stream that cannot reopen is
+retried at once, on every device that appears or default that changes, and
+every 500 ms (`RETRY_INTERVAL`). A missing selected device runs on the
+system default until it opens again. The new stream opens before the old one
+closes. Settings Apply retries at once. The UI gets
+`VoiceDeviceState::Routes` (wanted, fallback, missing) on each change, and
+one `Unavailable` notice per outage. Apple's VoiceProcessingIO unit follows
+the defaults and has no fallback. It is reopened on the worker, so each
+failed retry costs the worker a short stall while no device is there.
 
 ## Playback queue
 
