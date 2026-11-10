@@ -1,11 +1,12 @@
 //! Desktop-owned persistence. Tokens never cross the webview bridge.
+use crate::state::lock;
 use serde::{Deserialize, Serialize};
 use ss_client_core::{Error, ServerAddr, storage::Storage};
 use ss_net::pins::ServerId;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -30,9 +31,14 @@ struct Data {
     muted: BTreeMap<String, bool>,
 }
 
+/// Reads copy from memory and never wait for the disk. Writes are serialized
+/// by `writer`, which is held while the file is written and synced; `data` is
+/// held only to copy or replace the in-memory value. Write methods block, so
+/// async callers run them on a blocking worker ([`DesktopStorage::write`]).
 pub struct DesktopStorage {
     path: PathBuf,
     data: Mutex<Data>,
+    writer: Mutex<()>,
 }
 
 impl DesktopStorage {
@@ -48,15 +54,35 @@ impl DesktopStorage {
         Ok(Self {
             path,
             data: Mutex::new(data),
+            writer: Mutex::new(()),
         })
     }
 
+    /// Run a blocking storage write from async code without stalling a
+    /// runtime thread on the file sync.
+    pub async fn write<T: Send + 'static>(
+        self: &Arc<Self>,
+        change: impl FnOnce(&Self) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let storage = Arc::clone(self);
+        tauri::async_runtime::spawn_blocking(move || change(&storage))
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?
+    }
+
+    fn data(&self) -> std::sync::MutexGuard<'_, Data> {
+        lock(&self.data)
+    }
+
     fn update(&self, change: impl FnOnce(&mut Data)) -> Result<(), Error> {
-        let mut current = self.data.lock().unwrap();
-        let mut next = current.clone();
+        let _writer = lock(&self.writer);
+        let mut next = self.data().clone();
         change(&mut next);
         let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let parent = self.path.parent().unwrap();
+            let parent = self
+                .path
+                .parent()
+                .ok_or("the storage path has no parent directory")?;
             std::fs::create_dir_all(parent)?;
             // NamedTempFile is owner-only on Unix; Windows inherits the user's
             // application-data directory ACL. Never store passwords here.
@@ -67,12 +93,12 @@ impl DesktopStorage {
             Ok(())
         };
         write().map_err(|e| Error::Storage(e.to_string()))?;
-        *current = next;
+        *self.data() = next;
         Ok(())
     }
 
     pub fn notifications(&self) -> crate::notifications::Preferences {
-        self.data.lock().unwrap().notifications.clone()
+        self.data().notifications.clone()
     }
     pub fn save_notifications(
         &self,
@@ -82,7 +108,7 @@ impl DesktopStorage {
     }
 
     pub fn servers(&self) -> Vec<SavedServer> {
-        self.data.lock().unwrap().servers.clone()
+        self.data().servers.clone()
     }
 
     pub fn label(&self, id: &str, label: String) -> Result<(), Error> {
@@ -116,7 +142,7 @@ impl DesktopStorage {
         }
         self.update(|data| {
             data.servers
-                .sort_by_key(|s| ids.iter().position(|id| id == &s.id))
+                .sort_by_key(|s| ids.iter().position(|id| id == &s.id));
         })
     }
 }
@@ -124,9 +150,7 @@ impl DesktopStorage {
 impl Storage for DesktopStorage {
     fn user_volume(&self, server: &ServerId, user: ss_core::Id) -> Result<Option<f32>, Error> {
         Ok(self
-            .data
-            .lock()
-            .unwrap()
+            .data()
             .volumes
             .get(&format!("{}/{user}", server.as_str()))
             .copied())
@@ -144,9 +168,7 @@ impl Storage for DesktopStorage {
     }
     fn user_muted(&self, server: &ServerId, user: ss_core::Id) -> Result<bool, Error> {
         Ok(self
-            .data
-            .lock()
-            .unwrap()
+            .data()
             .muted
             .get(&format!("{}/{user}", server.as_str()))
             .copied()
@@ -164,13 +186,7 @@ impl Storage for DesktopStorage {
         })
     }
     fn session(&self, server: &ServerId) -> Result<Option<String>, Error> {
-        Ok(self
-            .data
-            .lock()
-            .unwrap()
-            .sessions
-            .get(server.as_str())
-            .cloned())
+        Ok(self.data().sessions.get(server.as_str()).cloned())
     }
     fn save_session(&self, server: &ServerId, token: &str) -> Result<(), Error> {
         self.update(|data| {
@@ -179,7 +195,7 @@ impl Storage for DesktopStorage {
         })
     }
     fn last_server(&self) -> Result<Option<ServerAddr>, Error> {
-        let data = self.data.lock().unwrap();
+        let data = self.data();
         Ok(data
             .servers
             .iter()
@@ -212,6 +228,33 @@ impl Storage for DesktopStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_panic_during_a_write_leaves_storage_usable_and_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DesktopStorage::open(dir.path().join("sessions.json")).unwrap();
+        let server = ServerAddr::new("localhost", 5781).unwrap();
+        storage.save_last_server(&server).unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            storage.update(|data| {
+                data.servers.clear();
+                panic!("change failed");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(storage.servers().len(), 1);
+        storage
+            .label(server.id().unwrap().as_str(), "Home".into())
+            .unwrap();
+        assert_eq!(storage.servers()[0].label, "Home");
+    }
+    #[test]
+    fn reads_do_not_wait_for_a_write_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DesktopStorage::open(dir.path().join("sessions.json")).unwrap();
+        let _writing = lock(&storage.writer);
+        assert!(storage.servers().is_empty());
+        assert!(storage.last_server().unwrap().is_none());
+    }
     #[test]
     fn sessions_and_order_survive_restart_and_removal_forgets_token() {
         let dir = tempfile::tempdir().unwrap();

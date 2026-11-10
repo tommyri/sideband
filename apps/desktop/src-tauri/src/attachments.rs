@@ -83,18 +83,34 @@ pub async fn attachment_transfer(
     }
     let result = tokio::select! {
         _ = cancelled.changed() => Err(error("Transfer cancelled")),
-        result = transfer(&app, &state, &request) => result,
+        result = transfer(&state, &request) => result,
     };
     state.transfers.lock().await.remove(&request.transfer);
-    result
+    match result? {
+        Transferred::Reply(reply) => Ok(reply),
+        // Saving a completed download is not cancelled: once the bytes are
+        // here the file is written whole, on a blocking worker.
+        Transferred::Save(bytes) => {
+            let folder = app
+                .path()
+                .download_dir()
+                .map_err(error)?
+                .join("Sideband downloads");
+            let filename = request.filename;
+            tauri::async_runtime::spawn_blocking(move || save_file(&folder, &filename, &bytes))
+                .await
+                .map_err(error)?
+        }
+    }
 }
-async fn transfer(
-    app: &tauri::AppHandle,
-    state: &AppState,
-    request: &FileRequest,
-) -> Result<String, ApiError> {
+/// A finished transfer: the reply for the webview, or a download to save.
+enum Transferred {
+    Reply(String),
+    Save(Vec<u8>),
+}
+async fn transfer(state: &AppState, request: &FileRequest) -> Result<Transferred, ApiError> {
     if let Some(url) = &request.preview {
-        return preview_image(url).await;
+        return preview_image(url).await.map(Transferred::Reply);
     }
     let session = {
         let server = parse_server_id(&request.server)?;
@@ -119,24 +135,18 @@ async fn transfer(
                 bytes,
             )
             .await
-            .map(|id| id.to_string())
+            .map(|id| Transferred::Reply(id.to_string()))
             .map_err(api_error);
     }
     let bytes = session
         .download(id(request.attachment.as_deref())?, &request.filename)
         .await
         .map_err(api_error)?;
-    if request.save {
-        let folder = app
-            .path()
-            .download_dir()
-            .map_err(error)?
-            .join("Sideband downloads");
-        // Saving a completed transfer is atomic with respect to cancellation.
-        save_file(&folder, &request.filename, &bytes)
+    Ok(if request.save {
+        Transferred::Save(bytes)
     } else {
-        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-    }
+        Transferred::Reply(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
 }
 #[tauri::command]
 pub async fn cancel_attachment(
@@ -151,6 +161,7 @@ pub async fn cancel_attachment(
 // External preview images are opt-in, credential-free and restricted to public
 // HTTPS addresses. Resolve once, validate every answer, and pin DNS for the socket.
 async fn preview_image(value: &str) -> Result<String, ApiError> {
+    const MAX: usize = 4 * 1024 * 1024;
     let url = reqwest::Url::parse(value).map_err(error)?;
     if url.scheme() != "https"
         || !url.username().is_empty()
@@ -215,7 +226,6 @@ async fn preview_image(value: &str) -> Result<String, ApiError> {
     ) {
         return Err(error("Unsupported preview image type"));
     }
-    const MAX: usize = 4 * 1024 * 1024;
     if response
         .content_length()
         .is_some_and(|len| len > MAX as u64)

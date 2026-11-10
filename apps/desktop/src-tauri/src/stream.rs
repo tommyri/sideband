@@ -1,7 +1,14 @@
 //! Desktop-owned capture workers. Native frames never cross a thread or webview.
-use crate::{commands::parse_server_id, state::AppState, types::ApiError};
+use crate::{
+    commands::parse_server_id,
+    state::{AppState, lock},
+    types::ApiError,
+};
 use serde::Serialize;
-use ss_client_core::{media::ScreenShareSession, v1};
+use ss_client_core::{
+    media::{ScreenShareHandle, ScreenShareSession},
+    v1,
+};
 use ss_core::{Id, Permissions};
 use std::{
     collections::BTreeMap,
@@ -75,7 +82,7 @@ where
 #[tauri::command]
 pub async fn screen_sources(state: State<'_, Sharing>) -> Result<Vec<SourceView>, ApiError> {
     let sources = native(|| async { ss_video::list_sources().await.map_err(error) }).await?;
-    let mut registry = state.sources.lock().unwrap();
+    let mut registry = lock(&state.sources);
     registry.clear();
     let mut result = Vec::new();
     for source in sources {
@@ -105,10 +112,7 @@ pub async fn screen_preview(
     state: State<'_, Sharing>,
     source: String,
 ) -> Result<Preview, ApiError> {
-    let source = state
-        .sources
-        .lock()
-        .unwrap()
+    let source = lock(&state.sources)
         .get(&source)
         .cloned()
         .ok_or_else(|| error("Refresh the source list."))?;
@@ -178,13 +182,9 @@ pub async fn screen_snapshot(
             })
         })
         .collect();
-    let share = app
-        .state::<Sharing>()
-        .active
-        .lock()
-        .unwrap()
+    let share = lock(&app.state::<Sharing>().active)
         .as_ref()
-        .map(|s| s.status.lock().unwrap().clone());
+        .map(|s| lock(&s.status).clone());
     let watching = crate::viewer::stream_viewers(app.state())
         .into_iter()
         .filter(|v| v.server == server_id)
@@ -196,6 +196,77 @@ pub async fn screen_snapshot(
         share,
         watching,
     })
+}
+/// One screen share on its own thread: capture, encode and publish until
+/// stopped, or until the user leaves the call or loses permission.
+struct Publisher {
+    app: tauri::AppHandle,
+    handle: ScreenShareHandle,
+    store: ss_client_core::StateStore,
+    server: ss_net::pins::ServerId,
+    channel: Id,
+    connection: Id,
+    config: ss_video::PublisherConfig,
+    status: Arc<Mutex<ShareView>>,
+}
+impl Publisher {
+    fn run(self, stopped: watch::Receiver<bool>) {
+        let status = self.status.clone();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())
+            .and_then(|runtime| runtime.block_on(self.share(stopped)));
+        let mut status = lock(&status);
+        status.state = "stopped".into();
+        status.viewers = 0;
+        status.error = result.err();
+    }
+
+    async fn share(self, mut stopped: watch::Receiver<bool>) -> Result<(), String> {
+        let result = tokio::select! {
+            result = self.publish() => result,
+            _ = stopped.changed() => Ok(()),
+            () = self.invalidated() => Ok(()),
+        };
+        // A canceled startup may already have queued StartStream.
+        // This ordered, generation-bound stop also covers that race.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            self.handle.stop_stream(v1::StopStream {}),
+        )
+        .await;
+        result
+    }
+
+    async fn publish(&self) -> Result<(), String> {
+        let (mut session, _) =
+            ScreenShareSession::start_owned(self.handle.clone(), self.config.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+        lock(&self.status).state = "sharing".into();
+        loop {
+            session.publish_next().await.map_err(|e| e.to_string())?;
+            lock(&self.status).viewers = session.subscriber_hint().viewer_count;
+        }
+    }
+
+    /// Watch membership independently of frame delivery, including while a
+    /// portal or permission dialog is still open.
+    async fn invalidated(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let state = self.app.state::<AppState>();
+            let voice = state.voice.lock().await;
+            let permitted = can_publish(&self.store.read(), self.channel, self.connection);
+            let joined = voice
+                .as_ref()
+                .is_some_and(|v| v.server == self.server && v.session.channel() == self.channel);
+            if !self.handle.valid() || !permitted || !joined {
+                break;
+            }
+        }
+    }
 }
 #[tauri::command]
 pub async fn start_screen_share(
@@ -235,18 +306,15 @@ pub async fn start_screen_share(
         _ => return Err(error("Unknown stream preset")),
     };
     let sharing = app.state::<Sharing>();
-    let source = sharing
-        .sources
-        .lock()
-        .unwrap()
+    let source = lock(&sharing.sources)
         .get(&source)
         .cloned()
         .ok_or_else(|| error("Refresh the source list."))?;
-    let mut active = sharing.active.lock().unwrap();
+    let mut active = lock(&sharing.active);
     if active.as_ref().is_some_and(|a| !a.stop.is_closed()) {
         return Err(error("Stop the current screen share first."));
     }
-    let (stop, mut stopped) = watch::channel(false);
+    let (stop, stopped) = watch::channel(false);
     let status = Arc::new(Mutex::new(ShareView {
         server: server_id,
         channel: channel_id,
@@ -254,81 +322,36 @@ pub async fn start_screen_share(
         state: "starting".into(),
         ..Default::default()
     }));
-    let worker_status = status.clone();
-    let app = app.clone();
+    let worker = Publisher {
+        app: app.clone(),
+        handle,
+        store,
+        server,
+        channel,
+        connection,
+        config: ss_video::PublisherConfig {
+            source,
+            preset,
+            cursor,
+            hardware_only: false,
+        },
+        status: status.clone(),
+    };
     std::thread::Builder::new()
         .name("screen-publisher".into())
-        .spawn(move || {
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())
-                .and_then(|runtime| {
-                    runtime.block_on(async {
-                        let run = async {
-                            let config = ss_video::PublisherConfig {
-                                source,
-                                preset,
-                                cursor,
-                                hardware_only: false,
-                            };
-                            let (mut session, _) =
-                                ScreenShareSession::start_owned(handle.clone(), config)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-                            worker_status.lock().unwrap().state = "sharing".into();
-                            loop {
-                                session.publish_next().await.map_err(|e| e.to_string())?;
-                                worker_status.lock().unwrap().viewers =
-                                    session.subscriber_hint().viewer_count;
-                            }
-                            #[allow(unreachable_code)]
-                            Ok::<(), String>(())
-                        };
-                        // Watch membership independently of frame delivery, including
-                        // while a portal or permission dialog is still open.
-                        let invalidated = async {
-                            loop {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                let state = app.state::<AppState>();
-                                let voice = state.voice.lock().await;
-                                let permitted = can_publish(&store.read(), channel, connection);
-                                let joined = voice.as_ref().is_some_and(|v| {
-                                    v.server == server && v.session.channel() == channel
-                                });
-                                if !handle.valid() || !permitted || !joined {
-                                    break;
-                                }
-                            }
-                        };
-                        let result = tokio::select! {
-                            result = run => result,
-                            _ = stopped.changed() => Ok(()),
-                            _ = invalidated => Ok(()),
-                        };
-                        // A canceled startup may already have queued StartStream.
-                        // This ordered, generation-bound stop also covers that race.
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            handle.stop_stream(v1::StopStream {}),
-                        )
-                        .await;
-                        result
-                    })
-                });
-            let mut status = worker_status.lock().unwrap();
-            status.state = "stopped".into();
-            status.viewers = 0;
-            status.error = result.err();
-        })
+        .spawn(move || worker.run(stopped))
         .map_err(error)?;
     *active = Some(Active { stop, status });
     Ok(())
 }
 #[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri extracts command arguments by value"
+)]
 pub fn stop_screen_share(state: State<'_, Sharing>) {
-    if let Some(active) = state.active.lock().unwrap().as_ref() {
-        let mut status = active.status.lock().unwrap();
+    if let Some(active) = lock(&state.active).as_ref() {
+        let mut status = lock(&active.status);
         if status.state != "stopped" {
             status.state = "stopping".into();
             let _ = active.stop.send(true);

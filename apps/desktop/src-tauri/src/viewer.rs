@@ -1,5 +1,10 @@
 //! Independent native viewer windows; T-073 supplies the channel/source UI.
-use crate::{commands::parse_server_id, state::AppState, types::ApiError, viewer_gpu::Gpu};
+use crate::{
+    commands::parse_server_id,
+    state::{AppState, lock},
+    types::ApiError,
+    viewer_gpu::Gpu,
+};
 use serde::Serialize;
 use ss_client_core::media::{GroupReader, VideoSubscription};
 use ss_video::decode::{Playout, Timing, VideoDecoder, delta};
@@ -33,6 +38,11 @@ pub struct ViewerStats {
 }
 #[derive(Default)]
 pub struct Viewers(Mutex<BTreeMap<String, Arc<Mutex<ViewerStats>>>>);
+impl Viewers {
+    fn registry(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<Mutex<ViewerStats>>>> {
+        lock(&self.0)
+    }
+}
 // Close the window and remove diagnostics if any setup step fails.
 struct SetupGuard(Option<Arc<tauri::Window>>);
 impl Drop for SetupGuard {
@@ -41,9 +51,7 @@ impl Drop for SetupGuard {
             window
                 .app_handle()
                 .state::<Viewers>()
-                .0
-                .lock()
-                .unwrap()
+                .registry()
                 .remove(window.label());
             let _ = window.close();
         }
@@ -57,14 +65,84 @@ fn error(e: impl std::fmt::Display) -> ApiError {
     ApiError::new("viewer", e.to_string())
 }
 #[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri extracts command arguments by value"
+)]
 pub fn stream_viewers(state: State<'_, Viewers>) -> Vec<ViewerStats> {
-    state
-        .0
-        .lock()
-        .unwrap()
-        .values()
-        .map(|s| s.lock().unwrap().clone())
-        .collect()
+    state.registry().values().map(|s| lock(s).clone()).collect()
+}
+/// The viewer window's View menu: fullscreen, always on top, statistics.
+fn install_menu(
+    app: &tauri::AppHandle,
+    window: &Arc<tauri::Window>,
+    label: &str,
+    controls: &Arc<Controls>,
+) -> Result<(), ApiError> {
+    let fullscreen = CheckMenuItem::with_id(
+        app,
+        format!("{label}-fullscreen"),
+        "Fullscreen",
+        true,
+        false,
+        Some("F11"),
+    )
+    .map_err(error)?;
+    let top = CheckMenuItem::with_id(
+        app,
+        format!("{label}-top"),
+        "Always on top",
+        true,
+        false,
+        None::<&str>,
+    )
+    .map_err(error)?;
+    let overlay = CheckMenuItem::with_id(
+        app,
+        format!("{label}-stats"),
+        "Show stream statistics",
+        true,
+        true,
+        Some("CmdOrCtrl+I"),
+    )
+    .map_err(error)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(app, "View", true, &[&fullscreen, &top, &overlay])
+                .map_err(error)?,
+        ],
+    )
+    .map_err(error)?;
+    window.set_menu(menu).map_err(error)?;
+    let fullscreen_id = fullscreen.id().as_ref().to_owned();
+    let top_id = top.id().as_ref().to_owned();
+    let stats_id = overlay.id().as_ref().to_owned();
+    let weak = Arc::downgrade(window);
+    let flags = controls.clone();
+    window.on_menu_event(move |_, event| {
+        if let Some(w) = weak.upgrade() {
+            match event.id.as_ref() {
+                id if id == fullscreen_id => {
+                    let next = !w.is_fullscreen().unwrap_or(false);
+                    let _ = w.set_fullscreen(next);
+                    let _ = fullscreen.set_checked(next);
+                }
+                id if id == top_id => {
+                    let next = !top.is_checked().unwrap_or(false);
+                    let _ = w.set_always_on_top(next);
+                    let _ = top.set_checked(next);
+                }
+                id if id == stats_id => {
+                    let next = !flags.overlay.load(Ordering::Relaxed);
+                    flags.overlay.store(next, Ordering::Relaxed);
+                    let _ = overlay.set_checked(next);
+                }
+                _ => {}
+            }
+        }
+    });
+    Ok(())
 }
 #[tauri::command]
 pub async fn open_stream_viewer(
@@ -95,69 +173,7 @@ pub async fn open_stream_viewer(
         closed: AtomicBool::new(false),
         overlay: AtomicBool::new(true),
     });
-    let fullscreen = CheckMenuItem::with_id(
-        &app,
-        format!("{label}-fullscreen"),
-        "Fullscreen",
-        true,
-        false,
-        Some("F11"),
-    )
-    .map_err(error)?;
-    let top = CheckMenuItem::with_id(
-        &app,
-        format!("{label}-top"),
-        "Always on top",
-        true,
-        false,
-        None::<&str>,
-    )
-    .map_err(error)?;
-    let overlay = CheckMenuItem::with_id(
-        &app,
-        format!("{label}-stats"),
-        "Show stream statistics",
-        true,
-        true,
-        Some("CmdOrCtrl+I"),
-    )
-    .map_err(error)?;
-    let menu = Menu::with_items(
-        &app,
-        &[
-            &Submenu::with_items(&app, "View", true, &[&fullscreen, &top, &overlay])
-                .map_err(error)?,
-        ],
-    )
-    .map_err(error)?;
-    window.set_menu(menu).map_err(error)?;
-    let fullscreen_id = fullscreen.id().as_ref().to_owned();
-    let top_id = top.id().as_ref().to_owned();
-    let stats_id = overlay.id().as_ref().to_owned();
-    let weak = Arc::downgrade(&window);
-    let flags = controls.clone();
-    window.on_menu_event(move |_, event| {
-        if let Some(w) = weak.upgrade() {
-            match event.id.as_ref() {
-                id if id == fullscreen_id => {
-                    let next = !w.is_fullscreen().unwrap_or(false);
-                    let _ = w.set_fullscreen(next);
-                    let _ = fullscreen.set_checked(next);
-                }
-                id if id == top_id => {
-                    let next = !top.is_checked().unwrap_or(false);
-                    let _ = w.set_always_on_top(next);
-                    let _ = top.set_checked(next);
-                }
-                id if id == stats_id => {
-                    let next = !flags.overlay.load(Ordering::Relaxed);
-                    flags.overlay.store(next, Ordering::Relaxed);
-                    let _ = overlay.set_checked(next);
-                }
-                _ => {}
-            }
-        }
-    });
+    install_menu(&app, &window, &label, &controls)?;
     let flags = controls.clone();
     window.on_window_event(move |event| {
         if matches!(
@@ -167,7 +183,7 @@ pub async fn open_stream_viewer(
             flags.closed.store(true, Ordering::Relaxed);
         }
     });
-    let stats = Arc::new(Mutex::new(ViewerStats {
+    let shared = Arc::new(Mutex::new(ViewerStats {
         label: label.clone(),
         server: server_id,
         track: track_id,
@@ -175,10 +191,8 @@ pub async fn open_stream_viewer(
         ..Default::default()
     }));
     app.state::<Viewers>()
-        .0
-        .lock()
-        .unwrap()
-        .insert(label.clone(), stats.clone());
+        .registry()
+        .insert(label.clone(), shared.clone());
     // Surface/layer creation is main-thread bound on macOS. Decode/render resources
     // stay on the dedicated viewer thread for their entire lifetime on every OS.
     let instance = wgpu::Instance::default();
@@ -210,9 +224,11 @@ pub async fn open_stream_viewer(
                         .ok_or("Missing video codec")?;
                     let decoder = VideoDecoder::open(&codec.name, codec.description.clone(), false)
                         .map_err(|e| e.to_string())?;
-                    stats.lock().unwrap().backend = decoder.backend().into();
-                    let _ = ready.take().unwrap().send(Ok(()));
-                    run(subscription, gpu, decoder, controls, stats).await
+                    lock(&shared).backend = decoder.backend().into();
+                    if let Some(ready) = ready.take() {
+                        let _ = ready.send(Ok(()));
+                    }
+                    run(subscription, gpu, decoder, controls, shared).await
                 })
             })();
             if let Some(ready) = ready {
@@ -222,13 +238,180 @@ pub async fn open_stream_viewer(
                 let _ = app.emit("ss://viewer-error", (name.clone(), message));
             }
             let _ = window.close();
-            app.state::<Viewers>().0.lock().unwrap().remove(&name);
+            app.state::<Viewers>().registry().remove(&name);
         })
         .map_err(error)?;
     started.await.map_err(error)?.map_err(error)?;
     setup.0 = None;
     Ok(label)
 }
+/// Decode and presentation state for one viewer window.
+struct Playback {
+    group: Option<GroupReader>,
+    picture: Option<ss_video::Frame>,
+    queued: Option<ss_video::Frame>,
+    timing: Playout,
+    last_frame: Instant,
+    last_request: Option<Instant>,
+    reconnecting: bool,
+    bytes: u32,
+    frames: u32,
+    measure: Instant,
+}
+
+/// Position on the sender's wrapping 48 kHz timeline.
+fn ticks_48k(micros: u128) -> u32 {
+    u32::try_from((micros * 48 / 1000) % (1 << 32)).unwrap_or_default()
+}
+
+impl Playback {
+    fn new() -> Self {
+        Self {
+            group: None,
+            picture: None,
+            queued: None,
+            timing: Playout::default(),
+            last_frame: Instant::now(),
+            last_request: None,
+            reconnecting: true,
+            bytes: 0,
+            frames: 0,
+            measure: Instant::now(),
+        }
+    }
+
+    /// Drop everything shown or queued until the next keyframe arrives.
+    fn interrupt(&mut self) {
+        self.group = None;
+        self.queued = None;
+        self.picture = None;
+        self.reconnecting = true;
+    }
+
+    fn start_group(
+        &mut self,
+        group: GroupReader,
+        decoder: &mut VideoDecoder,
+    ) -> Result<(), String> {
+        self.group = Some(group);
+        self.queued = None;
+        decoder.reset().map_err(|e| e.to_string())?;
+        // Sender starts each group with an IDR, so stale references never cross resets.
+        self.timing.reset();
+        Ok(())
+    }
+
+    fn receive(
+        &mut self,
+        frame: Result<Option<ss_client_core::media::Frame>, ss_client_core::media::Error>,
+        decoder: &mut VideoDecoder,
+        stats: &Mutex<ViewerStats>,
+    ) -> Result<(), String> {
+        match frame {
+            Ok(Some(frame)) => {
+                let size = u32::try_from(frame.payload.len()).unwrap_or(u32::MAX);
+                self.bytes = self.bytes.saturating_add(size);
+                if let Ok(decoded) = decoder.decode(&frame.payload, frame.timestamp, frame.keyframe)
+                {
+                    for picture in decoded {
+                        if self.queued.is_some() {
+                            lock(stats).dropped += 1;
+                        }
+                        self.queued = Some(picture);
+                    }
+                    self.last_frame = Instant::now();
+                } else {
+                    lock(stats).decode_errors += 1;
+                    self.interrupt();
+                    decoder.recover().map_err(|e| e.to_string())?;
+                    lock(stats).backend = decoder.backend().into();
+                }
+            }
+            Ok(None) => self.group = None,
+            Err(_) => {
+                self.interrupt();
+                decoder.reset().map_err(|e| e.to_string())?;
+                lock(stats).backend = decoder.backend().into();
+            }
+        }
+        Ok(())
+    }
+
+    /// Present or drop the queued picture against the audio clock.
+    fn schedule(&mut self, subscription: &VideoSubscription, stats: &Mutex<ViewerStats>) {
+        if self.last_frame.elapsed() > Duration::from_secs(1) {
+            self.reconnecting = true;
+            self.picture = None;
+            self.queued = None;
+        }
+        let Some(frame) = self.queued.as_ref() else {
+            return;
+        };
+        let timestamp = ticks_48k(frame.timestamp.as_micros());
+        let audio = subscription
+            .audio_clock()
+            .and_then(ss_client_core::media::AudioClock::now);
+        match self.timing.timing(timestamp, Instant::now(), audio) {
+            Timing::Present => {
+                lock(stats).skew_ms = audio.map(|a| delta(timestamp, a) / 48);
+                self.picture = self.queued.take();
+                self.frames = self.frames.saturating_add(1);
+                self.reconnecting = false;
+            }
+            Timing::Drop => {
+                self.queued = None;
+                lock(stats).dropped += 1;
+            }
+            Timing::Wait(_) => {}
+        }
+    }
+
+    /// Update the shared statistics and return the overlay text.
+    fn overlay(&mut self, stats: &Mutex<ViewerStats>, shown: bool) -> Option<String> {
+        let mut s = lock(stats);
+        s.state = if self.reconnecting {
+            "reconnecting"
+        } else {
+            "playing"
+        }
+        .into();
+        if self.measure.elapsed() >= Duration::from_secs(1) {
+            let seconds = self.measure.elapsed().as_secs_f64();
+            s.fps = f64::from(self.frames) / seconds;
+            s.bitrate = f64::from(self.bytes) * 8.0 / seconds;
+            self.frames = 0;
+            self.bytes = 0;
+            self.measure = Instant::now();
+        }
+        if self.reconnecting {
+            Some("Reconnecting stream...".to_owned())
+        } else if shown {
+            Some(format!(
+                "{} {:.0} FPS {:.1} Mb/s skew {} ms dropped {}",
+                s.backend,
+                s.fps,
+                s.bitrate / 1_000_000.0,
+                s.skew_ms.map_or_else(|| "n/a".into(), |v| v.to_string()),
+                s.dropped
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Whether to ask the sender for a keyframe now, at most once a second.
+    fn keyframe_due(&mut self) -> bool {
+        let due = self.reconnecting
+            && self
+                .last_request
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(1));
+        if due {
+            self.last_request = Some(Instant::now());
+        }
+        due
+    }
+}
+
 async fn run(
     subscription: VideoSubscription,
     mut gpu: Gpu,
@@ -236,58 +419,39 @@ async fn run(
     controls: Arc<Controls>,
     stats: Arc<Mutex<ViewerStats>>,
 ) -> Result<(), String> {
-    let mut group: Option<GroupReader> = None;
-    let mut picture = None;
-    let mut queued = None;
-    let mut timing = Playout::default();
+    let mut playback = Playback::new();
     let mut tick = tokio::time::interval(Duration::from_millis(8));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_frame = Instant::now();
-    let mut last_request = Instant::now() - Duration::from_secs(2);
-    let mut reconnecting = true;
-    let mut bytes = 0_u64;
-    let mut frames = 0_u64;
-    let mut measure = Instant::now();
     loop {
         if controls.closed.load(Ordering::Relaxed) || !subscription.valid() {
             return Ok(());
         }
+        let group = playback.group.as_mut();
         tokio::select! {
-            next=subscription.next_group()=>{
-                let Some(next)=next else {return Ok(());};
-                group=Some(next);queued=None;decoder.reset().map_err(|e|e.to_string())?;
-                // Sender starts each group with an IDR, so stale references never cross resets.
-                timing.reset();
-            },
-            next=async {match group.as_mut(){Some(g)=>g.next_frame().await,None=>std::future::pending().await}}=>{
-                match next {
-                    Ok(Some(frame))=>{
-                        bytes+=frame.payload.len() as u64;
-                        match decoder.decode(&frame.payload,frame.timestamp,frame.keyframe){
-                            Ok(decoded)=>{for frame in decoded {if queued.is_some(){stats.lock().unwrap().dropped+=1;}queued=Some(frame);}last_frame=Instant::now();},
-                            Err(_)=>{stats.lock().unwrap().decode_errors+=1;group=None;queued=None;picture=None;reconnecting=true;decoder.recover().map_err(|e|e.to_string())?;stats.lock().unwrap().backend=decoder.backend().into();}
-                        }
-                    },
-                    Ok(None)=>{group=None;},
-                    Err(_)=>{group=None;queued=None;picture=None;reconnecting=true;decoder.reset().map_err(|e|e.to_string())?;stats.lock().unwrap().backend=decoder.backend().into();}
+            next = subscription.next_group() => {
+                let Some(next) = next else { return Ok(()) };
+                playback.start_group(next, &mut decoder)?;
+            }
+            frame = async {
+                match group {
+                    Some(group) => group.next_frame().await,
+                    None => std::future::pending().await,
                 }
-            },
-            _=tick.tick()=>{
-                if !subscription.valid(){return Ok(());}
-                if last_frame.elapsed()>Duration::from_secs(1){reconnecting=true;picture=None;queued=None;}
-                if let Some(frame)=queued.as_ref(){
-                    let timestamp=(frame.timestamp.as_micros()*48/1000) as u32;
-                    let audio=subscription.audio_clock().and_then(|c|c.now());
-                    match timing.timing(timestamp,Instant::now(),audio){
-                        Timing::Present=>{stats.lock().unwrap().skew_ms=audio.map(|a|delta(timestamp,a)/48);picture=queued.take();frames+=1;reconnecting=false;},
-                        Timing::Drop=>{queued=None;stats.lock().unwrap().dropped+=1;},Timing::Wait(_)=>{}
-                    }
+            } => playback.receive(frame, &mut decoder, &stats)?,
+            _ = tick.tick() => {
+                if !subscription.valid() {
+                    return Ok(());
                 }
-                let text={let mut s=stats.lock().unwrap();s.state=if reconnecting{"reconnecting"}else{"playing"}.into();
-                    if measure.elapsed()>=Duration::from_secs(1){let seconds=measure.elapsed().as_secs_f64();s.fps=frames as f64/seconds;s.bitrate=bytes as f64*8.0/seconds;frames=0;bytes=0;measure=Instant::now();}
-                    if reconnecting {Some("Reconnecting stream...".to_owned())}else if controls.overlay.load(Ordering::Relaxed){Some(format!("{} {:.0} FPS {:.1} Mb/s skew {} ms dropped {}",s.backend,s.fps,s.bitrate/1_000_000.0,s.skew_ms.map_or("n/a".into(),|v|v.to_string()),s.dropped))}else{None}};
-                gpu.draw(picture.as_ref(),text.as_deref())?;
-                if reconnecting && last_request.elapsed()>Duration::from_secs(1){last_request=Instant::now();let _=tokio::time::timeout(Duration::from_millis(500),subscription.request_keyframe()).await;}
+                playback.schedule(&subscription, &stats);
+                let text = playback.overlay(&stats, controls.overlay.load(Ordering::Relaxed));
+                gpu.draw(playback.picture.as_ref(), text.as_deref())?;
+                if playback.keyframe_due() {
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        subscription.request_keyframe(),
+                    )
+                    .await;
+                }
             }
         }
     }

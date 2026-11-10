@@ -26,6 +26,69 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
 }
 @fragment fn fragment(v: Vertex) -> @location(0) vec4<f32> { return textureSample(image,sample_image,v.uv); }
 ";
+/// The bind group layout and pipeline that draw one RGBA texture over the
+/// whole surface.
+fn overlay_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    (layout, pipeline)
+}
 impl Gpu {
     pub async fn new(
         window: Arc<tauri::Window>,
@@ -60,61 +123,7 @@ impl Gpu {
         surface.configure(&device, &config);
         let renderer = render::Renderer::new(&device, &queue, render::Config::new())
             .map_err(|e| e.to_string())?;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let (layout, pipeline) = overlay_pipeline(&device, config.format);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -141,7 +150,7 @@ impl Gpu {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(
-                        &texture.create_view(&Default::default()),
+                        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
                 wgpu::BindGroupEntry {
@@ -153,7 +162,8 @@ impl Gpu {
     }
     fn text(&self, text: &str) -> wgpu::Texture {
         let text: String = text.chars().take(110).collect();
-        let width = (text.len() as u32 * 8).max(8);
+        // At most 110 characters of up to 4 bytes, so this cannot overflow.
+        let width = u32::try_from(text.len()).map_or(8, |n| (n * 8).max(8));
         let height = 12;
         let mut pixels = vec![0_u8; (width * height * 4) as usize];
         for p in pixels.as_chunks_mut::<4>().0.iter_mut() {
@@ -235,7 +245,9 @@ impl Gpu {
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return Ok(());
             }
-            _ => return Err("GPU surface validation failed".into()),
+            wgpu::CurrentSurfaceTexture::Validation => {
+                return Err("GPU surface validation failed".into());
+            }
         };
         let video = frame
             .map(|f| self.renderer.render(f))
@@ -244,8 +256,12 @@ impl Gpu {
         let video_bind = video.as_ref().map(|t| self.bind(t));
         let overlay = text.map(|t| self.text(t));
         let text_bind = overlay.as_ref().map(|t| self.bind(t));
-        let view = output.texture.create_view(&Default::default());
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -272,8 +288,8 @@ impl Gpu {
                 pass.draw(0..3, 0..1);
             }
             if let (Some(texture), Some(bind)) = (overlay.as_ref(), text_bind.as_ref()) {
-                let w = (texture.width() as f32 * 1.5).min(size.width as f32);
-                pass.set_viewport(0.0, 0.0, w, 18.0_f32.min(size.height as f32), 0.0, 1.0);
+                let w = (px(texture.width()) * 1.5).min(px(size.width));
+                pass.set_viewport(0.0, 0.0, w, 18.0_f32.min(px(size.height)), 0.0, 1.0);
                 pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..3, 0..1);
             }
@@ -283,10 +299,19 @@ impl Gpu {
         Ok(())
     }
 }
+/// A pixel dimension as a float. Exact: window and video sizes are far below
+/// 2^24 pixels.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "pixel dimensions are far below 2^24"
+)]
+fn px(value: u32) -> f32 {
+    value as f32
+}
 pub fn aspect_fit(vw: u32, vh: u32, ww: u32, wh: u32) -> (f32, f32, f32, f32) {
-    let scale = (ww as f32 / vw.max(1) as f32).min(wh as f32 / vh.max(1) as f32);
-    let (w, h) = (vw as f32 * scale, vh as f32 * scale);
-    ((ww as f32 - w) / 2.0, (wh as f32 - h) / 2.0, w, h)
+    let scale = (px(ww) / px(vw.max(1))).min(px(wh) / px(vh.max(1)));
+    let (w, h) = (px(vw) * scale, px(vh) * scale);
+    ((px(ww) - w) / 2.0, (px(wh) - h) / 2.0, w, h)
 }
 #[cfg(test)]
 mod tests {

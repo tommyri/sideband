@@ -1,6 +1,6 @@
 # T-095 — Desktop shell hardening: capabilities, lints, locks, scaffold leftovers
 
-Status: todo
+Status: in-progress
 Phase: 3
 Size: M
 Depends on: T-042, T-085
@@ -66,3 +66,112 @@ Chat behaviour (T-096). Voice command locking (T-085).
 - A packaged build shows no event inspector and no placeholder identity.
 
 ## Notes from implementation
+
+Implemented (2026-11-10).
+
+Findings, checked by reading and by tests written first where testable:
+- Capabilities: confirmed, and wider than reported. The frontend imports only
+  `invoke` and `listen`, so `core:default` and the three `core:window:*`
+  grants were unused too (Rust shows and focuses the window, which needs no
+  capability). `default.json` now grants `core:event:allow-listen` and
+  `allow-unlisten` only. `config_tests::capability_grants_only_what_the_frontend_imports`
+  scans `src/` for `@tauri-apps/*` imports, maps each to its permissions and
+  requires the file to match exactly; it failed on the old file. Window
+  state is still restored: tauri-plugin-window-state 2.5.0 restores in its
+  Rust `on_window_ready` hook, and its JS commands were never called.
+  `@tauri-apps/plugin-store` is gone from `package.json` and, by hand, from
+  `pnpm-lock.yaml`; Rust keeps `tauri-plugin-store` for `StoreExt`.
+- Lints: confirmed. `[lints] workspace = true` raised 90 clippy errors and
+  no `unsafe`. Fixed by refactoring: `viewer::run` (a select! body that
+  rustfmt could not format) is now a `Playback` state type; the publisher
+  thread is `stream::Publisher`; `lib::run` setup, the viewer menu,
+  `onboarding::probe_with_policy` (QUIC trust and HTTPS metadata),
+  `notifications::observe` (badge, cues, message alert) and
+  `voice_view::snapshot` are split; casts and defaults are explicit.
+- Locks: confirmed for `persistence`, `notifications`, `stream` and
+  `viewer`. All std mutexes go through `state::lock`, which recovers a
+  poisoned guard (the `input.rs` pattern). Partly refuted for persistence:
+  `ss-client-core` already saves sessions, volumes and mutes on blocking
+  workers. The real fault was that the data lock was held across the file
+  write and fsync, so runtime-thread readers (the member list reads every
+  volume, every client event reads notification preferences) waited on the
+  disk. Writes now hold a separate `writer` lock; `data` is held only to copy
+  or swap. The shell's own writes (label, remove, reorder, notification
+  preferences) run through `DesktopStorage::write` on a blocking worker.
+  Downloads are saved by `spawn_blocking` after the cancellable part;
+  `test_build_identity` returns an error instead of `expect`. The seen-message
+  dedupe no longer unwraps. Tests: a panic inside a write leaves storage
+  usable and unchanged; reads succeed while a write holds `writer`.
+- Scaffold: confirmed. The event inspector renders only under
+  `import.meta.env.DEV`, starts closed, has a rail toggle in development
+  (the old toggle existed only in the browser-preview mock), reports real
+  bridge state and an event count, and Copy/Clear work. The rail shows
+  initials for every server and the signed-in member of the selected server
+  (display name and presence) instead of `TR`, or nothing before a server
+  view arrives. `App.test.tsx` stubs `DEV` false and checks that no
+  inspector, toggle or placeholder identity is rendered.
+- API boundary: confirmed (ten components plus `listen` in
+  `AudioSettings`). The calls moved into feature modules (`admin/moderation.ts`,
+  `admin/serverSettingsApi.ts`, `updates/api.ts`, `search/api.ts`,
+  `testing/api.ts`, `diagnostics/api.ts`, `notifications/api.ts`, and the
+  audio and shortcut stores); `lib/http.ts` is deleted. `04-conventions.md`
+  now describes the per-feature pattern and `01-architecture.md` no longer
+  mentions a webview fetch. ESLint rejects `fetch`, XHR, WebSocket,
+  EventSource, WebTransport and `sendBeacon` in `src/`, and `@tauri-apps/*`
+  or `invokeBridge` imports in non-test `.tsx` files.
+- Business logic. Moved to new `ss-client-core` modules: `unread` (one rule
+  for channels, DMs and the rail badge, which used three slightly different
+  ones; the rail now also counts newer cached messages and only DMs the user
+  belongs to), `authority` (server permissions, role rank, kick/ban/mute/move
+  rights used by `voice_view`), `ptt` (`PttArming`, unchanged, with its
+  tests). Opened tasks for the rest: T-102 notification policy, T-103
+  moderator-move following and seat reconciliation (needs `voice/`, owned by
+  T-084), T-105 the other permission projections (`role_admin`,
+  `stream::can_publish`, chat flags, `channel_admin`). The T-085 arming rule
+  (a press for a call the tick has not seen needs a release first) is kept.
+- `tauri.test.conf.json`: confirmed by reading tauri-utils 2.10.2, which
+  merges `--config` files with `json_patch::merge` (RFC 7396: arrays are
+  replaced). Test builds on every OS lost `dragDropEnabled: false`. Fixed;
+  `config_tests::test_build_windows_keep_every_base_window_setting` failed
+  before.
+- Middle-click popup: refuted by reading wry 0.57.1. With no new-window
+  handler, WebView2 marks `NewWindowRequested` handled (no window), WKWebView
+  returns no web view and WebKitGTK has no `create` handler. A middle-click on
+  a chat link therefore does nothing; opening it through `open_chat_link` is
+  chat behaviour (T-096).
+- macOS quarantine: confirmed by reading (no `com.apple.quarantine`, no
+  `LSFileQuarantineEnabled`; Windows has no Mark of the Web either). Opened
+  T-104 rather than add a dependency here.
+
+Allows kept, each with a reason:
+- `needless_pass_by_value` on the Tauri commands `open_chat_link`,
+  `notification_preferences`, `test_notification`, `stop_screen_share`,
+  `stream_viewers` (Tauri extracts arguments by value).
+- `struct_excessive_bools` on the bridge structs `AudioEnvironment`,
+  `input::Snapshot`, `RoleSnapshot`, `MemberView`, `ServerView` and on
+  `ss_client_core::authority::ModerationRights`.
+- `unused_async` on `chat_snapshot`, so Tauri runs it off the main thread.
+- `cast_possible_truncation`/`cast_sign_loss` in `voice_view::percent`
+  (clamped gain) and `cast_precision_loss` in `viewer_gpu::px` (pixel sizes).
+- `too_many_lines` on eight end-to-end or fixture tests.
+
+Files outside Paths: `apps/desktop/eslint.config.js`, `pnpm-lock.yaml`,
+`src-tauri/tauri.test.conf.json`, `src-tauri/build.rs`,
+`src-tauri/examples/viewer_smoke.rs`, `src/App.tsx`, `src/App.test.tsx`, the
+ten components and new API modules under `src/features/`,
+`crates/ss-client-core/src/{lib,authority,unread,ptt}.rs`,
+`docs/plan/01-architecture.md`, `docs/plan/04-conventions.md`, the task
+index and T-102 to T-105.
+
+Manual checks:
+- Run `pnpm install --frozen-lockfile` with the pinned pnpm to confirm the
+  hand-edited lockfile.
+- Installed app with the trimmed capability: live chat, speaking indicators,
+  the audio level meter and notification activation still update (all use
+  `listen`), and the console shows no ACL denials.
+- Window size and position survive a restart.
+- Windows test build: dropping a file on the composer attaches it (drag-drop
+  now disabled at the native layer as in release builds); middle-clicking a
+  chat link opens no window.
+- Packaged build: no event inspector or toggle; the rail avatar shows your
+  own initials.

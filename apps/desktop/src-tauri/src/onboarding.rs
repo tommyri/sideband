@@ -16,6 +16,88 @@ async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe
     probe_with_policy(input, pins, false).await
 }
 
+/// Server metadata from `GET /api/v1/server`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Metadata {
+    name: String,
+    registration_mode: String,
+    fingerprint: String,
+}
+
+/// Connect once over QUIC and report the certificate the server presented
+/// and the trust that would apply to it.
+async fn quic_trust(
+    address: &ss_client_core::ServerAddr,
+    pins: Arc<MemoryPinStore>,
+) -> Result<(Fingerprint, TrustPolicy), ApiError> {
+    match ss_net::client::connect(&address.host, address.port, pins).await {
+        Ok(connection) => {
+            let fingerprint = connection
+                .peer_fingerprint()
+                .ok_or_else(|| ApiError::new("client", "No server certificate received."))?;
+            let policy = connection
+                .trust_policy()
+                .ok_or_else(|| ApiError::new("client", "Missing verified trust."))?;
+            connection.close(0, b"onboarding probe complete");
+            Ok((fingerprint, policy))
+        }
+        Err(ss_net::Error::Untrusted { fingerprint }) => {
+            Ok((fingerprint, TrustPolicy::PinnedCertificate { fingerprint }))
+        }
+        Err(ss_net::Error::FingerprintChanged { received, .. }) => Ok((
+            received,
+            TrustPolicy::PinnedCertificate {
+                fingerprint: received,
+            },
+        )),
+        Err(e) => Err(ApiError::new("certificate_validation", e.to_string())),
+    }
+}
+
+/// Read the server's HTTPS metadata under `policy`, at most 16 KiB.
+async fn server_metadata(
+    policy: TrustPolicy,
+    host: String,
+    https_port: u16,
+) -> Result<Metadata, ApiError> {
+    let http = reqwest::Client::builder()
+        .use_preconfigured_tls(
+            ss_net::client::tls_config(policy)
+                .map_err(|e| ApiError::new("client", e.to_string()))?,
+        )
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(http_error)?;
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    let mut response = http
+        .get(format!("https://{host}:{https_port}/api/v1/server"))
+        .send()
+        .await
+        .map_err(http_error)?
+        .error_for_status()
+        .map_err(http_error)?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+        if bytes.len() + chunk.len() > 16_384 {
+            return Err(ApiError::new(
+                "invalid_server",
+                "Server metadata is too large.",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ApiError::new("invalid_server", "Invalid server metadata."))
+}
+
 async fn probe_with_policy(
     input: ProbeInput,
     pins: Arc<dyn PinStore>,
@@ -47,71 +129,8 @@ async fn probe_with_policy(
             .compare_exchange(&id, None, policy)
             .map_err(|e| super::commands::api_error(e.into()))?;
     }
-    let (fingerprint, policy) =
-        match ss_net::client::connect(&address.host, address.port, temporary.clone()).await {
-            Ok(connection) => {
-                let fingerprint = connection
-                    .peer_fingerprint()
-                    .ok_or_else(|| ApiError::new("client", "No server certificate received."))?;
-                let policy = connection
-                    .trust_policy()
-                    .ok_or_else(|| ApiError::new("client", "Missing verified trust."))?;
-                connection.close(0, b"onboarding probe complete");
-                (fingerprint, policy)
-            }
-            Err(ss_net::Error::Untrusted { fingerprint }) => {
-                (fingerprint, TrustPolicy::PinnedCertificate { fingerprint })
-            }
-            Err(ss_net::Error::FingerprintChanged { received, .. }) => (
-                received,
-                TrustPolicy::PinnedCertificate {
-                    fingerprint: received,
-                },
-            ),
-            Err(e) => return Err(ApiError::new("certificate_validation", e.to_string())),
-        };
-    let http = reqwest::Client::builder()
-        .use_preconfigured_tls(
-            ss_net::client::tls_config(policy)
-                .map_err(|e| ApiError::new("client", e.to_string()))?,
-        )
-        .https_only(true)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(http_error)?;
-    let host = if address.host.contains(':') {
-        format!("[{}]", address.host)
-    } else {
-        address.host
-    };
-    let mut response = http
-        .get(format!("https://{host}:{}/api/v1/server", input.https_port))
-        .send()
-        .await
-        .map_err(http_error)?
-        .error_for_status()
-        .map_err(http_error)?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(http_error)? {
-        if bytes.len() + chunk.len() > 16_384 {
-            return Err(ApiError::new(
-                "invalid_server",
-                "Server metadata is too large.",
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Metadata {
-        name: String,
-        registration_mode: String,
-        fingerprint: String,
-    }
-    let metadata: Metadata = serde_json::from_slice(&bytes)
-        .map_err(|_| ApiError::new("invalid_server", "Invalid server metadata."))?;
+    let (fingerprint, policy) = quic_trust(&address, temporary.clone()).await?;
+    let metadata = server_metadata(policy, address.host, input.https_port).await?;
     if policy != TrustPolicy::PublicCertificate
         && Fingerprint::try_from(metadata.fingerprint).ok() != Some(fingerprint)
     {
@@ -134,7 +153,7 @@ async fn probe_with_policy(
     })
 }
 
-fn http_error(error: reqwest::Error) -> ApiError {
+fn http_error(error: impl std::fmt::Display) -> ApiError {
     ApiError::new("unreachable", error.to_string())
 }
 
@@ -198,7 +217,8 @@ pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Res
     // against an unexpected certificate when it is added again.
     state
         .storage
-        .remove(&server_id)
+        .write(move |storage| storage.remove(&server_id))
+        .await
         .map_err(super::commands::api_error)
 }
 
@@ -247,7 +267,8 @@ pub async fn reorder_servers(
     let _operation = state.operations.lock().await;
     state
         .storage
-        .reorder(&server_ids)
+        .write(move |storage| storage.reorder(&server_ids))
+        .await
         .map_err(super::commands::api_error)
 }
 
@@ -258,6 +279,10 @@ mod tests {
     use ss_client_core::{Client, Credentials, ServerAddr, v1};
     use ss_net::pins::JsonPinStore;
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario against a real server"
+    )]
     #[tokio::test]
     async fn discovery_requires_explicit_trust_then_registration_and_saved_login_work() {
         let dir = tempfile::tempdir().unwrap();

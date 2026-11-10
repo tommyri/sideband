@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Download } from 'lucide-react'
-import { invokeBridge } from '../../lib/tauri'
+import { checkUpdate, installUpdate, type UpdateStatus } from './api'
 import { errorText } from '../chat/api'
 import '../admin/admin.css'
 import './updates.css'
 
-type Status = { enabled: boolean; version: string | null; notes: string | null }
+type Status = UpdateStatus
 export const CHECK_INTERVAL = 6 * 60 * 60 * 1000
 export function UpdateControl() {
   const [status, setStatus] = useState<Status | null>(null)
@@ -21,7 +21,7 @@ export function UpdateControl() {
     setBusy('check')
     setError('')
     try {
-      const next = await invokeBridge<Status>('check_update')
+      const next = await checkUpdate()
       if (alive.current) setStatus(next)
     } catch (e) {
       if (alive.current) setError(errorText(e))
@@ -56,7 +56,7 @@ export function UpdateControl() {
     setBusy('install')
     setError('')
     try {
-      await invokeBridge('install_update')
+      await installUpdate()
     } catch (e) {
       if (alive.current) setError(errorText(e))
     } finally {

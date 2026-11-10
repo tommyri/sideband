@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { invokeBridge } from '../../lib/tauri'
+import { buildIdentity, exportTestReport } from '../testing/api'
+import { diagnosticsSnapshot } from './api'
 import { useAppStore } from '../../store/app-store'
 import { useVoiceStore } from '../voice/store'
 import { environment } from '../settings/audio/store'
 import { refreshShortcuts, type Snapshot as InputSnapshot } from '../settings/shortcuts/store'
 import { context, missing, type Json } from '../testing/report'
 import schema from '../testing/report.schema.json'
-import { graphPaths, metrics, report, retain, type Sample, type Snapshot } from './model'
+import { graphPaths, metrics, report, retain, type Sample } from './model'
 export function DiagnosticsPanel() {
   const active = useVoiceStore((s) => s.active?.serverId)
   const selected = useAppStore((s) => s.selectedServerId)
@@ -54,7 +55,7 @@ function Panel({ close, server }: { close: () => void; server: string | undefine
   useEffect(() => {
     let canceled = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    void invokeBridge<Json>('test_build_identity')
+    void buildIdentity()
       .then((v) => {
         if (!canceled) setBuild(v)
       })
@@ -63,9 +64,7 @@ function Panel({ close, server }: { close: () => void; server: string | undefine
       })
     async function poll() {
       try {
-        const value = await invokeBridge<Snapshot>('diagnostics_snapshot', {
-          serverId: server ?? null,
-        })
+        const value = await diagnosticsSnapshot(server ?? null)
         if (!canceled) {
           setSamples((old) => retain(old, { at: performance.now(), snapshot: value }))
           setError('')
@@ -134,16 +133,16 @@ function Panel({ close, server }: { close: () => void; server: string | undefine
     const bytes = (s: string) => Array.from(new TextEncoder().encode(s))
     const r = bundle as Record<string, Json>
     try {
-      const path = await invokeBridge<string>('export_test_report', {
-        files: [
+      const path = await exportTestReport(
+        [
           { name: 'report.json', bytes: bytes(JSON.stringify(bundle, null, 2)) },
           { name: 'schema.json', bytes: bytes(JSON.stringify(schema, null, 2)) },
           { name: 'diagnostics.log', bytes: bytes(JSON.stringify(r.events)) },
           { name: 'notes.txt', bytes: bytes(String(r.notes ?? '')) },
         ],
-        consent: false,
-        includeRecording: false,
-      })
+        false,
+        false,
+      )
       setStatus(`Saved locally: ${path}`)
     } catch {
       setStatus('Could not save the bundle. Check that Downloads is writable.')

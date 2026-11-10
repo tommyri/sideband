@@ -47,3 +47,11 @@ export function conflicts(p: Preferences) {
     .map((b) => JSON.stringify(b.trigger))
   return new Set(triggers).size !== triggers.length
 }
+export const suspendShortcuts = (suspended: boolean, revision: number) =>
+  invokeBridge<void>('suspend_shortcuts', { suspended, revision })
+export const captureShortcut = () =>
+  invokeBridge<{ binding: Binding; label: string }>('capture_shortcut')
+export const cancelShortcutCapture = () => invokeBridge<void>('cancel_shortcut_capture')
+export const saveShortcuts = (preferences: Preferences) =>
+  invokeBridge<Snapshot>('save_shortcuts', { preferences })
+export const configureSystemShortcuts = () => invokeBridge<void>('configure_system_shortcuts')

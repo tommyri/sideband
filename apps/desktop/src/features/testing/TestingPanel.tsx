@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { invokeBridge } from '../../lib/tauri'
+import { buildIdentity, exportTestReport } from './api'
 import { useAppStore } from '../../store/app-store'
 import { environment, useAudioStore } from '../settings/audio/store'
 import { refreshShortcuts, useShortcuts } from '../settings/shortcuts/store'
@@ -120,10 +120,7 @@ export function TestingPanel() {
     setConsent(false)
     setIncludeRecording(false)
     try {
-      const [build, settings] = await Promise.all([
-        invokeBridge<Json>('test_build_identity'),
-        captureContext(),
-      ])
+      const [build, settings] = await Promise.all([buildIdentity(), captureContext()])
       const r = begin(testId, build, settings)
       r.serverId =
         useVoiceStore.getState().active?.serverId ??
@@ -194,9 +191,7 @@ export function TestingPanel() {
     ]
     if (wav && consent && includeRecording) files.push({ name: 'recording.wav', bytes: wav })
     try {
-      setSaved(
-        await invokeBridge<string>('export_test_report', { files, consent, includeRecording }),
-      )
+      setSaved(await exportTestReport(files, consent, includeRecording))
     } catch (e) {
       setError(message(e))
     } finally {

@@ -63,7 +63,11 @@ fn main() {
                             );
                             for unit in encoder.encode(&frame).unwrap() {
                                 for decoded in decoder
-                                    .decode(&unit.payload, (count * 1600) as u32, count == 0)
+                                    .decode(
+                                        &unit.payload,
+                                        u32::try_from(count * 1600).unwrap(),
+                                        count == 0,
+                                    )
                                     .unwrap()
                                 {
                                     gpu.draw(
@@ -83,7 +87,7 @@ fn main() {
                         );
                     });
                 }));
-                app.exit(if result.is_ok() { 0 } else { 1 });
+                app.exit(i32::from(result.is_err()));
             });
             Ok(())
         })

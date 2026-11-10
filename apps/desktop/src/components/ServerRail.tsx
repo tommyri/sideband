@@ -2,8 +2,9 @@ import { UpdateControl } from '../features/updates/UpdateControl'
 import { isTauri } from '../lib/tauri'
 import { useState } from 'react'
 import { NotificationSettings } from '../features/notifications/NotificationSettings'
-import { Bell, Plus } from 'lucide-react'
+import { Bell, Bug, Plus } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
+import { useVoiceStore } from '../features/voice/store'
 
 function initials(label: string) {
   return label
@@ -20,6 +21,11 @@ export function ServerRail() {
   const selected = useAppStore((state) => state.selectedServerId)
   const select = useAppStore((state) => state.selectServer)
   const openConnect = useAppStore((state) => state.setConnectOpen)
+  const toggleDebug = useAppStore((state) => state.toggleDebug)
+  const own = useVoiceStore((state) => {
+    const view = selected ? state.views[selected] : undefined
+    return view?.members.find((member) => member.id === view.ownUserId)
+  })
 
   return (
     <nav className="server-rail" aria-label="Servers">
@@ -28,7 +34,7 @@ export function ServerRail() {
       </div>
       <div className="rail-rule" />
       <div className="server-buttons">
-        {servers.map((server, index) => (
+        {servers.map((server) => (
           <button
             key={server.id}
             className={`server-button ${selected === server.id ? 'active' : ''}`}
@@ -36,7 +42,7 @@ export function ServerRail() {
             aria-label={server.label}
             title={`${server.label} · ${server.status.kind}`}
           >
-            {index === 0 ? <span className="server-grid">▦</span> : initials(server.label)}
+            {initials(server.label)}
             <span className={`status-dot ${server.status.kind}`} />
             {server.unread > 0 && (
               <span className="rail-unread" aria-label={`${server.unread} unread channels`}>
@@ -64,11 +70,28 @@ export function ServerRail() {
         <Bell size={20} />
       </button>
       {isTauri() && <UpdateControl />}
+      {import.meta.env.DEV && (
+        <button
+          className="server-button"
+          aria-label="Toggle event inspector"
+          title="Event inspector (development builds only)"
+          onClick={toggleDebug}
+        >
+          <Bug size={20} />
+        </button>
+      )}
       {notifications && <NotificationSettings close={() => setNotifications(false)} />}
-      <div className="rail-avatar" aria-label="Your profile">
-        TR
-        <span className="presence-dot" />
-      </div>
+      {own && (
+        <div
+          className="rail-avatar"
+          role="img"
+          aria-label={`Signed in as ${own.displayName || own.username}, ${own.presence}`}
+          title={`${own.displayName || own.username} · ${own.presence}`}
+        >
+          {initials(own.displayName || own.username)}
+          {own.presence === 'online' && <span className="presence-dot" />}
+        </div>
+      )}
     </nav>
   )
 }

@@ -6,6 +6,8 @@ mod build_identity;
 mod channel_admin;
 mod chat;
 mod commands;
+#[cfg(test)]
+mod config_tests;
 mod diagnostics;
 mod dm;
 mod input;
@@ -121,57 +123,60 @@ pub fn run() {
             input::cancel_shortcut_capture,
             input::configure_system_shortcuts,
         ])
-        .setup(|app| {
-            app.manage(AppState::open(&app.path().app_data_dir()?)?);
-            input::init(app.handle());
-            notifications::init(app.handle());
-            tauri::async_runtime::spawn(voice::watch(app.handle().clone()));
-            let about = PredefinedMenuItem::about(
-                app,
-                Some("About this test build"),
-                Some(build_identity::about()),
-            )?;
-            let app_menu = Menu::default(app.handle())?;
-            app_menu.append(&Submenu::with_items(app, "Build", true, &[&about])?)?;
-            app.set_menu(app_menu)?;
-            let show = MenuItem::with_id(app, "show", "Show Sideband", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let mute =
-                CheckMenuItem::with_id(app, "mute", "Mute microphone", false, false, None::<&str>)?;
-            let deafen =
-                CheckMenuItem::with_id(app, "deafen", "Deafen", false, false, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &mute, &deafen, &about, &quit])?;
-            app.manage(input::TrayControls { mute, deafen });
-            let mut tray =
-                TrayIconBuilder::new()
-                    .menu(&menu)
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "mute" => input::toggle(app, false),
-                        "deafen" => input::toggle(app, true),
-                        "quit" => app.exit(0),
-                        _ => {}
-                    });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
-            tray.build(app)?;
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let state = window.state::<AppState>();
-                if window.label() == "main" && state.close_to_tray.load(Ordering::Relaxed) {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
-        })
+        .setup(setup)
+        .on_window_event(window_event)
         .run(tauri::generate_context!())
         .expect("failed to run Sideband desktop");
+}
+
+/// App state, background tasks, the app menu and the tray.
+fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    app.manage(AppState::open(&app.path().app_data_dir()?)?);
+    input::init(app.handle());
+    notifications::init(app.handle());
+    tauri::async_runtime::spawn(voice::watch(app.handle().clone()));
+    let about = PredefinedMenuItem::about(
+        app,
+        Some("About this test build"),
+        Some(build_identity::about()),
+    )?;
+    let app_menu = Menu::default(app.handle())?;
+    app_menu.append(&Submenu::with_items(app, "Build", true, &[&about])?)?;
+    app.set_menu(app_menu)?;
+    let show = MenuItem::with_id(app, "show", "Show Sideband", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let mute = CheckMenuItem::with_id(app, "mute", "Mute microphone", false, false, None::<&str>)?;
+    let deafen = CheckMenuItem::with_id(app, "deafen", "Deafen", false, false, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &mute, &deafen, &about, &quit])?;
+    app.manage(input::TrayControls { mute, deafen });
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "mute" => input::toggle(app, false),
+            "deafen" => input::toggle(app, true),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// Closing the main window hides it to the tray when that is enabled.
+fn window_event(window: &tauri::Window, event: &WindowEvent) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        let state = window.state::<AppState>();
+        if window.label() == "main" && state.close_to_tray.load(Ordering::Relaxed) {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    }
 }

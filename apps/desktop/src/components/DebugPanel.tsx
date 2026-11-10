@@ -1,7 +1,11 @@
-import { Activity, CircleCheck, Copy, Radio, Trash2, X } from 'lucide-react'
+import { useState } from 'react'
+import { Activity, CircleCheck, CircleOff, Copy, Radio, Trash2, X } from 'lucide-react'
 import type { AppEvent } from '../lib/bindings'
 import { useAppStore } from '../store/app-store'
 import { isTauri } from '../lib/tauri'
+
+/** Development-only view of the `ss://event` stream. App renders it only when
+ * `import.meta.env.DEV`, so packaged builds never include it. */
 
 const previewEvents: AppEvent[] = [
   {
@@ -41,7 +45,15 @@ export function DebugPanel() {
   const open = useAppStore((state) => state.debugOpen)
   const toggle = useAppStore((state) => state.toggleDebug)
   const events = useAppStore((state) => state.events)
-  const visibleEvents = events.length || isTauri() ? events : previewEvents
+  const clear = useAppStore((state) => state.clearEvents)
+  const [notice, setNotice] = useState('')
+  const native = isTauri()
+  const visibleEvents = events.length || native ? events : previewEvents
+  const copy = () =>
+    void navigator.clipboard.writeText(JSON.stringify(visibleEvents, null, 2)).then(
+      () => setNotice('Copied'),
+      () => setNotice('Copy failed'),
+    )
 
   if (!open) return null
 
@@ -62,11 +74,12 @@ export function DebugPanel() {
           <Radio size={18} />
         </div>
         <span>
-          <strong>Bridge healthy</strong>
-          <small>Listening on ss://event</small>
+          <strong>{native ? 'Native bridge' : 'Browser preview'}</strong>
+          <small>{native ? 'Listening on ss://event' : 'No native bridge; sample events'}</small>
         </span>
         <span className="health-pill">
-          <CircleCheck size={13} /> Live
+          {native ? <CircleCheck size={13} /> : <CircleOff size={13} />}{' '}
+          {native ? `${events.length} received` : 'Preview'}
         </span>
       </div>
 
@@ -75,10 +88,17 @@ export function DebugPanel() {
           <Activity size={15} /> Recent events
         </span>
         <div>
-          <button aria-label="Copy event log">
+          {notice && <small role="status">{notice}</small>}
+          <button aria-label="Copy event log" onClick={copy}>
             <Copy size={14} />
           </button>
-          <button aria-label="Clear event log">
+          <button
+            aria-label="Clear event log"
+            onClick={() => {
+              clear()
+              setNotice('')
+            }}
+          >
             <Trash2 size={14} />
           </button>
         </div>

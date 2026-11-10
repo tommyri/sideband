@@ -3,7 +3,7 @@ use crate::{state::AppState, types::ApiError};
 use serde::{Deserialize, Serialize};
 use ss_audio::{
     device::{DeviceManager, GraphConfig},
-    processing::{Backend, NoiseSuppression, ProcessingConfig},
+    processing::{Backend, NoiseSuppression, ProcessingConfig, SuppressionLevel},
     vad,
 };
 use ss_client_core::{AudioConfig, TalkGate, voice::DeviceBackend};
@@ -94,7 +94,7 @@ impl AudioPreferences {
         let noise_suppression = match self.noise.as_str() {
             "off" => NoiseSuppression::Off,
             "sonora" if Backend::Sonora.is_available() => {
-                NoiseSuppression::Sonora(Default::default())
+                NoiseSuppression::Sonora(SuppressionLevel::default())
             }
             "rnnoise" if Backend::RnNoise.is_available() => NoiseSuppression::RnNoise,
             _ => return Err(error("Noise suppression model unavailable in this build")),
@@ -158,10 +158,14 @@ pub fn load(app: &tauri::AppHandle) -> Result<AudioPreferences, ApiError> {
         .map(serde_json::from_value)
         .transpose()
         .map_err(error)
-        .map(|p| p.unwrap_or_default())
+        .map(Option::unwrap_or_default)
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags serialized for the webview"
+)]
 pub struct AudioEnvironment {
     preferences: AudioPreferences,
     devices: Vec<serde_json::Value>,
@@ -299,23 +303,23 @@ fn preview(
     }
     let config = preferences.config()?;
     let manager = DeviceManager::new();
-    let mut capture = if kind != "output" {
+    let mut capture = if kind == "output" {
+        None
+    } else {
         Some(
             manager
                 .open_capture(config.input_device.as_ref(), GraphConfig::MONO)
                 .map_err(error)?,
         )
-    } else {
-        None
     };
-    let mut playback = if kind != "calibrate" {
+    let mut playback = if kind == "calibrate" {
+        None
+    } else {
         Some(
             manager
                 .open_playback(config.output_device.as_ref(), GraphConfig::STEREO)
                 .map_err(error)?,
         )
-    } else {
-        None
     };
     let start = Instant::now();
     let mut delay = std::collections::VecDeque::from(vec![0.0_f32; 48_000]);

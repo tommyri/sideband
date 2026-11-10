@@ -34,6 +34,7 @@ mod tests {
 
 pub mod attachments;
 mod audit;
+pub mod authority;
 mod commands;
 pub mod connection;
 mod error;
@@ -45,11 +46,13 @@ mod invites;
 mod webhooks;
 pub use webhooks::{CreatedWebhookUrl, WebhookMetadata};
 pub mod moderation_admin;
+pub mod ptt;
 pub mod role_admin;
 pub mod search;
 pub mod server_settings;
 pub mod state;
 pub mod storage;
+pub mod unread;
 pub mod voice;
 pub use connection::{Client, ClientSet, Credentials, ServerAddr};
 pub use error::Error;

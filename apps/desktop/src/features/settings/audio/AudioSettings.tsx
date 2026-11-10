@@ -1,11 +1,19 @@
 import { openDiagnostics } from '../../diagnostics/model'
 import { ShortcutSettings } from '../shortcuts/ShortcutSettings'
 import { useEffect, useRef, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
-import { invokeBridge } from '../../../lib/tauri'
 import { useVoiceStore, refreshVoice } from '../../voice/store'
 import { memberAction } from '../../voice/api'
-import { defaults, environment, save, type AudioEnvironment, type AudioPreferences } from './store'
+import {
+  audioLevel,
+  defaults,
+  environment,
+  onAudioLevel,
+  save,
+  stopAudioTest,
+  testAudio,
+  type AudioEnvironment,
+  type AudioPreferences,
+} from './store'
 
 function message(error: unknown) {
   return error && typeof error === 'object' && 'message' in error
@@ -16,12 +24,12 @@ function InputMeter({ testing, active }: { testing: boolean; active: boolean }) 
   const [level, setLevel] = useState(-96)
   useEffect(() => {
     let live = true
-    const unlisten = listen<number>('ss://audio-level', (event) => {
-      if (live) setLevel(event.payload)
+    const unlisten = onAudioLevel((level) => {
+      if (live) setLevel(level)
     }).catch(() => () => {})
     const timer = setInterval(() => {
       if (active && !testing)
-        void invokeBridge<number>('audio_level')
+        void audioLevel()
           .then((v) => {
             if (live) setLevel(v)
           })
@@ -73,7 +81,7 @@ export function AudioSettings({ close }: { close: () => void }) {
       })
     return () => {
       live = false
-      void invokeBridge('stop_audio_test').catch(() => {})
+      void stopAudioTest().catch(() => {})
       previous?.focus()
     }
   }, [])
@@ -98,7 +106,7 @@ export function AudioSettings({ close }: { close: () => void }) {
     setTesting(true)
     await perform(
       async () => {
-        const threshold = await invokeBridge<number>('test_audio', { preferences: draft, kind })
+        const threshold = await testAudio(draft, kind)
         if (kind === 'calibrate') change('threshold', Math.round(threshold))
       },
       kind === 'calibrate'
@@ -219,9 +227,7 @@ export function AudioSettings({ close }: { close: () => void }) {
               <button disabled={busy || !!active} onClick={() => void test('output')}>
                 Test output
               </button>
-              {testing && (
-                <button onClick={() => void invokeBridge('stop_audio_test')}>Stop test</button>
-              )}
+              {testing && <button onClick={() => void stopAudioTest()}>Stop test</button>}
             </div>
             <p className="audio-hint">
               Tests stay on this computer. Use headphones: Test mic plays raw input after a 1-second

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ServerView } from '../../lib/generated/ServerView'
-import type { SearchQuery } from '../../lib/generated/SearchQuery'
 import type { SearchResult } from '../../lib/generated/SearchResult'
-import { invokeBridge } from '../../lib/tauri'
+import { searchMessages } from './api'
 import { errorText, onChatEvent } from '../chat/api'
 import { navigateMessage } from '../chat/navigation'
 import { messageLink } from '../chat/rich-model'
@@ -76,16 +75,13 @@ export function SearchPanel({
     setNotice('')
     try {
       if (after && before && after >= before) throw new Error('After must be earlier than before.')
-      const result = await invokeBridge<SearchResult[]>('search_messages', {
-        serverId: server,
-        query: {
-          q,
-          channel: channel || null,
-          from: author || null,
-          has: has || null,
-          before: before ? Date.parse(`${before}T00:00:00Z`) : null,
-          after: after ? Date.parse(`${after}T00:00:00Z`) : null,
-        } satisfies SearchQuery,
+      const result = await searchMessages(server, {
+        q,
+        channel: channel || null,
+        from: author || null,
+        has: has || null,
+        before: before ? Date.parse(`${before}T00:00:00Z`) : null,
+        after: after ? Date.parse(`${after}T00:00:00Z`) : null,
       })
       if (revision !== generation.current) return
       setRows(result)

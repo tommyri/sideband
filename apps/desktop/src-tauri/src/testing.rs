@@ -9,12 +9,12 @@ use std::{
 use tauri::Manager;
 
 #[tauri::command]
-pub fn test_build_identity() -> serde_json::Value {
+pub fn test_build_identity() -> Result<serde_json::Value, ApiError> {
     serde_json::from_str(include_str!(concat!(
         env!("OUT_DIR"),
         "/build-identity.json"
     )))
-    .expect("validated build identity")
+    .map_err(error)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,7 +23,7 @@ pub struct ExportFile {
     bytes: Vec<u8>,
 }
 
-fn error(message: impl ToString) -> ApiError {
+fn error(message: impl std::fmt::Display) -> ApiError {
     ApiError::new("test_export", message.to_string())
 }
 

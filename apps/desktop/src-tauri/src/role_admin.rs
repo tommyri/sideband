@@ -33,6 +33,10 @@ pub struct RoleMember {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags serialized for the webview"
+)]
 pub struct RoleSnapshot {
     roles: Vec<AdminRole>,
     members: Vec<RoleMember>,
@@ -104,7 +108,7 @@ fn mask(value: &str) -> Result<u64, ApiError> {
         .filter(|v| Permissions::from_bits(*v).is_some())
         .ok_or_else(|| invalid("Invalid permissions"))
 }
-fn fields(value: RoleFields) -> Result<(String, Option<u32>, u64), ApiError> {
+fn fields(value: &RoleFields) -> Result<(String, Option<u32>, u64), ApiError> {
     let name = value.name.trim().to_owned();
     if name.is_empty() || name.chars().count() > 100 {
         return Err(invalid("Name must be 1 to 100 characters"));
@@ -248,7 +252,7 @@ async fn perform(state: &AppState, server: &str, action: RoleAction) -> Result<(
     let policy = snapshot(&client.state().read())?;
     match action {
         RoleAction::Create { fields: input } => {
-            let (name, color, permissions) = fields(input)?;
+            let (name, color, permissions) = fields(&input)?;
             client
                 .create_role(v1::CreateRole {
                     name,
@@ -265,7 +269,7 @@ async fn perform(state: &AppState, server: &str, action: RoleAction) -> Result<(
             role,
             fields: input,
         } => {
-            let (name, color, permissions) = fields(input)?;
+            let (name, color, permissions) = fields(&input)?;
             if color.is_none()
                 && !policy.supports_v2
                 && policy

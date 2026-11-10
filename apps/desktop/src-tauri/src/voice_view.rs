@@ -1,6 +1,11 @@
 use crate::types::ApiError;
 use serde::{Deserialize, Serialize};
-use ss_client_core::{State, storage::Storage};
+use ss_client_core::{
+    State,
+    authority::{self, Authority},
+    storage::Storage,
+    unread,
+};
 use ss_core::{Id, Permissions};
 use ss_net::pins::ServerId;
 use ts_rs::TS;
@@ -23,6 +28,10 @@ pub struct ChannelView {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags serialized for the webview"
+)]
 pub struct MemberView {
     pub id: String,
     pub username: String,
@@ -62,6 +71,10 @@ pub struct ActiveVoiceView {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags serialized for the webview"
+)]
 pub struct ServerView {
     pub can_moderate_members: bool,
     pub can_manage_server: bool,
@@ -103,18 +116,88 @@ fn id(bytes: &[u8]) -> Result<Id, ApiError> {
     Id::try_from(bytes)
         .map_err(|_| ApiError::new("invalid_id", "Invalid server entity identifier."))
 }
-fn roles(state: &State, user: Id) -> Vec<&ss_client_core::v1::Role> {
-    state
-        .roles
-        .values()
-        .filter(|r| {
-            r.is_default
-                || state
-                    .members
-                    .get(&user)
-                    .is_some_and(|m| m.roles.contains(&r.id))
-        })
-        .collect()
+/// Playback gain as the 0–200 % volume slider value.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the gain is clamped to 0..=2, so the percentage fits u16"
+)]
+fn percent(gain: f32) -> u16 {
+    (gain.clamp(0.0, 2.0) * 100.0).round() as u16
+}
+
+fn channel_view(
+    state: &State,
+    channel: &ss_client_core::v1::Channel,
+) -> Result<ChannelView, ApiError> {
+    let key = id(&channel.id)?;
+    let perms = state.permissions(key).unwrap_or_else(Permissions::empty);
+    Ok(ChannelView {
+        id: key.to_string(),
+        parent_id: channel
+            .parent_id
+            .as_ref()
+            .map(|p| id(p).map(|p| p.to_string()))
+            .transpose()?,
+        name: channel.name.clone(),
+        kind: channel.kind,
+        profile: match channel.voice.as_ref().map(|v| v.profile) {
+            Some(2) => "music",
+            Some(3) => "low latency",
+            _ => "voice",
+        }
+        .into(),
+        user_limit: channel.voice.as_ref().and_then(|v| v.user_limit),
+        can_join: perms.contains(Permissions::CONNECT | Permissions::VIEW_CHANNEL),
+        can_speak: perms.contains(Permissions::SPEAK),
+        unread: unread::is_unread(state, key),
+        mentions: state.read_states.get(&key).map_or(0, |r| r.mention_count),
+    })
+}
+
+fn member_view(
+    state: &State,
+    server: &ServerId,
+    storage: &dyn Storage,
+    authority: &Authority,
+    key: Id,
+    member: &ss_client_core::v1::Member,
+    user: &ss_client_core::v1::User,
+) -> Result<MemberView, ApiError> {
+    let roles = authority::roles(state, key);
+    let top = roles.iter().max_by_key(|r| r.position);
+    let rights = authority.rights_over(state, key);
+    let presence = member.presence.as_ref();
+    let gain = storage
+        .user_volume(server, key)
+        .map_err(super::commands::api_error)?
+        .unwrap_or(1.0);
+    Ok(MemberView {
+        id: key.to_string(),
+        username: user.username.clone(),
+        display_name: user.display_name.clone(),
+        role_name: top.map_or_else(|| "Members".into(), |r| r.name.clone()),
+        role_color: top
+            .and_then(|r| r.color)
+            .map(|c| format!("#{:06x}", c & 0x00ff_ffff)),
+        role_position: top.map_or(0, |r| r.position),
+        presence: match presence.map(|p| p.status) {
+            Some(2) => "online",
+            Some(3) => "idle",
+            Some(4) => "do not disturb",
+            _ => "offline",
+        }
+        .into(),
+        activity: presence.map_or_else(String::new, |p| p.activity.clone()),
+        can_kick: rights.kick,
+        can_ban: rights.ban,
+        can_mute: rights.mute,
+        can_move: rights.move_members,
+        volume: percent(gain),
+        local_muted: storage
+            .user_muted(server, key)
+            .map_err(super::commands::api_error)?,
+    })
 }
 
 pub fn snapshot(
@@ -123,99 +206,20 @@ pub fn snapshot(
     storage: &dyn Storage,
     active_voice: Option<ActiveVoiceView>,
 ) -> Result<ServerView, ApiError> {
-    let own = state
-        .own_user
-        .as_ref()
-        .ok_or_else(|| ApiError::new("disconnected", "Not logged in."))?;
-    let own_id = id(&own.id)?;
-    let own_roles = roles(state, own_id);
-    let base = own_roles.iter().fold(Permissions::empty(), |p, r| {
-        p | Permissions::from_bits_truncate(r.permissions)
-    });
-    let allowed =
-        |permission| base.contains(Permissions::ADMINISTRATOR) || base.contains(permission);
-    let highest = own_roles
-        .iter()
-        .map(|r| r.position)
-        .max()
-        .unwrap_or(i32::MIN);
+    let authority =
+        Authority::own(state).ok_or_else(|| ApiError::new("disconnected", "Not logged in."))?;
+    let allowed = |permission| authority.allows(permission);
     let channels = state
         .channel_tree()
         .into_iter()
-        .map(|channel| {
-            let key = id(&channel.id)?;
-            let perms = state.permissions(key).unwrap_or_else(Permissions::empty);
-            let read = state.read_states.get(&key);
-            let newest_cached = state
-                .messages
-                .get(&key)
-                .and_then(|m| m.ordered().last().map(|m| m.id.clone()));
-            let newest = newest_cached.as_ref().or(channel.last_message_id.as_ref());
-            Ok(ChannelView {
-                id: key.to_string(),
-                parent_id: channel
-                    .parent_id
-                    .as_ref()
-                    .map(|p| id(p).map(|p| p.to_string()))
-                    .transpose()?,
-                name: channel.name.clone(),
-                kind: channel.kind,
-                profile: match channel.voice.as_ref().map(|v| v.profile) {
-                    Some(2) => "music",
-                    Some(3) => "low latency",
-                    _ => "voice",
-                }
-                .into(),
-                user_limit: channel.voice.as_ref().and_then(|v| v.user_limit),
-                can_join: perms.contains(Permissions::CONNECT | Permissions::VIEW_CHANNEL),
-                can_speak: perms.contains(Permissions::SPEAK),
-                unread: newest
-                    .is_some_and(|last| read.is_none_or(|r| r.last_read_message_id < *last)),
-                mentions: read.map_or(0, |r| r.mention_count),
-            })
-        })
+        .map(|channel| channel_view(state, channel))
         .collect::<Result<Vec<_>, ApiError>>()?;
     let members = state
         .members
         .iter()
-        .filter_map(|(key, member)| member.user.as_ref().map(|user| (key, member, user)))
-        .map(|(&key, member, user)| {
-            let roles = roles(state, key);
-            let top = roles.iter().max_by_key(|r| r.position);
-            let can_act = key != own_id
-                && (base.contains(Permissions::ADMINISTRATOR)
-                    || highest > top.map_or(i32::MIN, |r| r.position));
-            let presence = member.presence.as_ref();
-            let gain = storage
-                .user_volume(server, key)
-                .map_err(super::commands::api_error)?
-                .unwrap_or(1.0);
-            Ok(MemberView {
-                id: key.to_string(),
-                username: user.username.clone(),
-                display_name: user.display_name.clone(),
-                role_name: top.map_or_else(|| "Members".into(), |r| r.name.clone()),
-                role_color: top
-                    .and_then(|r| r.color)
-                    .map(|c| format!("#{:06x}", c & 0xffffff)),
-                role_position: top.map_or(0, |r| r.position),
-                presence: match presence.map(|p| p.status) {
-                    Some(2) => "online",
-                    Some(3) => "idle",
-                    Some(4) => "do not disturb",
-                    _ => "offline",
-                }
-                .into(),
-                activity: presence.map_or_else(String::new, |p| p.activity.clone()),
-                can_kick: can_act && allowed(Permissions::KICK_MEMBERS),
-                can_ban: can_act && allowed(Permissions::BAN_MEMBERS),
-                can_mute: can_act && allowed(Permissions::MUTE_MEMBERS),
-                can_move: can_act && allowed(Permissions::MOVE_MEMBERS),
-                volume: (gain.clamp(0.0, 2.0) * 100.0).round() as u16,
-                local_muted: storage
-                    .user_muted(server, key)
-                    .map_err(super::commands::api_error)?,
-            })
+        .filter_map(|(key, member)| member.user.as_ref().map(|user| (*key, member, user)))
+        .map(|(key, member, user)| {
+            member_view(state, server, storage, &authority, key, member, user)
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     let participants = state
@@ -243,7 +247,7 @@ pub fn snapshot(
         can_view_audit_log: allowed(Permissions::VIEW_AUDIT_LOG),
         can_create_invites: allowed(Permissions::CREATE_INVITES),
         can_manage_invites: allowed(Permissions::MANAGE_SERVER),
-        own_user_id: own_id.to_string(),
+        own_user_id: authority.user().to_string(),
         channels,
         direct_messages: crate::dm::views(state)?,
         members,
@@ -296,7 +300,7 @@ mod tests {
                 name: "Moderators".into(),
                 position: 10,
                 permissions: (Permissions::MUTE_MEMBERS | Permissions::MOVE_MEMBERS).bits(),
-                color: Some(0x123456),
+                color: Some(0x12_34_56),
                 ..Default::default()
             },
         );

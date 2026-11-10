@@ -134,8 +134,9 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   `send_message`, …) and forwards `ClientEvent`s as Tauri events. No business
   logic in `src-tauri` beyond marshalling.
 - The React UI holds a mirror of `StateStore` (Zustand) fed by events, and
-  calls commands. It never talks to the network directly except HTTPS for
-  attachments through a Tauri-provided fetch (so the pinned cert is honored).
+  calls commands. It never talks to the network: history, attachments and
+  previews are Rust commands, so the pinned certificate and bearer token
+  stay in Rust.
 
 ## Audio graph (client, per voice session)
 

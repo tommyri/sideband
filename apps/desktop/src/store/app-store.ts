@@ -19,6 +19,7 @@ interface AppStore {
   ) => void
   receiveEvent: (event: AppEvent) => void
   toggleDebug: () => void
+  clearEvents: () => void
   setConnectOpen: (open: boolean, server?: ServerSummary) => void
   toggleTheme: () => void
 }
@@ -27,7 +28,7 @@ export const useAppStore = create<AppStore>((set) => ({
   servers: [],
   selectedServerId: null,
   events: [],
-  debugOpen: true,
+  debugOpen: false,
   connectOpen: false,
   connectServer: null,
   theme: 'dark',
@@ -70,6 +71,7 @@ export const useAppStore = create<AppStore>((set) => ({
       }
     }),
   toggleDebug: () => set((state) => ({ debugOpen: !state.debugOpen })),
+  clearEvents: () => set({ events: [] }),
   setConnectOpen: (connectOpen, server) => set({ connectOpen, connectServer: server ?? null }),
   toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
 }))

@@ -48,3 +48,6 @@ ss-server = { path = "../../../crates/ss-server", version = "0.1.0" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ss-video = { workspace = true, features = ["pipewire"] }
+
+[lints]
+workspace = true

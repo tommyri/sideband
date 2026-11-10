@@ -19,13 +19,13 @@ pub async fn diagnostics_snapshot(
             .map(|(_, c)| std::sync::Arc::clone(c))
     });
     let transport = client.and_then(|client| client.diagnostics());
-    let stats = voice
+    let call_stats = voice
         .as_ref()
         .map(|v| crate::commands::voice_stats(v.session.stats()));
     // The existing bridge includes user IDs. Remove them from this diagnostics boundary.
-    let mut stats = serde_json::to_value(stats)
+    let mut call_stats = serde_json::to_value(call_stats)
         .map_err(|_| ApiError::new("diagnostics", "Could not serialize diagnostics"))?;
-    if let Some(speakers) = stats
+    if let Some(speakers) = call_stats
         .get_mut("speakers")
         .and_then(serde_json::Value::as_array_mut)
     {
@@ -35,7 +35,7 @@ pub async fn diagnostics_snapshot(
             }
         }
     }
-    Ok(serde_json::json!({"transport":transport,"voice":stats,
+    Ok(serde_json::json!({"transport":transport,"voice":call_stats,
         "details":voice.as_ref().and_then(|v|v.session.diagnostics()),
         "unavailable":{"migrations":"Migration count is not exposed by Quinn",
             "bufferSizes":"Negotiated hardware buffer sizes are not exposed",
