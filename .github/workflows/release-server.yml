@@ -1,13 +1,16 @@
 name: Release server
 
+# Dispatch on a server-vX.Y.Z tag whose commit is on main. The version comes from the
+# tag and must match the ss-server crate. Publishing waits for CI on the same commit
+# and for approval in the server-release environment. See docs/release.md.
+
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: Image version (X.Y.Z); replaces this version and latest
-        required: true
-        default: "0.0.1"
-        type: string
+      force:
+        description: Replace an existing image version and GitHub release (latest still only moves forward)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,13 +23,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: Release gate
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Refuse refs other than server-v tags
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/server-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Server releases run only on a server-vX.Y.Z tag, not $GITHUB_REF"
+            exit 1
+          fi
+      - name: Require the tagged commit on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          if [ "$status" != identical ] && [ "$status" != behind ]; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main (compare status: $status)"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release tooling tests
+        run: node --test scripts/release-gate.test.mjs
+      - name: Version, existing tags and latest
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_FORCE: ${{ inputs.force }}
+        run: node scripts/release-gate.mjs server-plan
+
+  ci:
+    needs: gate
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: gate
     timeout-minutes: 60
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -38,10 +80,6 @@ jobs:
             os: ubuntu-24.04-arm
             arch: arm64
     steps:
-      - name: Validate image version
-        env:
-          VERSION: ${{ inputs.version }}
-        run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -71,85 +109,150 @@ jobs:
           fi
           install -m 0755 "target/${{ matrix.target }}/release/ss-server" \
             "$RUNNER_TEMP/ss-server-${{ matrix.target }}"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ss-server-${{ matrix.target }}
-          path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
-      - name: Package and smoke-test image
+      # The image is built here only to smoke-test it; nothing is pushed until publish.
+      - name: Smoke-test the image
         env:
-          TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-server"
-          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
-          echo "SERVER_IMAGE=$image:$tag" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/image/data"
-          install -m 0755 "target/$TARGET/release/ss-server" "$RUNNER_TEMP/image/ss-server"
-          docker build -f deploy/Dockerfile.release \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+          install -m 0755 "$RUNNER_TEMP/ss-server-${{ matrix.target }}" "$RUNNER_TEMP/image/ss-server-$ARCH"
+          docker build --platform "linux/$ARCH" -f deploy/Dockerfile.release \
             --label "org.opencontainers.image.version=$VERSION" \
-            -t "$image:$tag" "$RUNNER_TEMP/image"
+            -t sideband-server:smoke "$RUNNER_TEMP/image"
           docker run -d --name server-smoke --cap-add NET_BIND_SERVICE \
             -p 127.0.0.1:19101:9101 -p 127.0.0.1:19443:443 \
             -e SS_BIND_QUIC=0.0.0.0:443 -e SS_BIND_HTTP=0.0.0.0:443 \
-            -e SS_INTERNAL_BIND=0.0.0.0:9101 "$image:$tag"
+            -e SS_INTERNAL_BIND=0.0.0.0:9101 sideband-server:smoke
           trap 'docker rm -fv server-smoke' EXIT
           curl --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 --fail \
             http://127.0.0.1:19101/healthz
           curl --insecure --fail https://127.0.0.1:19443/api/v1/server
-      - name: Push architecture image
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker push "$SERVER_IMAGE"
-          docker logout ghcr.io
+          docker run --rm --entrypoint /ss-server sideband-server:smoke --version | tee "$RUNNER_TEMP/version.txt"
+          grep -qw "$VERSION" "$RUNNER_TEMP/version.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ss-server-${{ matrix.target }}
+          path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
+          if-no-files-found: error
 
-  image:
-    name: Publish multi-platform image
-    needs: build
+  publish:
+    name: Publish image and release
+    timeout-minutes: 20
+    needs: [gate, ci, build]
     runs-on: ubuntu-24.04
-    permissions:
-      packages: write
-    steps:
-      - name: Publish version, latest and commit tags
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-server"
-          build="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx imagetools create \
-            -t "$image:$VERSION" -t "$image:latest" -t "$image:sha-$GITHUB_SHA" \
-            "$image:$build-amd64" "$image:$build-arm64"
-          docker buildx imagetools inspect "$image:$VERSION"
-          docker logout ghcr.io
-          echo "Published: \`$image:$VERSION\` (linux/amd64 and linux/arm64)" >> "$GITHUB_STEP_SUMMARY"
-
-  release:
-    name: GitHub release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/server-v')
-    runs-on: ubuntu-latest
+    environment: server-release
     permissions:
       contents: write
+      packages: write
+      actions: read
+      id-token: write
+      attestations: write
     steps:
+      - name: Refuse refs other than server-v tags
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/server-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Server releases run only on a server-vX.Y.Z tag, not $GITHUB_REF"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: dist
-      - name: Publish
+      - name: Check environment protection
         env:
           GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-gate.mjs environment server-release
+      # Repeated here so a release published while this run waited is not overwritten.
+      - name: Version, existing tags and latest
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_FORCE: ${{ inputs.force }}
+        run: node scripts/release-gate.mjs server-plan
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ss-server-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
         run: |
-          mkdir -p "$RUNNER_TEMP/release"
-          find dist -type f -exec cp {} "$RUNNER_TEMP/release/" \;
-          cp deploy/socialspeak.service "$RUNNER_TEMP/release/socialspeak.service"
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/release/"* \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Static ss-server binaries and the systemd unit. See deploy/README.md."
+          cp deploy/socialspeak.service dist/socialspeak.service
+          chmod 0755 dist/ss-server-*
+          (cd dist && sha256sum ss-server-x86_64-unknown-linux-musl ss-server-aarch64-unknown-linux-musl socialspeak.service > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Attest binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Build and push the two-architecture image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.plan.outputs.image }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          MOVE_LATEST: ${{ steps.plan.outputs.move_latest }}
+        run: |
+          context="$RUNNER_TEMP/image"
+          mkdir -p "$context/data"
+          install -m 0755 dist/ss-server-x86_64-unknown-linux-musl "$context/ss-server-amd64"
+          install -m 0755 dist/ss-server-aarch64-unknown-linux-musl "$context/ss-server-arm64"
+          tags=(--tag "$IMAGE:$VERSION" --tag "$IMAGE:sha-$GITHUB_SHA")
+          if [ "$MOVE_LATEST" = true ]; then tags+=(--tag "$IMAGE:latest"); fi
+          # Dockerfile.release only copies files, so both platforms build without emulation
+          # and are pushed as one index: no per-architecture tags are ever created.
+          docker buildx create --name sideband-release --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io; docker buildx rm sideband-release' EXIT
+          docker buildx build --builder sideband-release --platform linux/amd64,linux/arm64 \
+            -f deploy/Dockerfile.release --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            "${tags[@]}" --metadata-file "$RUNNER_TEMP/image.json" --push "$context"
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "$IMAGE@$digest"
+          {
+            echo "Published \`$IMAGE:$VERSION\` (linux/amd64 and linux/arm64), digest \`$digest\`."
+            if [ "$MOVE_LATEST" = true ]; then echo "\`latest\` moved to $VERSION."; else echo "\`latest\` left on a newer version."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.plan.outputs.image }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPLACE: ${{ steps.plan.outputs.replace }}
+          IMAGE: ${{ steps.plan.outputs.image }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Static ss-server binaries, the systemd unit and SHA256SUMS. Image: \`$IMAGE:$VERSION\` (\`$DIGEST\`). See deploy/README.md.
+
+          Verify a download or the image:
+
+          \`\`\`sh
+          sha256sum --check --ignore-missing SHA256SUMS
+          gh attestation verify ss-server-x86_64-unknown-linux-musl --repo $GITHUB_REPOSITORY \\
+            --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release-server.yml --source-ref $GITHUB_REF
+          gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY \\
+            --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release-server.yml --source-ref $GITHUB_REF
+          \`\`\`
+          EOF
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # server-plan has already refused an existing release unless forced.
+            [ "$REPLACE" = true ]
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          fi

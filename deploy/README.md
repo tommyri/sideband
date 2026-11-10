@@ -44,8 +44,10 @@ docker compose logs
 From a repository checkout, add `-f deploy/docker-compose.yml` to these commands.
 The default image version is `0.0.1`. Override it with `SIDEBAND_IMAGE` in a
 Compose `.env` file, for example `SIDEBAND_IMAGE=ghcr.io/tommyri/sideband-server:latest`.
-During development, rerunning a version replaces its image. The workflow also
-publishes `sha-<full-commit>` tags; use an image digest for immutable deployment.
+A published version is replaced only by a deliberately forced rerun, and `latest`
+never moves to an older version. The workflow also publishes `sha-<full-commit>`
+tags; use an image digest for immutable deployment. Binaries and images carry
+build provenance attestations; see [verify a download](../docs/release.md#verify-a-download).
 
 The official `sideband-server` package is public and can be pulled without login.
 For a fork/new package, GitHub initially defaults to private: set the package
@@ -65,10 +67,13 @@ docker build -f deploy/Dockerfile -t socialspeak:local .
 SIDEBAND_IMAGE=socialspeak:local docker compose -f deploy/docker-compose.yml up -d
 ```
 
-To publish a new image, manually run **Release server**, selecting the source
-branch and version. It compiles once on each architecture's native runner,
-checks static linkage, smoke-tests the non-root runtime and publishes the combined
-image only after both builds succeed. Nothing runs on pushes or pull requests.
+To publish a new image, tag a commit on `main` as `server-vX.Y.Z` (matching the
+`ss-server` version) and manually run **Release server** on that tag; see
+[release the server](../docs/release.md#release-the-server). It compiles once on
+each architecture's native runner, checks static linkage and smoke-tests the
+non-root runtime locally. After CI and both builds pass and the release is
+approved, it pushes one two-architecture image. Nothing is pushed per
+architecture, and nothing runs on pushes or pull requests.
 
 ## Host NGINX and a public domain certificate
 

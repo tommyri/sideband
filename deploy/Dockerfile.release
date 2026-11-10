@@ -1,7 +1,10 @@
-# The manual release workflow supplies a smoke-tested static musl binary.
-# Keep the runtime equivalent to the source-build deploy/Dockerfile.
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY --chown=65532:65532 --chmod=0755 ss-server /ss-server
+# The release workflow supplies smoke-tested static musl binaries named
+# ss-server-amd64 and ss-server-arm64. Only files are copied, so one buildx call
+# builds both platforms without emulation. Keep the runtime equivalent to the
+# source-build deploy/Dockerfile, including the pinned base digest.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+ARG TARGETARCH
+COPY --chown=65532:65532 --chmod=0755 ss-server-${TARGETARCH} /ss-server
 COPY --chown=65532:65532 data /data
 WORKDIR /data
 VOLUME ["/data"]

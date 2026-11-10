@@ -15,3 +15,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+  # The fuzz crate is its own workspace with its own lockfile.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Dockerfile and Dockerfile.release pin base images by digest.
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
