@@ -785,24 +785,30 @@ impl Runtime {
         }
     }
 
+    /// Every captured quantum reaches the graph once: as gated audio, or as a
+    /// closed quantum that ends the burst and keeps the capture clock running.
     fn capture_vad(&mut self, blocked: bool) {
-        let Some(vad) = self.vad.as_mut() else { return };
-        if blocked {
-            let _ = vad.force_close();
-            let _ = self.graph.push_capture(&self.capture, false);
-            return;
+        if let Some(vad) = self.vad.as_mut() {
+            if blocked {
+                let _ = vad.force_close();
+            } else if let Ok(output) = vad.process(&self.capture) {
+                if output.event == Some(ss_audio::vad::GateEvent::Open) {
+                    // Pre-roll replays quanta the graph already counted closed.
+                    self.graph
+                        .retract_closed(output.audio().len().saturating_sub(1));
+                }
+                let mut gated = false;
+                for frame in output.audio() {
+                    let _ = self.graph.push_capture(frame, true);
+                    gated = true;
+                }
+                if gated {
+                    return;
+                }
+            }
         }
-        let Ok(output) = vad.process(&self.capture) else {
-            return;
-        };
-        let close = matches!(output.event, Some(ss_audio::vad::GateEvent::Close));
-        for frame in output.audio() {
-            let _ = self.graph.push_capture(frame, true);
-        }
-        if close {
-            self.capture.fill(0.0);
-            let _ = self.graph.push_capture(&self.capture, false);
-        }
+        // Closed, muted, calibrating, or a rejected (non-finite) quantum.
+        let _ = self.graph.push_capture(&self.capture, false);
     }
 
     fn render_once(&mut self) {
@@ -1010,4 +1016,179 @@ fn push_playback(producer: &mut Producer<f32>, frame: &StereoFrame) -> bool {
     second.copy_from_slice(&frame[first.len()..]);
     chunk.commit_all();
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use ss_audio::vad;
+
+    use super::{
+        super::graph::tests::{Expected, assert_bursts},
+        *,
+    };
+
+    const HANGOVER: usize = 5;
+    const PRE_ROLL: usize = ss_audio::vad::PRE_ROLL_FRAMES;
+
+    fn runtime(profile: VoiceProfile, gate: TalkGate) -> Runtime {
+        let (_, update_rx) = mpsc::sync_channel(1);
+        let (_, incoming_rx) = mpsc::sync_channel(1);
+        let shared = Arc::new(Shared {
+            stats: RwLock::new(WorkerStats::default()),
+            ptt: Mutex::new(PttState {
+                held: false,
+                released: None,
+            }),
+            muted: AtomicBool::new(false),
+            deaf: AtomicBool::new(false),
+            cues_enabled: AtomicBool::new(true),
+            controls_enabled: AtomicBool::new(true),
+        });
+        let config = AudioConfig {
+            source: AudioSource::Silent,
+            gate,
+            release_delay: Duration::ZERO,
+            ..AudioConfig::default()
+        };
+        let mut runtime = Runtime::new(
+            profile,
+            profile.encoder_params().default_bitrate_bps,
+            config,
+            MediaLink::new(),
+            tokio::sync::broadcast::channel(16).0,
+            update_rx,
+            incoming_rx,
+            shared,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        runtime.graph.set_track_id(1);
+        runtime
+    }
+
+    fn voice_activation() -> TalkGate {
+        TalkGate::VoiceActivation(vad::Config {
+            hangover: Duration::from_millis(10 * HANGOVER as u64),
+            ..vad::Config::default()
+        })
+    }
+
+    /// Feed one quantum per entry. `talk` is the user's intent: speech for
+    /// voice activation, the key for push-to-talk, unmuted for open mic. The
+    /// other gates always hear speech, so leaked audio would be audible.
+    fn drive(runtime: &mut Runtime, talk: &[bool], level: f32) -> Vec<(usize, Bytes)> {
+        let start = Instant::now();
+        let mut packets = Vec::new();
+        for (index, &on) in talk.iter().enumerate() {
+            let speech = on || !matches!(runtime.config.gate, TalkGate::VoiceActivation(_));
+            runtime.capture.fill(if speech { level } else { 0.0 });
+            match runtime.config.gate {
+                TalkGate::PushToTalk => {
+                    *runtime.shared.ptt.lock() = PttState {
+                        held: on,
+                        released: None,
+                    };
+                }
+                TalkGate::OpenMic => runtime.shared.muted.store(!on, Ordering::Relaxed),
+                TalkGate::VoiceActivation(_) => {}
+            }
+            runtime.capture_once(start + Duration::from_millis(10) * u32::try_from(index).unwrap());
+            packets.extend(runtime.graph.pop_outgoing().into_iter().map(|p| (index, p)));
+        }
+        packets
+    }
+
+    /// Bursts of 1..=6 talking quanta, so the gated count is odd and even for
+    /// every gate, each preceded and followed by `gap` idle quanta.
+    fn script(gate: TalkGate, gap: usize) -> (Vec<bool>, Vec<Expected>) {
+        let (lead, tail) = match gate {
+            TalkGate::VoiceActivation(_) => (PRE_ROLL, HANGOVER),
+            TalkGate::PushToTalk | TalkGate::OpenMic => (0, 0),
+        };
+        let mut talk = vec![false; gap];
+        let mut expected = Vec::new();
+        for length in 1..=6 {
+            let start = talk.len() - lead;
+            talk.extend(std::iter::repeat_n(true, length));
+            expected.push(Expected {
+                start: u32::try_from(start * 480).unwrap(),
+                gated_end: u32::try_from((talk.len() + tail) * 480).unwrap(),
+            });
+            talk.extend(std::iter::repeat_n(false, gap));
+        }
+        (talk, expected)
+    }
+
+    #[test]
+    fn every_gate_ends_each_burst_once_and_restarts_after_a_capture_gap() {
+        for profile in [
+            VoiceProfile::Voice,
+            VoiceProfile::Music,
+            VoiceProfile::LowLatency,
+        ] {
+            for gate in [TalkGate::PushToTalk, TalkGate::OpenMic, voice_activation()] {
+                let mut runtime = runtime(profile, gate);
+                let (talk, expected) = script(gate, 20);
+                let packets: Vec<_> = drive(&mut runtime, &talk, 0.1)
+                    .into_iter()
+                    .map(|(_, packet)| packet)
+                    .collect();
+                assert!(!runtime.graph.snapshot().talking, "{profile:?} {gate:?}");
+                let frame = u32::try_from(profile.encoder_params().frame_size.as_millis()).unwrap();
+                assert_bursts(&packets, frame * 48, &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn voice_activation_transmits_samples_above_full_scale() {
+        let mut runtime = runtime(VoiceProfile::Voice, voice_activation());
+        let (talk, expected) = script(voice_activation(), 20);
+        let packets: Vec<_> = drive(&mut runtime, &talk, 1.25)
+            .into_iter()
+            .map(|(_, packet)| packet)
+            .collect();
+        assert_bursts(&packets, 960, &expected);
+    }
+
+    #[test]
+    fn receiver_loses_no_leading_packets_across_voice_activation_bursts() {
+        for profile in [VoiceProfile::Voice, VoiceProfile::LowLatency] {
+            let mut sender = runtime(profile, voice_activation());
+            let (talk, _) = script(voice_activation(), 40);
+            let packets = drive(&mut sender, &talk, 0.1);
+            let mut receiver = VoiceGraph::new(profile, 64_000).unwrap();
+            receiver.set_track_id(2);
+            receiver.sync_tracks(
+                &[TrackSpec {
+                    id: 1,
+                    user: Id::generate(),
+                    gain: 1.0,
+                    muted: false,
+                }],
+                Duration::ZERO,
+            );
+            let mut pending = packets.iter().peekable();
+            for step in 0..talk.len() + 40 {
+                // A packet leaves after the quantum that completes it and
+                // crosses a steady 5 ms network.
+                let now = Duration::from_millis(10) * u32::try_from(step).unwrap();
+                while let Some((index, packet)) = pending.next_if(|(index, _)| *index < step) {
+                    let arrival = Duration::from_millis(10) * u32::try_from(*index + 1).unwrap()
+                        + Duration::from_millis(5);
+                    receiver.push_datagram(packet, arrival);
+                }
+                receiver.render(now, false);
+            }
+            let stats = receiver.snapshot().tracks[&1].stats.jitter;
+            assert_eq!(
+                stats.accepted,
+                packets.len() as u64,
+                "{profile:?} {stats:?}"
+            );
+            assert_eq!(stats.late, 0, "{profile:?} {stats:?}");
+            assert_eq!(stats.lost, 0, "{profile:?} {stats:?}");
+        }
+    }
 }

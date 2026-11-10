@@ -180,7 +180,7 @@ fn malformed_frames_leave_history_meter_and_calibration_unchanged() {
     vad.start_calibration();
     vad.process(&QUIET).unwrap();
     assert!(matches!(vad.process(&[]), Err(Error::FrameLength)));
-    for value in [f32::NAN, f32::INFINITY, -1.001, 1.001] {
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         assert!(matches!(
             vad.process(&[value; FRAME_SAMPLES]),
             Err(Error::Samples)
@@ -193,6 +193,29 @@ fn malformed_frames_leave_history_meter_and_calibration_unchanged() {
     assert!(!vad.process(&SPEECH).unwrap().open);
     vad.set_threshold(-30.0).unwrap();
     assert_eq!(vad.process(&SPEECH).unwrap().event, Some(GateEvent::Open));
+}
+
+#[test]
+fn samples_beyond_full_scale_are_measured_and_returned_unchanged() {
+    // Resampler overshoot, processing output, and float devices can exceed
+    // 1.0. Such a frame is speech to transmit, not a malformed one to drop.
+    let mut vad = Vad::new(Config::default()).unwrap();
+    let mut loud = [0.5_f32; FRAME_SAMPLES];
+    loud[7] = 1.5;
+    loud[8] = -2.0;
+    let out = vad.process(&loud).unwrap();
+    assert_eq!(out.event, Some(GateEvent::Open));
+    assert_eq!(out.audio().collect::<Vec<_>>(), [&loud[..]]);
+    assert!(out.open);
+    // A lone over-range sample in a quiet frame is measured, not forced open.
+    let mut vad = Vad::new(Config {
+        threshold_dbfs: -10.0,
+        ..Config::default()
+    })
+    .unwrap();
+    let mut click = QUIET;
+    click[0] = 1.2;
+    assert!(!vad.process(&click).unwrap().open);
 }
 
 fn fixture() -> Vec<f32> {

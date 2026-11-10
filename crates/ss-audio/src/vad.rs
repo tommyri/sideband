@@ -87,8 +87,9 @@ pub enum Error {
     /// One exact 10 ms interleaved quantum is required.
     #[error("VAD requires exactly 480 samples per channel")]
     FrameLength,
-    /// PCM must be finite normalized f32 in -1..=1.
-    #[error("VAD input must be finite normalized PCM")]
+    /// PCM must be finite. Samples beyond full scale are accepted: resampler
+    /// overshoot, processing output, and float devices can exceed 1.0.
+    #[error("VAD input must be finite PCM")]
     Samples,
 }
 
@@ -231,16 +232,18 @@ impl Vad {
             .map(|count| CALIBRATION_FRAMES - count)
     }
 
-    /// Process exact interleaved normalized PCM. Errors leave all state intact.
-    /// Returned audio is bit-identical to input, including pre-roll; RNNoise's
-    /// denoised output is discarded. Continue calling while the gate is closed.
+    /// Process exact interleaved PCM. Errors leave all state intact. Finite
+    /// samples beyond full scale are measured as they are, so they can only
+    /// raise the level; they are never clamped. Returned audio is bit-identical
+    /// to input, including pre-roll; RNNoise's denoised output is discarded.
+    /// Continue calling while the gate is closed.
     pub fn process(&mut self, input: &[f32]) -> Result<Output<'_>, Error> {
         let channels = usize::from(self.config.channels);
         let samples = FRAME_SAMPLES * channels;
         if input.len() != samples {
             return Err(Error::FrameLength);
         }
-        if input.iter().any(|v| !v.is_finite() || v.abs() > 1.0) {
+        if input.iter().any(|v| !v.is_finite()) {
             return Err(Error::Samples);
         }
         let (energy, peak) = level(input, channels);
@@ -361,7 +364,7 @@ fn power(dbfs: f32) -> f64 {
 }
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "normalized PCM levels fit f32"
+    reason = "finite PCM levels in dB fit f32"
 )]
 fn db(energy: f64) -> f32 {
     (10.0 * energy.max(1.0e-12).log10()) as f32
