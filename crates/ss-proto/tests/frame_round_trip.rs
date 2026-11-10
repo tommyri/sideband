@@ -503,6 +503,7 @@ fn server_msg_low(which: u32, sample: &Sample) -> server_envelope::Msg {
             }),
             resume_token: sample.text.clone(),
             snapshot: Some(snapshot(sample)),
+            conn_id: sample.blob.clone(),
         }),
         2 => server_envelope::Msg::Ack(Ack {
             request_id: sample.pick,

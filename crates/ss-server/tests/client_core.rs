@@ -426,6 +426,324 @@ async fn mute_closes_the_gate_before_the_server_and_reconciles_after_reconnect()
     session.leave().await.unwrap();
 }
 
+fn tone() -> AudioConfig {
+    AudioConfig {
+        source: AudioSource::Test,
+        gate: TalkGate::OpenMic,
+        ..AudioConfig::default()
+    }
+}
+fn silent() -> AudioConfig {
+    AudioConfig {
+        source: AudioSource::Silent,
+        ..AudioConfig::default()
+    }
+}
+fn own_id(client: &Client) -> Id {
+    id_from_bytes(&client.state().read().own_user.as_ref().unwrap().id).unwrap()
+}
+/// The owner's account signed in on another device: its own session and
+/// connection.
+async fn second_device(world: &World) -> Client {
+    Client::connect(
+        world.address.clone(),
+        Credentials::Login(v1::Login {
+            username: "owner".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+    )
+    .await
+    .unwrap()
+}
+/// `(track, conn)` for each audio track `user` publishes in `channel`.
+fn audio_tracks(state: &State, user: Id, channel: Id) -> Vec<(u32, bytes::Bytes)> {
+    state
+        .tracks
+        .values()
+        .filter(|t| {
+            t.kind == i32::from(v1::TrackKind::Audio)
+                && t.user_id == wire(user)
+                && t.channel_id == wire(channel)
+        })
+        .map(|t| (t.track_id, t.conn_id.clone()))
+        .collect()
+}
+/// Waits until `session` plays `track` as speech from `user`.
+async fn hears(session: &VoiceSession, track: u32, user: Id, within: Duration) {
+    timeout(within, async {
+        while !session
+            .stats()
+            .speakers
+            .iter()
+            .any(|s| s.track == track && s.user == user && s.speaking)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "track {track} from {user} not heard: {:?}",
+            session.stats().speakers
+        )
+    });
+}
+/// Closes `conn` from the server side as a slow consumer. The server drops
+/// its voice seat at once, without a resume lease: the same state as a
+/// reconnect after the 60 s lease expired.
+fn drop_without_lease(world: &World, conn: Id) {
+    let registry = world.server.registry();
+    let grace = registry.slow_after();
+    registry.set_slow_after(Duration::ZERO);
+    // The server's writer shares this current-thread runtime, so the queue
+    // fills without being drained.
+    for _ in 0..=ss_server::registry::OUTBOUND_CAPACITY {
+        registry.enqueue(
+            conn,
+            v1::ServerEnvelope {
+                request_id: 0,
+                msg: Some(v1::server_envelope::Msg::ServerNotice(v1::ServerNotice {
+                    text: "filler".into(),
+                })),
+            },
+        );
+    }
+    registry.set_slow_after(grace);
+}
+
+/// `(conn, channel)` for each voice seat `user` holds.
+fn seats(state: &State, user: Id) -> Vec<(bytes::Bytes, bytes::Bytes)> {
+    state
+        .voice_states
+        .values()
+        .filter(|v| v.user_id == wire(user))
+        .filter_map(|v| Some((v.conn_id.clone(), v.channel_id.clone()?)))
+        .collect()
+}
+async fn voice_channel(owner: &Client, name: &str) -> Id {
+    owner
+        .create_channel(v1::CreateChannel {
+            name: name.into(),
+            kind: v1::ChannelKind::Voice.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+}
+
+async fn reconnected(client: &Client, events: &mut broadcast::Receiver<ClientEvent>) {
+    until(client, events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    until(client, events, |s| {
+        s.connection == ConnectionState::Connected
+    })
+    .await;
+}
+
+/// The server keeps one voice seat per user: joining on a second device
+/// takes the seat from the first. A device that lost the seat, while away or
+/// while connected, must not take it back when it reconnects. The device
+/// holding it gets it back after losing it with no lease to resume.
+#[tokio::test]
+async fn one_accounts_devices_share_its_voice_seat_across_reconnects() {
+    let world = World::new().await;
+    let phone = world.owner().await;
+    let listener = world.guest(&phone).await;
+    let laptop = second_device(&world).await;
+    let own = own_id(&phone);
+    let general = named(&phone.state().read(), "General", v1::ChannelKind::Voice);
+    let other = voice_channel(&phone, "Other").await;
+    let mut phone_events = phone.subscribe();
+    let mut laptop_events = laptop.subscribe();
+    until(&laptop, &mut laptop_events, |s| {
+        s.channels.contains_key(&other)
+    })
+    .await;
+    let listening = VoiceSession::start(&listener, other, silent())
+        .await
+        .unwrap();
+    let phone_voice = VoiceSession::start(&phone, general, silent())
+        .await
+        .unwrap();
+    let (phone_conn, _) = seats(&phone.state().read(), own)[0].clone();
+
+    // The laptop joins while the phone is away; the phone stays out.
+    drop_without_lease(&world, id_from_bytes(&phone_conn).unwrap());
+    until(&phone, &mut phone_events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    let laptop_voice = VoiceSession::start(&laptop, other, tone()).await.unwrap();
+    let (track, laptop_conn) = audio_tracks(&laptop.state().read(), own, other)[0].clone();
+    until(&phone, &mut phone_events, |s| {
+        s.connection == ConnectionState::Connected
+    })
+    .await;
+    assert_eq!(
+        seats(&phone.state().read(), own),
+        [(laptop_conn.clone(), wire(other))],
+        "the phone took the seat back after it reconnected"
+    );
+    hears(&listening, track, own, WAIT).await;
+
+    // The phone joins again and takes the seat while the laptop is
+    // connected; the laptop then reconnects and stays out.
+    drop(phone_voice);
+    let _phone_voice = VoiceSession::start(&phone, other, tone()).await.unwrap();
+    until(&laptop, &mut laptop_events, |s| {
+        let seats = seats(s, own);
+        seats.len() == 1 && seats[0].0 != laptop_conn
+    })
+    .await;
+    let (phone_track, phone_conn) = audio_tracks(&phone.state().read(), own, other)[0].clone();
+    drop(laptop_voice);
+    drop_without_lease(&world, id_from_bytes(&laptop_conn).unwrap());
+    reconnected(&laptop, &mut laptop_events).await;
+    assert_eq!(
+        seats(&laptop.state().read(), own),
+        [(phone_conn.clone(), wire(other))],
+        "the laptop took the seat back after it reconnected"
+    );
+    hears(&listening, phone_track, own, WAIT).await;
+
+    // The phone loses its seat with no lease to resume, as after the 60 s
+    // lease, and is back in voice on its new connection with its own track.
+    drop_without_lease(&world, id_from_bytes(&phone_conn).unwrap());
+    reconnected(&phone, &mut phone_events).await;
+    let seats = seats(&phone.state().read(), own);
+    assert_eq!(seats.len(), 1);
+    assert_ne!(seats[0].0, phone_conn);
+    assert_eq!(seats[0].1, wire(other));
+    let (track, conn) = audio_tracks(&phone.state().read(), own, other)[0].clone();
+    assert_eq!(conn, seats[0].0);
+    hears(&listening, track, own, WAIT).await;
+}
+
+#[tokio::test]
+async fn a_moved_member_rejoins_the_channel_it_was_moved_to_after_a_restart() {
+    let mut world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let user = own_id(&guest);
+    let general = named(&owner.state().read(), "General", v1::ChannelKind::Voice);
+    let other = voice_channel(&owner, "Other").await;
+    let mut events = guest.subscribe();
+    guest
+        .join_voice(v1::JoinVoice {
+            channel_id: wire(general),
+            self_mute: true,
+            self_deaf: false,
+        })
+        .await
+        .unwrap();
+    owner
+        .move_user(v1::MoveUser {
+            user_id: wire(user),
+            channel_id: wire(other),
+        })
+        .await
+        .unwrap();
+    until(&guest, &mut events, |s| {
+        seats(s, user)
+            .iter()
+            .any(|(_, channel)| *channel == wire(other))
+    })
+    .await;
+    world.restart().await;
+    until(&guest, &mut events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    until(&guest, &mut events, |s| {
+        s.connection == ConnectionState::Connected && !seats(s, user).is_empty()
+    })
+    .await;
+    assert_eq!(seats(&guest.state().read(), user)[0].1, wire(other));
+}
+
+#[tokio::test]
+async fn after_a_restart_a_reused_track_id_plays_as_its_new_speaker() {
+    let mut world = World::new().await;
+    let observer = world.owner().await;
+    let first = world.guest(&observer).await;
+    let invite = observer
+        .create_invite(v1::CreateInvite {
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    let third_storage = Arc::new(MemoryStorage::default());
+    let third = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Register(v1::Register {
+            invite_code: invite.code,
+            username: "third".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+        third_storage.clone(),
+    )
+    .await
+    .unwrap();
+    let third_user = own_id(&third);
+    let third_token = third_storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    third.close().await;
+    let first_user = own_id(&first);
+    let voice = named(&observer.state().read(), "General", v1::ChannelKind::Voice);
+
+    // Before the restart the first member holds track 1.
+    let first_voice = VoiceSession::start(&first, voice, tone()).await.unwrap();
+    let observing = VoiceSession::start(&observer, voice, silent())
+        .await
+        .unwrap();
+    let (reused, _) = audio_tracks(&observer.state().read(), first_user, voice)[0].clone();
+    hears(&observing, reused, first_user, WAIT).await;
+    // Let the first member's sequence numbers run well ahead.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // The first member goes away while the server is down, so the observer
+    // never hears it leave.
+    let mut events = observer.subscribe();
+    let gone = async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(first_voice);
+        first.close().await;
+    };
+    tokio::join!(world.restart_after(Duration::from_millis(300)), gone);
+
+    // The third member is back before the observer's reconnect backoff ends.
+    let third = Client::connect(
+        world.address.clone(),
+        Credentials::Session(third_token),
+        world.pins.clone(),
+    )
+    .await
+    .unwrap();
+    let _third_voice = VoiceSession::start(&third, voice, tone()).await.unwrap();
+    until(&observer, &mut events, |s| {
+        s.connection == ConnectionState::Connected && !audio_tracks(s, third_user, voice).is_empty()
+    })
+    .await;
+    let (track, _) = audio_tracks(&observer.state().read(), third_user, voice)[0].clone();
+    assert_eq!(track, reused, "the third member did not rejoin first");
+    // At once: well before the new sequence catches up with the old one.
+    hears(&observing, track, third_user, Duration::from_millis(1500)).await;
+    assert!(
+        observing
+            .stats()
+            .speakers
+            .iter()
+            .all(|speaker| speaker.user != first_user)
+    );
+}
+
 #[tokio::test]
 async fn permission_changes_refresh_existing_and_newly_visible_channels() {
     let world = World::new().await;

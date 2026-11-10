@@ -131,6 +131,7 @@ async fn serve(
                 server_info: None,
                 resume_token: "scripted-resume".into(),
                 snapshot: Some(snapshot.clone()),
+                conn_id: ss_core::Id::generate().as_bytes().to_vec().into(),
             })),
         });
         tokio::spawn(async move {

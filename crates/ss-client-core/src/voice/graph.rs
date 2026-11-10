@@ -7,8 +7,8 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use ss_audio::{
-    codec::{self, Encoder},
-    jitter::PacketHeader,
+    codec::{self, Encoder, OpusPacket},
+    jitter::{self, PacketHeader},
     mixer::{Mixer, StereoFrame},
     receive::{Stats as ReceiverStats, TrackReceiver},
 };
@@ -35,6 +35,9 @@ pub(super) enum GraphError {
 pub(super) struct TrackSpec {
     pub id: u32,
     pub user: Id,
+    /// The sending connection. Track ids start again from 1 when the server
+    /// restarts, so an id alone does not name one sender for long.
+    pub conn: Id,
     pub gain: f32,
     pub muted: bool,
 }
@@ -60,6 +63,9 @@ pub(super) struct GraphSnapshot {
 
 struct Track {
     user: Id,
+    conn: Id,
+    /// Frame size and channels `receiver` was built for.
+    profile: VoiceProfile,
     receiver: TrackReceiver,
     gain: f32,
     muted: bool,
@@ -150,9 +156,16 @@ impl VoiceGraph {
         Ok(())
     }
 
+    /// Match the receivers to the channel's tracks. A track id that now
+    /// belongs to another connection (after a server restart) gets a new
+    /// receiver: the old one would credit the old user and treat the new
+    /// sender's packets as late until its sequence passed the old one.
     pub fn sync_tracks(&mut self, specs: &[TrackSpec], now: Duration) {
-        self.tracks
-            .retain(|id, _| specs.iter().any(|spec| spec.id == *id));
+        self.tracks.retain(|id, track| {
+            specs
+                .iter()
+                .any(|spec| spec.id == *id && spec.conn == track.conn && spec.user == track.user)
+        });
         for spec in specs {
             if spec.id == 0 || spec.id == self.track_id {
                 continue;
@@ -162,14 +175,15 @@ impl VoiceGraph {
                 track.muted = spec.muted;
                 continue;
             }
-            let Ok(mut receiver) = TrackReceiver::new(self.profile) else {
+            let Some(receiver) = self.receiver(self.profile) else {
                 continue;
             };
-            receiver.set_jitter_bounds(self.preferences.jitter_min, self.preferences.jitter_max);
             self.tracks.insert(
                 spec.id,
                 Track {
                     user: spec.user,
+                    conn: spec.conn,
+                    profile: self.profile,
                     receiver,
                     gain: spec.gain,
                     muted: spec.muted,
@@ -183,6 +197,12 @@ impl VoiceGraph {
                 }
             }
         }
+    }
+
+    fn receiver(&self, profile: VoiceProfile) -> Option<TrackReceiver> {
+        let mut receiver = TrackReceiver::new(profile).ok()?;
+        receiver.set_jitter_bounds(self.preferences.jitter_min, self.preferences.jitter_max);
+        Some(receiver)
     }
 
     pub fn configure(&mut self, config: &super::AudioConfig) {
@@ -274,6 +294,24 @@ impl VoiceGraph {
             talk_start: header.flags & TALK_START != 0,
             talk_end: header.flags & TALK_END != 0,
         };
+        if !matches!(
+            track.receiver.push(header, payload, arrival),
+            Err(jitter::Error::Duration)
+        ) {
+            return;
+        }
+        // The sender encodes with another profile than ours: the channel's
+        // profile changed and one of us joined before the change. Follow the
+        // sender's frame size, so old and new joiners still hear each other.
+        let Some(profile) = profile_of(payload).filter(|profile| *profile != track.profile) else {
+            return;
+        };
+        let Ok(mut receiver) = TrackReceiver::new(profile) else {
+            return;
+        };
+        receiver.set_jitter_bounds(self.preferences.jitter_min, self.preferences.jitter_max);
+        track.receiver = receiver;
+        track.profile = profile;
         let _ = track.receiver.push(header, payload, arrival);
     }
 
@@ -380,6 +418,23 @@ impl VoiceGraph {
         self.outgoing.push(packet);
         Ok(())
     }
+}
+
+/// The profile that encodes frames like `payload`: same frame size and, when
+/// one exists, the same channel count.
+fn profile_of(payload: &[u8]) -> Option<VoiceProfile> {
+    let packet = OpusPacket::toc(payload).ok()?;
+    let profiles = [
+        VoiceProfile::Voice,
+        VoiceProfile::Music,
+        VoiceProfile::LowLatency,
+    ];
+    let sized = |profile: &VoiceProfile| profile.encoder_params().frame_size == packet.duration();
+    profiles
+        .into_iter()
+        .filter(sized)
+        .find(|profile| profile.encoder_params().channels == packet.channels())
+        .or_else(|| profiles.into_iter().find(sized))
 }
 
 fn audio_packet(
@@ -634,15 +689,7 @@ pub(super) mod tests {
         let mut receiver = VoiceGraph::new(profile, 80_000).unwrap();
         sender.set_track_id(1);
         receiver.set_track_id(2);
-        receiver.sync_tracks(
-            &[TrackSpec {
-                id: 1,
-                user: Id::generate(),
-                gain: 1.0,
-                muted: false,
-            }],
-            Duration::ZERO,
-        );
+        receiver.sync_tracks(&[spec(1, Id::generate())], Duration::ZERO);
         let mut frame = vec![0.0; sender.quantum()];
         let mut arrival = Duration::from_millis(20);
         for index in 0..24 {
@@ -663,5 +710,83 @@ pub(super) mod tests {
             receiver.render(Duration::from_millis(610), true),
             [0.0; 960]
         );
+    }
+
+    fn spec(id: u32, user: Id) -> TrackSpec {
+        TrackSpec {
+            id,
+            user,
+            conn: Id::generate(),
+            gain: 1.0,
+            muted: false,
+        }
+    }
+
+    /// Run `sender` into `receiver` in real time for `quanta` capture quanta,
+    /// rendering every 10 ms. Returns the loudest rendered quantum.
+    fn stream(
+        sender: &mut VoiceGraph,
+        receiver: &mut VoiceGraph,
+        quanta: usize,
+        clock: &mut Duration,
+    ) -> f32 {
+        let mut frame = vec![0.0; sender.quantum()];
+        let mut peak = 0.0_f32;
+        for index in 0..quanta {
+            tone(&mut frame, sender.channels(), index * 480);
+            sender.push_capture(&frame, true).unwrap();
+            for packet in sender.pop_outgoing() {
+                receiver.push_datagram(&packet, *clock);
+            }
+            receiver.render(*clock, false);
+            peak = peak.max(receiver.snapshot().output_rms);
+            *clock += Duration::from_millis(10);
+        }
+        peak
+    }
+
+    #[test]
+    fn a_reused_track_id_gets_a_fresh_receiver_for_its_new_sender() {
+        let profile = VoiceProfile::Voice;
+        let (old, new) = (Id::generate(), Id::generate());
+        let mut receiver = VoiceGraph::new(profile, 80_000).unwrap();
+        receiver.set_track_id(9);
+        receiver.sync_tracks(&[spec(1, old)], Duration::ZERO);
+        let mut clock = Duration::ZERO;
+        let mut first = VoiceGraph::new(profile, 80_000).unwrap();
+        first.set_track_id(1);
+        assert!(stream(&mut first, &mut receiver, 400, &mut clock) > 0.01);
+
+        // A restarted server hands track 1 to someone else, whose sequence
+        // numbers start again from zero.
+        receiver.sync_tracks(&[spec(1, new)], clock);
+        let mut second = VoiceGraph::new(profile, 80_000).unwrap();
+        second.set_track_id(1);
+        let peak = stream(&mut second, &mut receiver, 30, &mut clock);
+        let track = receiver.snapshot().tracks[&1];
+        assert_eq!(track.user, Some(new), "speaker attributed to the old user");
+        assert_eq!(track.stats.jitter.late, 0, "new sender's packets were late");
+        assert!(peak > 0.01, "new sender not heard within 300 ms");
+    }
+
+    #[test]
+    fn receivers_follow_the_senders_frame_size_after_a_profile_switch() {
+        use VoiceProfile::{LowLatency, Music, Voice};
+        for (listener, talker) in [
+            (Voice, LowLatency),
+            (LowLatency, Voice),
+            (Music, LowLatency),
+            (LowLatency, Music),
+        ] {
+            let bitrate = |p: VoiceProfile| p.encoder_params().default_bitrate_bps;
+            let mut receiver = VoiceGraph::new(listener, bitrate(listener)).unwrap();
+            receiver.set_track_id(9);
+            receiver.sync_tracks(&[spec(1, Id::generate())], Duration::ZERO);
+            let mut sender = VoiceGraph::new(talker, bitrate(talker)).unwrap();
+            sender.set_track_id(1);
+            let mut clock = Duration::ZERO;
+            let peak = stream(&mut sender, &mut receiver, 40, &mut clock);
+            assert!(peak > 0.01, "{listener:?} listener, {talker:?} talker");
+        }
     }
 }

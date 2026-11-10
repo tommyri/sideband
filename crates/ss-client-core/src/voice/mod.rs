@@ -807,7 +807,7 @@ async fn load_tracks(
     server: ss_net::pins::ServerId,
     channel: Id,
 ) -> Result<Tracks, Error> {
-    let (own_user, tracks) = {
+    let (own, tracks) = {
         let state = store.read();
         let own_user = state
             .own_user
@@ -820,20 +820,28 @@ async fn load_tracks(
             if track.kind != v1::TrackKind::Audio as i32 || id(&track.channel_id)? != channel {
                 continue;
             }
-            tracks.push((track.track_id, id(&track.user_id)?));
+            tracks.push((track.track_id, id(&track.user_id)?, id(&track.conn_id)?));
         }
-        (own_user, tracks)
+        // The account may be signed in on other devices too; only this
+        // connection's track is ours. Older servers do not name our
+        // connection, so fall back to the newest track of our user.
+        let own = match state.own_conn {
+            Some(own_conn) => tracks
+                .iter()
+                .find(|(_, _, conn)| *conn == own_conn)
+                .map(|(track, _, _)| *track),
+            None => tracks
+                .iter()
+                .filter(|(_, user, _)| *user == own_user)
+                .map(|(track, _, _)| *track)
+                .max(),
+        };
+        (own.unwrap_or(0), tracks)
     };
-    let own = tracks
-        .iter()
-        .filter(|(_, user)| *user == own_user)
-        .map(|(track, _)| *track)
-        .max()
-        .unwrap_or(0);
     let users: BTreeSet<_> = tracks
         .iter()
-        .filter(|(track, _)| *track != own)
-        .map(|(_, user)| *user)
+        .filter(|(track, _, _)| *track != own)
+        .map(|(_, user, _)| *user)
         .collect();
     let settings = tokio::task::spawn_blocking(move || {
         let mut settings = BTreeMap::new();
@@ -855,12 +863,13 @@ async fn load_tracks(
     .map_err(|error| Error::Storage(error.to_string()))??;
     let remote = tracks
         .into_iter()
-        .filter(|(track, _)| *track != own)
-        .map(|(track, user)| {
+        .filter(|(track, _, _)| *track != own)
+        .map(|(track, user, conn)| {
             let (gain, muted) = settings.get(&user).copied().unwrap_or((1.0, false));
             TrackSpec {
                 id: track,
                 user,
+                conn,
                 gain,
                 muted,
             }
@@ -992,5 +1001,58 @@ fn public_stats(stats: &worker::WorkerStats, transport: TransportStats) -> Voice
         processing_latency: stats.processing_latency,
         processing_over_budget: stats.processing_over_budget,
         output_rms: stats.graph.output_rms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryStorage;
+
+    fn wire(id: Id) -> bytes::Bytes {
+        id_to_bytes(id)
+    }
+
+    /// The account is in the channel from another device too. That device's
+    /// track id is higher, but only this connection's track is ours.
+    #[tokio::test]
+    async fn own_track_is_this_connections_not_the_accounts_newest() {
+        let (user, other, channel) = (Id::generate(), Id::generate(), Id::generate());
+        let (ours, theirs) = (Id::generate(), Id::generate());
+        let track = |track_id, user, conn| v1::Track {
+            track_id,
+            user_id: wire(user),
+            conn_id: wire(conn),
+            kind: v1::TrackKind::Audio.into(),
+            channel_id: wire(channel),
+            ..Default::default()
+        };
+        let store = StateStore::default();
+        store
+            .welcome(&v1::Welcome {
+                user: Some(v1::User {
+                    id: wire(user),
+                    ..Default::default()
+                }),
+                conn_id: wire(ours),
+                snapshot: Some(v1::Snapshot {
+                    tracks: vec![
+                        track(5, user, ours),
+                        track(6, other, Id::generate()),
+                        track(7, user, theirs),
+                    ],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        let server = ss_net::pins::ServerId::new("example.test", 443).unwrap();
+        let tracks = load_tracks(&store, Arc::new(MemoryStorage::default()), server, channel)
+            .await
+            .unwrap();
+        assert_eq!(tracks.own, 5);
+        let mut remote: Vec<_> = tracks.remote.iter().map(|spec| spec.id).collect();
+        remote.sort_unstable();
+        assert_eq!(remote, [6, 7], "the other device is heard like anyone else");
     }
 }

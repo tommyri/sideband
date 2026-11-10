@@ -101,6 +101,8 @@ pub struct Session {
     pub events: mpsc::Receiver<v1::ServerEnvelope>,
     /// Authenticated user id bytes.
     pub user_id: Bytes,
+    /// This connection's id bytes, from `Welcome`. Empty from older servers.
+    pub conn_id: Bytes,
     /// Token for the next Hello.
     pub token: String,
     /// State at Hello.
@@ -162,6 +164,7 @@ pub async fn open(target: &Target, credential: Credential<'_>) -> Result<Session
         control: Arc::new(control),
         events,
         user_id,
+        conn_id: welcome.conn_id,
         token: welcome.resume_token,
         snapshot: welcome.snapshot.unwrap_or_default(),
     })
@@ -196,7 +199,7 @@ impl Session {
                 .await
                 .map_err(|_| SessionError::NoTrack)?
                 .ok_or(SessionError::Control(ControlError::Closed))?;
-            if let Some(track) = own_track(&event, &self.user_id) {
+            if let Some(track) = self.own_track(&event) {
                 return Ok(track);
             }
         }
@@ -228,13 +231,20 @@ pub async fn call(
     }
 }
 
-/// The track id when `event` announces this user's own track.
-pub fn own_track(event: &v1::ServerEnvelope, user_id: &Bytes) -> Option<u32> {
-    match &event.msg {
-        Some(server_envelope::Msg::TrackAdded(added)) if added.user_id == *user_id => {
-            Some(added.track_id)
+impl Session {
+    /// The track id when `event` announces this connection's own track.
+    /// Another connection of the same account is not ours. Older servers
+    /// do not name the connection, so there it matches the user.
+    pub fn own_track(&self, event: &v1::ServerEnvelope) -> Option<u32> {
+        match &event.msg {
+            Some(server_envelope::Msg::TrackAdded(added))
+                if (self.conn_id.is_empty() && added.user_id == self.user_id)
+                    || (!self.conn_id.is_empty() && added.conn_id == self.conn_id) =>
+            {
+                Some(added.track_id)
+            }
+            _ => None,
         }
-        _ => None,
     }
 }
 

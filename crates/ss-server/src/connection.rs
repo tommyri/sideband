@@ -346,7 +346,7 @@ impl Server {
             perms_cache: authed.permissions,
         };
         let result = match self
-            .prepare_welcome(&connection, &mut stream, &authed, request_id)
+            .prepare_welcome(&connection, &mut stream, &authed, conn_id, request_id)
             .await
         {
             Ok(welcome) => {
@@ -420,6 +420,7 @@ impl Server {
         connection: &Connection,
         stream: &mut ServerStream,
         authed: &auth::Authenticated,
+        conn_id: Id,
         request_id: u32,
     ) -> Result<v1::ServerEnvelope, Error> {
         let mut snapshot = match snapshot::build_with(&self.perms, authed.user.id, |id| {
@@ -439,8 +440,8 @@ impl Server {
             }
         };
         self.voice.fill(&mut snapshot, authed.user.id);
-        let welcome =
-            welcome_envelope(request_id, authed, &self.auth.server_name().await, snapshot);
+        let server_name = self.auth.server_name().await;
+        let welcome = welcome_envelope(request_id, authed, conn_id, &server_name, snapshot);
         if welcome.encoded_len() > ss_proto::MAX_FRAME_LEN {
             let error = v1::ServerEnvelope::error(
                 request_id,
@@ -527,6 +528,7 @@ struct Pump {
 fn welcome_envelope(
     request_id: u32,
     authed: &auth::Authenticated,
+    conn_id: Id,
     server_name: &str,
     snapshot: v1::Snapshot,
 ) -> v1::ServerEnvelope {
@@ -555,6 +557,7 @@ fn welcome_envelope(
             }),
             resume_token: authed.resume_token.clone(),
             snapshot: Some(snapshot),
+            conn_id: id_to_bytes(conn_id),
         })),
     }
 }
