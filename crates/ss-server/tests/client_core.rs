@@ -92,7 +92,9 @@ impl World {
     }
     async fn restart_after(&mut self, outage: Duration) {
         let addr = self.endpoint.local_addr().unwrap();
-        self.endpoint.close(0, b"forced restart");
+        // As `serve` does on shutdown, so clients start their backoff over.
+        self.endpoint
+            .close(ss_server::registry::CLOSE_SHUTDOWN, b"forced restart");
         self.worker.abort();
         let _ = (&mut self.worker).await;
         self.endpoint.wait_idle().await;
@@ -881,6 +883,70 @@ async fn forced_restart_resumes_snapshot_and_voice_without_duplicate_commands() 
             .send_message(post(general, "after restart"))
             .await
             .is_ok()
+    );
+    https_task.abort();
+}
+
+#[tokio::test]
+async fn edits_and_deletes_made_during_an_outage_show_after_resume() {
+    let mut world = World::new().await;
+    let (https_port, https_task) = https(&world, false).await;
+    world.address.https_port = https_port;
+    let client = world.owner().await;
+    let mut events = client.subscribe();
+    let general = named(&client.state().read(), "general", v1::ChannelKind::Text);
+    let doomed = client.send_message(post(general, "doomed")).await.unwrap();
+    let edited = client
+        .send_message(post(general, "first draft"))
+        .await
+        .unwrap();
+    let kept = client.send_message(post(general, "kept")).await.unwrap();
+    until(&client, &mut events, |s| {
+        s.messages
+            .get(&general)
+            .is_some_and(|cache| cache.ordered().len() == 3)
+    })
+    .await;
+    // While the client is away its server changes two cached messages. It
+    // never sees the events, as in an outage.
+    let pool = world.pool.clone();
+    let offline = async {
+        until(&client, &mut events, |s| {
+            matches!(s.connection, ConnectionState::Reconnecting { .. })
+        })
+        .await;
+        let mut conn = pool.write().await;
+        db::messages::soft_delete(&mut conn, doomed, ss_core::Timestamp::now())
+            .await
+            .unwrap();
+        db::messages::edit(
+            &mut conn,
+            edited,
+            "final text",
+            &[],
+            false,
+            ss_core::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    };
+    tokio::join!(world.restart_after(Duration::from_millis(300)), offline);
+    until(&client, &mut events, |s| {
+        s.connection == ConnectionState::Connected
+            && s.messages.get(&general).is_some_and(|cache| {
+                let ordered = cache.ordered();
+                ordered.iter().all(|message| message.id != wire(doomed))
+                    && ordered.iter().any(|message| {
+                        message.id == wire(edited) && message.content == "final text"
+                    })
+            })
+    })
+    .await;
+    assert!(
+        client.state().read().messages[&general]
+            .ordered()
+            .iter()
+            .any(|message| message.id == wire(kept))
     );
     https_task.abort();
 }

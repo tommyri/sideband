@@ -74,3 +74,20 @@ determined whether the server retained the voice seat. Control teardown now clos
 only an open connection, preserving terminal peer/transport reasons. A deterministic
 loopback regression covers reads and writes after a non-zero peer close; the
 original voice-resume integration test also passes without weakening its timing.
+
+### Resync and reconnect policy revised — T-089 (2026-11-10)
+
+The `?after=<newest id>` resync above is replaced. It never brought back
+edits or deletes made while offline, and it stopped at 20×50 messages per
+channel, leaving a silent gap. Now, for every channel with cached messages,
+the client re-reads the newest page, then `before=` pages until one reaches
+the oldest cached message, at most 4 pages. Each page replaces the cached
+messages in its id range, except ones a live event brought during the
+fetch. If the 4 pages do not reach the old cache, the older messages are
+dropped, so the cache stays contiguous and older history loads on scroll
+again. No delta endpoint and no protocol change. Also from T-089: the
+backoff is 2/4/8/16/24 s plus up to 25 % (at most 30 s) and only resets after a
+30 s session or a shutdown close; `RATE_LIMITED` resumes are retried after
+`retry_after_ms`; close codes 3, 4 and 6 stop reconnecting; a send is
+replayed only within 4 minutes of first going out. `02-protocol.md` §1.2
+has the rules.

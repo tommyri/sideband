@@ -26,6 +26,33 @@ use tokio::{
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
 const RECONNECT_CLOSE_CODE: u32 = 73;
+/// Server application close codes (`02-protocol.md` §1.1) after which the
+/// client does not reconnect, whether or not the event sent in front of the
+/// close (`Kicked`, `Banned`, `SessionRevoked`) arrived first.
+const CLOSE_KICKED: u32 = 3;
+const CLOSE_BANNED: u32 = 4;
+const CLOSE_SIGNED_OUT: u32 = 6;
+/// Server shutting down: reconnect, starting the backoff over.
+const CLOSE_SHUTDOWN: u32 = 1;
+/// Media rate limit: reconnect, but do not count the session as stable.
+const CLOSE_RATE_LIMITED: u32 = 5;
+/// Message sends queued while reconnecting, at most. Further sends fail
+/// with `Capacity` until the connection is back.
+const MAX_PENDING: usize = 100;
+/// A session that lasted this long resets the reconnect backoff. Shorter
+/// ones keep climbing it, so a server that drops every resume at once is
+/// not hammered every two seconds.
+const STABLE_SESSION: Duration = Duration::from_secs(30);
+/// Longest server-stated wait (`retry_after_ms`) the client honours as given.
+const MAX_STATED_WAIT: Duration = Duration::from_mins(10);
+/// A send whose Ack never came is replayed with its nonce only this long
+/// after it first went out. The server deduplicates nonces for five
+/// minutes; after that a replay could store the message twice, so its
+/// caller gets `Timeout` (outcome unknown) instead. Sends queued while
+/// offline never went out and are not limited.
+const REPLAY_WINDOW: Duration = Duration::from_mins(4);
+/// Pages fetched per channel when resyncing after a reconnect.
+const RESYNC_PAGES: usize = 4;
 
 /// One host, QUIC port, and HTTPS port. HTTPS uses the QUIC identity's pin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,12 +481,18 @@ fn is_new_live_message(view: &crate::State, message: &v1::Message) -> bool {
     let Ok(channel) = ss_core::Id::try_from(message.channel_id.as_ref()) else {
         return false;
     };
+    // A message a resync page brought in before its own live event is still
+    // new: the page is read from the database and can overtake the event.
+    let unannounced = |cache: &crate::state::MessageCache| {
+        ss_core::Id::try_from(message.id.as_ref()).is_ok_and(|key| cache.unannounced(key))
+    };
     !view.messages.get(&channel).is_some_and(|cache| {
         cache
             .ordered()
             .iter()
             .chain(cache.deleted().iter())
             .any(|cached| cached.id == message.id)
+            && !unannounced(cache)
     }) && view
         .channels
         .get(&channel)
@@ -476,15 +509,23 @@ struct Runner {
     auth: Arc<RwLock<Option<AuthSession>>>,
     desired_voice: Option<v1::JoinVoice>,
     typing: HashMap<Vec<u8>, Instant>,
-    pending: VecDeque<Command>,
+    pending: VecDeque<Pending>,
     media: MediaLink,
     clock: Clock,
+}
+
+/// A replayable command waiting for the connection. `sent` is when it
+/// first went out; `None` if it never reached the server.
+struct Pending {
+    command: Command,
+    sent: Option<ClockSample>,
 }
 
 /// The one command whose Ack the connection loop is waiting for. Commands run
 /// one at a time, in order; the wait is a select branch like any other.
 struct InFlight<'a> {
     command: Command,
+    sent: ClockSample,
     reply: Pin<Box<dyn Future<Output = Result<v1::Ack, Error>> + Send + 'a>>,
 }
 
@@ -525,13 +566,26 @@ impl Runner {
         live.start_media(&self.media);
         self.media.connected(Some(&live.connection));
         let mut resync = None;
+        // Reconnect attempts since the last stable session; sets the backoff.
+        let mut level = 0_u32;
         loop {
+            let started = Instant::now();
             let outcome = self
                 .connected(&mut live, &mut commands, resync.take())
                 .await;
+            // Read first: quinn's `close` replaces the peer's reason.
+            let code = close_code(live.connection.quic());
             if outcome.as_ref().is_err_and(|error| !terminal(error)) {
                 live.connection
                     .close(RECONNECT_CLOSE_CODE, b"client reconnecting");
+            }
+            // An announced shutdown starts the backoff over: the server is
+            // restarting, not dropping this client. Otherwise only a stable
+            // session does, and never a media rate-limit close.
+            if code == Some(CLOSE_SHUTDOWN)
+                || (started.elapsed() >= STABLE_SESSION && code != Some(CLOSE_RATE_LIMITED))
+            {
+                level = 0;
             }
             self.media.connected(None);
             drop(live);
@@ -546,69 +600,73 @@ impl Runner {
                 }
                 Err(_) => {}
             }
-            let token = self.auth.read().clone();
-            let Some(session) = token else {
-                self.status(ConnectionState::Disconnected);
+            let Some((next, next_resync)) = self.reconnect(&mut commands, &mut level).await else {
                 return;
             };
-            let mut token = session.token;
-            let mut attempt = 0_u32;
-            loop {
-                attempt = attempt.saturating_add(1);
-                let delay = backoff(attempt);
-                self.status(ConnectionState::Reconnecting { attempt, delay });
-                if while_reconnecting(tokio::time::sleep(delay), &mut commands, &mut self.pending)
-                    .await
-                    .is_none()
-                {
-                    return;
-                }
-                let result = while_reconnecting(
-                    establish(
-                        &self.address,
-                        self.pins.clone(),
-                        v1::hello::Auth::ResumeToken(token.clone()),
-                    ),
-                    &mut commands,
-                    &mut self.pending,
-                )
-                .await;
-                let Some(result) = result else {
-                    return;
-                };
-                match result {
-                    Ok((mut next, welcome)) => {
-                        let cursors = self.store.message_cursors();
-                        let setup = self
-                            .resume(
-                                &mut next,
-                                &welcome,
-                                ConnectionState::Reconnecting { attempt, delay },
-                                &mut token,
-                            )
-                            .await;
-                        let trust = match setup {
-                            Ok(trust) => trust,
-                            Err(error) => {
-                                drop(next);
-                                if terminal(&error) {
-                                    self.status(ConnectionState::Failed(error.to_string()));
-                                    return;
-                                }
-                                continue;
-                            }
-                        };
-                        resync = self.reopened(&next, &welcome, trust, cursors);
-                        live = next;
-                        break;
+            live = next;
+            resync = next_resync;
+        }
+    }
+    /// Resume the session until it works, a refusal is final, or the host
+    /// drops the client. A `RATE_LIMITED` refusal waits as long as the
+    /// server says; other failures back off from `level`.
+    async fn reconnect(
+        &mut self,
+        commands: &mut mpsc::Receiver<Command>,
+        level: &mut u32,
+    ) -> Option<(Live, Option<Resync>)> {
+        let session = self.auth.read().clone();
+        let Some(session) = session else {
+            self.status(ConnectionState::Disconnected);
+            return None;
+        };
+        let mut token = session.token;
+        let mut attempt = 0_u32;
+        let mut stated = None;
+        loop {
+            attempt = attempt.saturating_add(1);
+            *level = level.saturating_add(1);
+            let delay = stated.take().map_or_else(|| backoff(*level), stated_delay);
+            let reconnecting = ConnectionState::Reconnecting { attempt, delay };
+            self.status(reconnecting.clone());
+            while_reconnecting(tokio::time::sleep(delay), commands, &mut self.pending).await?;
+            let result = while_reconnecting(
+                establish(
+                    &self.address,
+                    self.pins.clone(),
+                    v1::hello::Auth::ResumeToken(token.clone()),
+                ),
+                commands,
+                &mut self.pending,
+            )
+            .await?;
+            let error = match result {
+                Ok((mut next, welcome)) => {
+                    let floors = self.store.resync_floors();
+                    match self
+                        .resume(&mut next, &welcome, reconnecting, &mut token)
+                        .await
+                    {
+                        Ok(trust) => {
+                            let resync = self.reopened(&next, &welcome, trust, floors);
+                            return Some((next, resync));
+                        }
+                        Err(error) => {
+                            drop(next);
+                            error
+                        }
                     }
-                    Err(error) if terminal(&error) => {
-                        self.status(ConnectionState::Failed(error.to_string()));
-                        return;
-                    }
-                    Err(_) => {}
                 }
+                Err(error) => error,
+            };
+            if terminal(&error) {
+                self.status(ConnectionState::Failed(error.to_string()));
+                return None;
             }
+            stated = match error {
+                Error::Server { retry_after, .. } => retry_after,
+                _ => None,
+            };
         }
     }
     /// Install a resumed session and rejoin voice before `Connected`. The
@@ -650,7 +708,7 @@ impl Runner {
         next: &Live,
         welcome: &v1::Welcome,
         trust: ss_net::pins::TrustPolicy,
-        cursors: Vec<(ss_core::Id, ss_core::Id)>,
+        floors: Vec<(ss_core::Id, ss_core::Id)>,
     ) -> Option<Resync> {
         self.typing.clear();
         let _ = self.events.send(ClientEvent::Resynced);
@@ -661,7 +719,7 @@ impl Runner {
             trust,
             &welcome.resume_token,
             self.store.read().generation,
-            cursors,
+            floors,
             self.events.clone(),
         )
     }
@@ -692,10 +750,13 @@ impl Runner {
                 &mut inflight,
             )
             .await;
-        if let Some(InFlight { command, .. }) = inflight
+        if let Some(InFlight { command, sent, .. }) = inflight
             && command.replayable
         {
-            self.pending.push_front(command);
+            self.pending.push_front(Pending {
+                command,
+                sent: Some(sent),
+            });
         }
         outcome
     }
@@ -723,17 +784,17 @@ impl Runner {
                     }
                     last_tick = now;
                 }
-                _ = quic.closed() => return Err(Error::Disconnected),
+                _ = quic.closed() => return self.ended(quic, incoming),
                 event = incoming.recv() => {
-                    let event = event.ok_or(Error::Disconnected)?;
+                    let Some(event) = event else { return self.ended(quic, incoming) };
                     if let Some(resync) = resync.as_mut() {
                         resync.observe(&event);
                     }
                     if self.event(event)? { return Ok(()); }
                 }
                 result = reply(inflight), if inflight.is_some() => {
-                    if let Some(InFlight { command, .. }) = inflight.take() {
-                        self.finish(command, result)?;
+                    if let Some(InFlight { command, sent, .. }) = inflight.take() {
+                        self.finish(command, sent, result)?;
                     }
                 }
                 command = commands.recv(), if inflight.is_none() => {
@@ -741,9 +802,15 @@ impl Runner {
                     *inflight = self.begin(control, command);
                 }
                 page = next_page(resync), if resync.is_some() => match (page, resync.as_ref()) {
-                    (Some((channel, page)), Some(active)) => {
-                        let page = active.reconcile(page);
-                        if self.store.resync(active.generation, channel, page).is_ok() {
+                    (Some(page), Some(active)) => {
+                        let channel = page.channel;
+                        let messages = active.reconcile(page.messages);
+                        let live = |key: &ss_core::Id| active.live.contains_key(key);
+                        if self
+                            .store
+                            .resync(active.generation, channel, page.span, messages, live)
+                            .is_ok()
+                        {
                             let _ = self.events.send(ClientEvent::MessagesChanged { channel });
                         }
                     }
@@ -751,6 +818,32 @@ impl Runner {
                 },
             }
         }
+    }
+    /// The connection is gone. Frames already read still count (a queued
+    /// `Kicked` says more than a close code); then the server's close code
+    /// tells a kick, ban or sign-out, which end the session, from a
+    /// shutdown, slow-consumer or rate-limit close, which reconnect.
+    fn ended(
+        &mut self,
+        quic: &quinn::Connection,
+        incoming: &mut mpsc::Receiver<v1::ServerEnvelope>,
+    ) -> Result<(), Error> {
+        while let Ok(event) = incoming.try_recv() {
+            if self.event(event)? {
+                return Ok(());
+            }
+        }
+        let (banned, reason) = match close_code(quic) {
+            Some(CLOSE_KICKED) => (false, "Kicked from the server"),
+            Some(CLOSE_BANNED) => (true, "Banned from the server"),
+            Some(CLOSE_SIGNED_OUT) => (false, "Signed out"),
+            _ => return Err(Error::Disconnected),
+        };
+        let _ = self.events.send(ClientEvent::Removed {
+            banned,
+            reason: reason.to_owned(),
+        });
+        Ok(())
     }
     /// Send `command`, or answer it at once when it is stale or throttled.
     fn begin<'a>(&self, control: &'a ClientControl, command: Command) -> Option<InFlight<'a>> {
@@ -774,10 +867,19 @@ impl Runner {
             return None;
         }
         let reply = Box::pin(call(control, command.message.clone()));
-        Some(InFlight { command, reply })
+        Some(InFlight {
+            command,
+            sent: self.clock.sample(),
+            reply,
+        })
     }
     /// Deliver a command's outcome. `Err` ends this connection.
-    fn finish(&mut self, command: Command, result: Result<v1::Ack, Error>) -> Result<(), Error> {
+    fn finish(
+        &mut self,
+        command: Command,
+        sent: ClockSample,
+        result: Result<v1::Ack, Error>,
+    ) -> Result<(), Error> {
         if result.is_ok() {
             self.accepted(&command.message);
         }
@@ -790,7 +892,10 @@ impl Runner {
             .err()
             .is_some_and(|e| !matches!(e, Error::Server { .. }));
         if retry && command.replayable {
-            self.pending.push_back(command);
+            self.pending.push_back(Pending {
+                command,
+                sent: Some(sent),
+            });
             return Err(Error::Disconnected);
         }
         let _ = command.reply.send(result);
@@ -831,8 +936,14 @@ impl Runner {
         }
     }
     async fn flush_pending(&mut self, live: &mut Live) -> Result<(), Error> {
-        while let Some(command) = self.pending.pop_front() {
+        while let Some(Pending { command, sent }) = self.pending.pop_front() {
             if command.reply.is_closed() {
+                continue;
+            }
+            let now = self.clock.sample();
+            if sent.is_some_and(|sent| since(sent, now) > REPLAY_WINDOW) {
+                // The server may have stored it and forgotten the nonce.
+                let _ = command.reply.send(Err(Error::Timeout));
                 continue;
             }
             let result = self.execute(live, command.message.clone()).await;
@@ -841,7 +952,10 @@ impl Runner {
                 .err()
                 .is_some_and(|error| !matches!(error, Error::Server { .. }))
             {
-                self.pending.push_front(command);
+                self.pending.push_front(Pending {
+                    command,
+                    sent: Some(sent.unwrap_or(now)),
+                });
                 return Err(Error::Disconnected);
             }
             if result.is_ok() {
@@ -966,7 +1080,7 @@ enum ResumedSeat {
 async fn while_reconnecting<T>(
     future: impl std::future::Future<Output = T>,
     commands: &mut mpsc::Receiver<Command>,
-    pending: &mut VecDeque<Command>,
+    pending: &mut VecDeque<Pending>,
 ) -> Option<T> {
     tokio::pin!(future);
     loop {
@@ -974,16 +1088,32 @@ async fn while_reconnecting<T>(
             result = &mut future => return Some(result),
             command = commands.recv() => {
                 let command = command?;
-                if command.replayable {
-                    pending.push_back(command);
-                } else {
+                if !command.replayable {
                     let _ = command.reply.send(Err(Error::Disconnected));
+                } else if pending.len() >= MAX_PENDING {
+                    let _ = command.reply.send(Err(Error::Control(
+                        ss_net::control::ControlError::Capacity,
+                    )));
+                } else {
+                    pending.push_back(Pending { command, sent: None });
                 }
             }
         }
     }
 }
+/// Whether `error` ends reconnecting. Of the server's refusals only the
+/// account and version ones are final; a `RATE_LIMITED` resume, or one the
+/// server failed to answer, is tried again (`02-protocol.md` §1.1).
 fn terminal(error: &Error) -> bool {
+    if let Error::Server { code, .. } = error {
+        return matches!(
+            v1::ErrorCode::try_from(*code),
+            Ok(v1::ErrorCode::Unauthenticated
+                | v1::ErrorCode::Banned
+                | v1::ErrorCode::Forbidden
+                | v1::ErrorCode::ProtocolVersion)
+        );
+    }
     matches!(
         error,
         Error::Protocol(_)
@@ -992,7 +1122,6 @@ fn terminal(error: &Error) -> bool {
                     | ss_net::control::ControlError::Frame(_)
             )
             | Error::Storage(_)
-            | Error::Server { .. }
             | Error::Network(
                 ss_net::Error::Untrusted { .. }
                     | ss_net::Error::FingerprintChanged { .. }
@@ -1000,13 +1129,34 @@ fn terminal(error: &Error) -> bool {
             )
     )
 }
-fn backoff(attempt: u32) -> Duration {
-    let base = (2_u64 << attempt.saturating_sub(1).min(4)).min(30) * 1000;
-    let mut bytes = [0; 2];
+/// The application close code the peer closed with, if it did.
+fn close_code(quic: &quinn::Connection) -> Option<u32> {
+    match quic.close_reason()? {
+        quinn::ConnectionError::ApplicationClosed(close) => {
+            u32::try_from(close.error_code.into_inner()).ok()
+        }
+        _ => None,
+    }
+}
+/// A uniformly random number of milliseconds in `0..=max`.
+fn random_millis(max: u64) -> u64 {
+    let mut bytes = [0; 8];
     let _ = getrandom::fill(&mut bytes);
-    // Equal jitter, bounded by 30 seconds. First attempt waits 2–2.5 s.
-    let jitter = u64::from(u16::from_le_bytes(bytes)) % (base / 4 + 1);
-    Duration::from_millis((base + jitter).min(30_000))
+    u64::from_le_bytes(bytes) % (max + 1)
+}
+/// 2, 4, 8, 16, then 24 s, each plus up to a quarter more. The first
+/// attempt waits 2–2.5 s and none more than 30 s. The jitter stays at the
+/// cap, so clients that lost one server do not come back in lockstep.
+fn backoff(attempt: u32) -> Duration {
+    let base = (2_000_u64 << attempt.saturating_sub(1).min(4)).min(24_000);
+    Duration::from_millis(base + random_millis(base / 4))
+}
+/// A server-stated wait, plus up to a quarter more so clients refused
+/// together spread out. Never shorter than the wait.
+fn stated_delay(wait: Duration) -> Duration {
+    let wait = wait.min(MAX_STATED_WAIT);
+    let millis = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+    wait + Duration::from_millis(random_millis(millis / 4))
 }
 
 /// Send one command and await its correlated reply.
@@ -1027,24 +1177,37 @@ async fn reply(inflight: &mut Option<InFlight<'_>>) -> Result<v1::Ack, Error> {
     }
 }
 
-async fn next_page(resync: &mut Option<Resync>) -> Option<(ss_core::Id, Vec<v1::Message>)> {
+async fn next_page(resync: &mut Option<Resync>) -> Option<ResyncPage> {
     match resync {
         Some(resync) => resync.pages.recv().await,
         None => std::future::pending().await,
     }
 }
 
-/// `?after=` history fetch for channels cached before a reconnect. It runs on
-/// its own task once the client is `Connected`; pages come back to the
-/// connection loop and merge between live events. Dropping it (the connection
-/// ended) aborts the fetch.
+/// One history page fetched by a [`Resync`], with the id range it is
+/// authoritative for.
+struct ResyncPage {
+    channel: ss_core::Id,
+    span: crate::state::Span,
+    messages: Vec<v1::Message>,
+}
+
+/// Re-reads the cached messages of every channel once the client is
+/// `Connected` again, newest page first. Each page replaces the cached
+/// messages in its id range, so edits and deletes made while offline show,
+/// and new messages come in with it. A channel stops at the page that
+/// reaches its oldest cached message, at its first message, or after
+/// [`RESYNC_PAGES`] pages; then anything older is dropped, so the cache
+/// never holds a silent gap and older history loads on demand. Pages
+/// merge between live events; dropping this (the connection ended) aborts
+/// the fetch.
 struct Resync {
     generation: u64,
-    pages: mpsc::Receiver<(ss_core::Id, Vec<v1::Message>)>,
+    pages: mpsc::Receiver<ResyncPage>,
     task: JoinHandle<()>,
-    /// Live edits (`Some`) and deletes (`None`) seen since the fetch began.
-    /// They are at least as new as any page fetched before them.
-    live: HashMap<Bytes, Option<v1::Message>>,
+    /// Live creates and edits (`Some`) and deletes (`None`) seen since the
+    /// fetch began. They are at least as new as any page fetched before them.
+    live: HashMap<ss_core::Id, Option<v1::Message>>,
 }
 
 impl Resync {
@@ -1053,10 +1216,10 @@ impl Resync {
         trust: ss_net::pins::TrustPolicy,
         token: &str,
         generation: u64,
-        cursors: Vec<(ss_core::Id, ss_core::Id)>,
+        floors: Vec<(ss_core::Id, ss_core::Id)>,
         events: broadcast::Sender<ClientEvent>,
     ) -> Option<Self> {
-        if cursors.is_empty() {
+        if floors.is_empty() {
             return None;
         }
         let history = crate::history::History::new(address, trust, token);
@@ -1071,27 +1234,44 @@ impl Resync {
                 Ok(history) => history,
                 Err(error) => return deferred(error),
             };
-            for (channel, mut cursor) in cursors {
-                for _ in 0..20 {
-                    let page = match history.page(channel, None, Some(cursor), None).await {
+            for (channel, floor) in floors {
+                let mut before = None;
+                for fetched in 1..=RESYNC_PAGES {
+                    let messages = match history.page(channel, before, None, None).await {
                         Ok(page) => page,
                         Err(error) => {
                             deferred(error);
                             break;
                         }
                     };
-                    let full = page.len() >= 50;
-                    let Some(next) = page.last().and_then(|last| crate::state::id(&last.id).ok())
-                    else {
-                        break;
+                    let oldest = messages
+                        .first()
+                        .and_then(|first| crate::state::id(&first.id).ok());
+                    let start = messages.len() < 50;
+                    let covered = oldest.is_none_or(|oldest| oldest <= floor);
+                    let budget = fetched == RESYNC_PAGES;
+                    let span = crate::state::Span {
+                        // At the channel's first message, or out of pages:
+                        // nothing older stays.
+                        from: if start || (budget && !covered) {
+                            None
+                        } else {
+                            oldest
+                        },
+                        before,
                     };
-                    if sender.send((channel, page)).await.is_err() {
+                    let page = ResyncPage {
+                        channel,
+                        span,
+                        messages,
+                    };
+                    if sender.send(page).await.is_err() {
                         return;
                     }
-                    cursor = next;
-                    if !full {
+                    if start || covered || budget {
                         break;
                     }
+                    before = oldest;
                 }
             }
         });
@@ -1104,29 +1284,39 @@ impl Resync {
     }
 
     fn observe(&mut self, event: &v1::ServerEnvelope) {
-        match &event.msg {
-            Some(Event::MessageUpdated(v1::MessageUpdated {
-                message: Some(message),
-                ..
-            })) => {
-                self.live.insert(message.id.clone(), Some(message.clone()));
-            }
+        let (message, gone) = match &event.msg {
+            Some(
+                Event::MessageCreated(v1::MessageCreated {
+                    message: Some(message),
+                    ..
+                })
+                | Event::MessageUpdated(v1::MessageUpdated {
+                    message: Some(message),
+                    ..
+                }),
+            ) => (message, false),
             Some(Event::MessageDeleted(v1::MessageDeleted {
                 message: Some(message),
                 ..
-            })) => {
-                self.live.insert(message.id.clone(), None);
-            }
-            _ => {}
+            })) => (message, true),
+            _ => return,
+        };
+        if let Ok(key) = crate::state::id(&message.id) {
+            self.live.insert(key, (!gone).then(|| message.clone()));
         }
     }
 
     /// Replace page entries that a live edit or delete has already superseded.
     fn reconcile(&self, page: Vec<v1::Message>) -> Vec<v1::Message> {
         page.into_iter()
-            .filter_map(|message| match self.live.get(&message.id) {
-                Some(live) => live.clone(),
-                None => Some(message),
+            .filter_map(|message| {
+                match crate::state::id(&message.id)
+                    .ok()
+                    .and_then(|key| self.live.get(&key))
+                {
+                    Some(live) => live.clone(),
+                    None => Some(message),
+                }
             })
             .collect()
     }
@@ -1181,6 +1371,15 @@ fn clock_jumped(last: ClockSample, now: ClockSample) -> bool {
         Err(backwards) => backwards.duration() + monotonic,
     };
     monotonic > CLOCK_JUMP || drift > CLOCK_JUMP
+}
+
+/// Time between two heartbeat samples, the larger of the two clocks: on
+/// macOS `Instant` stops while the machine sleeps.
+fn since(earlier: ClockSample, now: ClockSample) -> Duration {
+    let monotonic = now.monotonic.saturating_duration_since(earlier.monotonic);
+    now.wall
+        .duration_since(earlier.wall)
+        .map_or(monotonic, |wall| wall.max(monotonic))
 }
 
 fn make_replayable(message: &mut Msg) -> bool {
@@ -1280,6 +1479,160 @@ mod tests {
             wall: last.wall - Duration::from_secs(3),
         };
         assert!(clock_jumped(last, back));
+    }
+
+    #[test]
+    fn a_mention_a_resync_page_brought_first_is_counted_and_announced_once() {
+        let own = ss_core::Id::generate();
+        let channel = ss_core::Id::generate();
+        let wire = |id: ss_core::Id| Bytes::from(id.as_bytes().to_vec());
+        let store = StateStore::default();
+        store
+            .welcome(&v1::Welcome {
+                user: Some(v1::User {
+                    id: wire(own),
+                    ..Default::default()
+                }),
+                snapshot: Some(v1::Snapshot {
+                    channels: vec![v1::Channel {
+                        id: wire(channel),
+                        kind: v1::ChannelKind::Text.into(),
+                        effective_permissions: Some(ss_core::Permissions::EVERYONE.bits()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        // Written after the snapshot was built, so the snapshot's count
+        // does not include it.
+        let mention = v1::Message {
+            id: wire(ss_core::Id::generate()),
+            channel_id: wire(channel),
+            author: Some(v1::User {
+                id: wire(ss_core::Id::generate()),
+                ..Default::default()
+            }),
+            mentions: vec![wire(own)],
+            ..Default::default()
+        };
+        // The resync page comes from the database over HTTPS and the live
+        // event over QUIC: the page can be merged first.
+        let generation = store.read().generation;
+        resync_page(&store, generation, channel, vec![mention.clone()]);
+        let created = || {
+            v1::server_envelope::Msg::MessageCreated(v1::MessageCreated {
+                message: Some(mention.clone()),
+                nonce: None,
+            })
+        };
+        assert!(
+            is_new_live_message(&store.read(), &mention),
+            "the live mention would not be notified"
+        );
+        store.apply(created()).unwrap();
+        assert_eq!(
+            store
+                .read()
+                .read_states
+                .get(&channel)
+                .map(|read| read.mention_count),
+            Some(1),
+            "the live mention was not counted"
+        );
+        // An echo of the same event is neither counted nor notified again.
+        assert!(!is_new_live_message(&store.read(), &mention));
+        store.apply(created()).unwrap();
+        assert_eq!(store.read().read_states[&channel].mention_count, 1);
+    }
+
+    fn resync_page(
+        store: &StateStore,
+        generation: u64,
+        channel: ss_core::Id,
+        page: Vec<v1::Message>,
+    ) {
+        let whole = crate::state::Span {
+            from: None,
+            before: None,
+        };
+        store
+            .resync(generation, channel, whole, page, |_| false)
+            .unwrap();
+    }
+
+    #[test]
+    fn backoff_keeps_its_jitter_at_the_cap() {
+        let capped: std::collections::BTreeSet<_> = (0..64).map(|_| backoff(20)).collect();
+        assert!(capped.iter().all(|delay| *delay <= Duration::from_secs(30)));
+        assert!(
+            capped.len() > 1,
+            "every capped delay was {:?}: clients that failed together retry together",
+            capped.first()
+        );
+    }
+
+    #[test]
+    fn only_account_and_version_refusals_end_reconnecting() {
+        let server = |code: v1::ErrorCode| {
+            Error::from(v1::Error {
+                code: code.into(),
+                retry_after_ms: Some(1500),
+                ..Default::default()
+            })
+        };
+        for code in [
+            v1::ErrorCode::Unauthenticated,
+            v1::ErrorCode::Banned,
+            v1::ErrorCode::Forbidden,
+            v1::ErrorCode::ProtocolVersion,
+        ] {
+            assert!(terminal(&server(code)), "{code:?}");
+        }
+        for code in [
+            v1::ErrorCode::RateLimited,
+            v1::ErrorCode::Internal,
+            v1::ErrorCode::Invalid,
+            v1::ErrorCode::Unspecified,
+        ] {
+            assert!(!terminal(&server(code)), "{code:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_reconnect_queue_is_bounded() {
+        let (sender, mut commands) = mpsc::channel(MAX_PENDING + 1);
+        let mut pending = VecDeque::new();
+        let mut replies = Vec::new();
+        for _ in 0..=MAX_PENDING {
+            let (reply, response) = oneshot::channel();
+            sender
+                .try_send(Command {
+                    message: Msg::SendMessage(v1::SendMessage::default()),
+                    generation: 0,
+                    replayable: true,
+                    reply,
+                })
+                .unwrap();
+            replies.push(response);
+        }
+        while_reconnecting(
+            tokio::time::sleep(Duration::from_millis(50)),
+            &mut commands,
+            &mut pending,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.len(), MAX_PENDING);
+        let overflow = replies.pop().unwrap().await.unwrap();
+        assert!(
+            matches!(
+                overflow,
+                Err(Error::Control(ss_net::control::ControlError::Capacity))
+            ),
+            "{overflow:?}"
+        );
     }
 
     #[test]

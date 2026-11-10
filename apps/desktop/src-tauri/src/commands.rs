@@ -38,7 +38,9 @@ pub(crate) fn api_error(error: ClientError) -> ApiError {
         },
         ClientError::Disconnected => ApiError::new("disconnected", error.to_string()),
         ClientError::Timeout => ApiError::new("timeout", error.to_string()),
-        ClientError::Server { code, message } => ApiError::new(format!("server_{code}"), message),
+        ClientError::Server { code, message, .. } => {
+            ApiError::new(format!("server_{code}"), message)
+        }
         _ => ApiError::new("client", error.to_string()),
     }
 }

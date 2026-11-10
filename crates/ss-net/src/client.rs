@@ -20,6 +20,9 @@ use crate::{
     tls::{Fingerprint, fingerprint},
 };
 
+/// Handshake budget for one resolved address when another one follows.
+const ADDRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Debug, Clone, Copy)]
 enum Rejection {
     Untrusted(Fingerprint),
@@ -203,7 +206,8 @@ async fn connect_resolved(
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.transport_config(Arc::new(crate::transport_config(true)));
     let mut last_error = Error::Config("hostname resolved to no addresses");
-    for address in addresses {
+    let last = addresses.len().saturating_sub(1);
+    for (index, address) in addresses.into_iter().enumerate() {
         let unspecified = if address.is_ipv4() {
             IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         } else {
@@ -213,10 +217,21 @@ async fn connect_resolved(
         *observed.lock() = None;
         // Socket-family and synchronous connect errors belong to this address,
         // just like handshake errors. Another DNS answer may still work.
+        // quinn has no handshake timeout below the 30 s idle timeout. An
+        // address that swallows packets (an IPv6 route that goes nowhere)
+        // must not use up the caller's whole deadline while another answer
+        // works. The last address keeps the caller's deadline alone.
         let result = async {
             let mut endpoint = crate::bind_endpoint(SocketAddr::new(unspecified, 0), None)?;
             endpoint.set_default_client_config(config.clone());
-            let connection = endpoint.connect(address, host)?.await?;
+            let handshake = endpoint.connect(address, host)?;
+            let connection = if index < last {
+                tokio::time::timeout(ADDRESS_TIMEOUT, handshake)
+                    .await
+                    .map_err(|_| quinn::ConnectionError::TimedOut)??
+            } else {
+                handshake.await?
+            };
             Ok::<_, Error>((connection, endpoint))
         }
         .await;
@@ -234,16 +249,7 @@ async fn connect_resolved(
                 let fingerprint = observed
                     .lock()
                     .ok_or(Error::Config("TLS peer omitted certificate"))?;
-                let store = pins.clone();
-                let server = server.clone();
-                let remembered = tokio::task::spawn_blocking(move || {
-                    store.compare_exchange(
-                        &server,
-                        policy,
-                        policy.unwrap_or(TrustPolicy::PublicCertificate),
-                    )
-                })
-                .await?;
+                let remembered = remember(&pins, &server, policy).await;
                 if let Err(error) = remembered {
                     connection.close(1, b"pin persistence failed");
                     return Err(error);
@@ -256,6 +262,26 @@ async fn connect_resolved(
         }
     }
     Err(last_error)
+}
+
+/// Records a first-use public-certificate decision. A policy that was
+/// already stored is only checked again, not written: a reconnect must not
+/// depend on a writable disk, and a write per connect wears it for nothing.
+async fn remember(
+    pins: &Arc<dyn PinStore>,
+    server: &ServerId,
+    policy: Option<TrustPolicy>,
+) -> Result<(), Error> {
+    let store = pins.clone();
+    let server = server.clone();
+    tokio::task::spawn_blocking(move || match policy {
+        None => store.compare_exchange(&server, None, TrustPolicy::PublicCertificate),
+        Some(_) if store.policy(&server)? == policy => Ok(()),
+        Some(_) => Err(Error::Config(
+            "server trust changed during verification; retry",
+        )),
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -302,6 +328,120 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(3), exchange)
             .await
             .unwrap();
+    }
+
+    /// A pinned server and a trust store that counts writes.
+    async fn pinned_server() -> (Endpoint, SocketAddr, Arc<CountingPins>, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let tls = generate_self_signed(directory.path()).await.unwrap();
+        let expected = fingerprint(tls.certificates[0].as_ref());
+        let server = Endpoint::bind((Ipv4Addr::LOCALHOST, 0).into(), tls).unwrap();
+        let address = server.local_addr().unwrap();
+        let pins = Arc::new(CountingPins::default());
+        pins.inner
+            .set(
+                &ServerId::new("localhost", address.port()).unwrap(),
+                expected,
+            )
+            .unwrap();
+        (server, address, pins, directory)
+    }
+
+    #[derive(Default)]
+    struct CountingPins {
+        inner: MemoryPinStore,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+    impl PinStore for CountingPins {
+        fn policy(&self, server: &ServerId) -> Result<Option<TrustPolicy>, Error> {
+            self.inner.policy(server)
+        }
+        fn compare_exchange(
+            &self,
+            server: &ServerId,
+            expected: Option<TrustPolicy>,
+            next: TrustPolicy,
+        ) -> Result<(), Error> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.compare_exchange(server, expected, next)
+        }
+    }
+
+    fn roots() -> rustls::RootCertStore {
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned())
+    }
+
+    #[tokio::test]
+    async fn a_black_holed_first_address_falls_back_within_five_seconds() {
+        let (server, address, pins, _directory) = pinned_server().await;
+        // Bound but never read: Initial packets vanish, as on a family with
+        // no route that does not report an error.
+        let hole = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = connect_resolved(
+            "localhost",
+            address.port(),
+            pins,
+            roots(),
+            vec![hole.local_addr().unwrap(), address],
+        );
+        let accept = async {
+            let connection = server.accept().await.unwrap().accept().await.unwrap();
+            // Keep the server side open until the client finishes.
+            std::future::pending::<()>().await;
+            drop(connection);
+        };
+        let started = std::time::Instant::now();
+        let connected = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                client = client => client,
+                () = accept => unreachable!(),
+            }
+        })
+        .await
+        .expect("still waiting on the black-holed address after 5 s")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        connected.close(0, b"test finished");
+    }
+
+    #[tokio::test]
+    async fn a_connect_with_unchanged_trust_does_not_write_the_store() {
+        let (server, address, pins, _directory) = pinned_server().await;
+        let accept = async {
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                held.push(server.accept().await.unwrap().accept().await.unwrap());
+            }
+            std::future::pending::<()>().await;
+        };
+        let connects = async {
+            for _ in 0..2 {
+                let connection = connect_resolved(
+                    "localhost",
+                    address.port(),
+                    pins.clone(),
+                    roots(),
+                    vec![address],
+                )
+                .await
+                .unwrap();
+                connection.close(0, b"test finished");
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                () = connects => {}
+                () = accept => {}
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            pins.writes.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a reconnect with an unchanged pin rewrote the trust store"
+        );
     }
 }
 

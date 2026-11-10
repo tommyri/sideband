@@ -2,7 +2,21 @@ use super::id;
 use crate::Error;
 use ss_core::Id;
 use ss_proto::v1;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The ids a reconnect resync page is authoritative for: `from` inclusive,
+/// `before` exclusive. `None` is open-ended.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Span {
+    pub(crate) from: Option<Id>,
+    pub(crate) before: Option<Id>,
+}
+
+impl Span {
+    fn contains(self, key: Id) -> bool {
+        self.from.is_none_or(|from| key >= from) && self.before.is_none_or(|before| key < before)
+    }
+}
 
 /// Last 200 live messages plus historical pages explicitly requested by the
 /// caller. Both sets are ordered by ULID and share identity across echoes.
@@ -11,6 +25,8 @@ pub struct MessageCache {
     recent: BTreeMap<Id, v1::Message>,
     history: BTreeMap<Id, v1::Message>,
     deleted: BTreeMap<Id, v1::Message>,
+    /// First seen in a reconnect resync page, not yet as a live event.
+    unannounced: BTreeSet<Id>,
 }
 impl MessageCache {
     /// All loaded messages in ascending ULID order, without duplicate echoes.
@@ -38,6 +54,15 @@ impl MessageCache {
     pub(super) fn newest(&self) -> Option<&v1::Message> {
         self.ordered().last().copied()
     }
+    pub(super) fn oldest(&self) -> Option<&v1::Message> {
+        self.ordered().first().copied()
+    }
+    /// Whether `key` came from a reconnect resync page and its live
+    /// `MessageCreated` has not been seen. The page is read from the
+    /// database and can overtake the event, which must still count as new.
+    pub(crate) fn unannounced(&self, key: Id) -> bool {
+        self.unannounced.contains(&key)
+    }
     /// Own-message deletion markers observed in this session, with bodies/files erased.
     pub fn deleted(&self) -> Vec<&v1::Message> {
         self.deleted.values().collect()
@@ -54,11 +79,15 @@ impl MessageCache {
     pub(super) fn remove(&mut self, key: Id) {
         self.recent.remove(&key);
         self.history.remove(&key);
+        self.unannounced.remove(&key);
     }
     pub(super) fn upsert(&mut self, message: v1::Message, created: bool) -> Result<(), Error> {
         let key = id(&message.id)?;
         if self.deleted.contains_key(&key) {
             return Ok(());
+        }
+        if created {
+            self.unannounced.remove(&key);
         }
         if let Some(old) = self.history.get_mut(&key) {
             *old = message.clone();
@@ -79,6 +108,52 @@ impl MessageCache {
             .collect();
         for (key, message) in page? {
             if !self.recent.contains_key(&key) && !self.deleted.contains_key(&key) {
+                self.history.insert(key, message);
+            }
+        }
+        Ok(())
+    }
+
+    /// Make the cache match `page` within `span`, a page re-read after a
+    /// reconnect. A cached message in the span that the page lacks was
+    /// deleted while offline and goes, unless `live` says a live event
+    /// brought it since the fetch began. Page entries replace cached copies
+    /// (edits made while offline); own deletion markers stay.
+    pub(super) fn replace(
+        &mut self,
+        span: Span,
+        page: Vec<v1::Message>,
+        live: impl Fn(&Id) -> bool,
+    ) -> Result<(), Error> {
+        // Validate the complete page before changing anything.
+        let page: Vec<_> = page
+            .into_iter()
+            .map(|message| Ok((id(&message.id)?, message)))
+            .collect::<Result<_, Error>>()?;
+        let fetched: BTreeSet<Id> = page.iter().map(|(key, _)| *key).collect();
+        let gone: Vec<Id> = self
+            .recent
+            .keys()
+            .chain(self.history.keys())
+            .filter(|key| span.contains(**key) && !fetched.contains(key) && !live(key))
+            .copied()
+            .collect();
+        for key in gone {
+            self.remove(key);
+        }
+        for (key, message) in page {
+            if self.deleted.contains_key(&key) {
+                continue;
+            }
+            let recent = self.recent.get_mut(&key);
+            let known = recent.is_some() || self.history.contains_key(&key);
+            if let Some(old) = recent {
+                old.clone_from(&message);
+            }
+            if !known {
+                self.unannounced.insert(key);
+            }
+            if !known || self.history.contains_key(&key) {
                 self.history.insert(key, message);
             }
         }
