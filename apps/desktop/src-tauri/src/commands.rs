@@ -62,8 +62,7 @@ fn status(state: &ConnectionState) -> ConnectionStatus {
 
 fn event(event: ClientEvent) -> ClientEventPayload {
     match event {
-        ClientEvent::MessageReceived { .. } => ClientEventPayload::Resynced,
-        ClientEvent::Resynced => ClientEventPayload::Resynced,
+        ClientEvent::MessageReceived { .. } | ClientEvent::Resynced => ClientEventPayload::Resynced,
         ClientEvent::ChannelsChanged => ClientEventPayload::ChannelsChanged,
         ClientEvent::MessagesChanged { channel } => ClientEventPayload::MessagesChanged {
             channel: channel.to_string(),
@@ -249,9 +248,11 @@ pub async fn connect(
         .server
         .as_ref()
         .map_or_else(|| address.host.clone(), |s| s.name.clone());
+    let labelled = (server_id.clone(), label.clone());
     state
         .storage
-        .label(&server_id, label.clone())
+        .write(move |storage| storage.label(&labelled.0, labelled.1))
+        .await
         .map_err(api_error)?;
     if state.storage.notifications().dnd {
         client
@@ -340,21 +341,7 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Api
                 port: saved.port,
                 https_port: saved.https_port,
                 unread: client.map_or(0, |c| {
-                    let store = c.state();
-                    let current = store.read();
-                    current
-                        .channels
-                        .iter()
-                        .chain(current.direct_messages.iter())
-                        .filter(|(id, channel)| {
-                            channel.last_message_id.as_ref().is_some_and(|last| {
-                                current
-                                    .read_states
-                                    .get(id)
-                                    .is_none_or(|read| read.last_read_message_id < *last)
-                            })
-                        })
-                        .count()
+                    ss_client_core::unread::unread_conversations(&c.state().read())
                         .try_into()
                         .unwrap_or(u32::MAX)
                 }),

@@ -51,15 +51,7 @@ pub fn views(state: &ClientState) -> Result<Vec<DmView>, ApiError> {
         .iter()
         .filter(|(_, channel)| channel.member_ids.contains(&own.id))
         .map(|(key, channel)| {
-            let cached = state
-                .messages
-                .get(key)
-                .and_then(|m| m.ordered().last().map(|m| m.id.clone()));
-            let newest = cached
-                .as_ref()
-                .into_iter()
-                .chain(channel.last_message_id.as_ref())
-                .max();
+            let newest = ss_client_core::unread::newest_message(state, *key);
             let read = state.read_states.get(key);
             Ok(DmView {
                 id: key.to_string(),
@@ -79,8 +71,7 @@ pub fn views(state: &ClientState) -> Result<Vec<DmView>, ApiError> {
                     .transpose()
                     .map_err(|_| ApiError::new("invalid_id", "Invalid last-message identifier."))?
                     .unwrap_or(channel.created_at),
-                unread: newest
-                    .is_some_and(|last| read.is_none_or(|r| r.last_read_message_id < *last)),
+                unread: ss_client_core::unread::is_unread(state, *key),
                 mentions: read.map_or(0, |r| r.mention_count),
             })
         })
@@ -273,11 +264,31 @@ mod tests {
         assert!(valid_name("new\nname").is_err());
     }
 
+    async fn wait_for(
+        state: &AppState,
+        key: &ss_net::pins::ServerId,
+        predicate: impl Fn(&ClientState) -> bool,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if predicate(&state.clients().get(key).unwrap().state().read()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario against a real server"
+    )]
     #[tokio::test]
     async fn real_server_reuses_pairs_and_enforces_group_membership() {
         use ss_client_core::{Client, Credentials, ServerAddr};
         use ss_net::{pins::PinStore, server::Endpoint, tls};
-        use std::{sync::Arc, time::Duration};
+        use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
         let pool = Arc::new(
             ss_server::db::Pool::open(dir.path().join("server.db"))
@@ -355,22 +366,6 @@ mod tests {
         .unwrap();
         assert!(group.warning.is_none());
         let group_id: Id = group.channel_id.parse().unwrap();
-        async fn wait_for(
-            state: &AppState,
-            key: &ss_net::pins::ServerId,
-            predicate: impl Fn(&ClientState) -> bool,
-        ) {
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    if predicate(&state.clients().get(key).unwrap().state().read()) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-        }
         wait_for(&owner, &key, |s| {
             s.direct_messages
                 .get(&group_id)

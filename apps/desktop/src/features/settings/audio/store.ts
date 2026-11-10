@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { listen } from '@tauri-apps/api/event'
 import { invokeBridge } from '../../../lib/tauri'
 
 import type { AudioPreferences } from '../../../lib/generated/AudioPreferences'
@@ -86,3 +87,10 @@ export async function save(preferences: AudioPreferences) {
   await invokeBridge('save_audio', { preferences })
   useAudioStore.setState({ preferences })
 }
+export const audioLevel = () => invokeBridge<number>('audio_level')
+export const testAudio = (preferences: AudioPreferences, kind: string) =>
+  invokeBridge<number>('test_audio', { preferences, kind })
+export const stopAudioTest = () => invokeBridge<void>('stop_audio_test')
+/** Live input level (dBFS) while a test or call is running. */
+export const onAudioLevel = (handler: (level: number) => void) =>
+  listen<number>('ss://audio-level', (event) => handler(event.payload))

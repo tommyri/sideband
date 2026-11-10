@@ -76,7 +76,7 @@ async fn project(
                     icon = Some(format!(
                         "data:{mime};base64,{}",
                         base64::engine::general_purpose::STANDARD.encode(bytes)
-                    ))
+                    ));
                 }
                 _ => icon_warning = Some("The saved icon preview could not be loaded.".into()),
             }

@@ -1,7 +1,7 @@
 //! Local notification policy. No message contents or activation links are persisted.
 use crate::{
     commands::{api_error, parse_server_id},
-    state::AppState,
+    state::{AppState, lock},
     types::ApiError,
 };
 use serde::{Deserialize, Serialize};
@@ -71,19 +71,17 @@ struct Runtime {
     seen: BTreeSet<(String, Id)>,
 }
 
+fn runtime(app: &AppHandle) -> std::sync::MutexGuard<'_, Runtime> {
+    lock(app.state::<Mutex<Runtime>>().inner())
+}
+
 pub fn init(app: &AppHandle) {
     app.manage(Mutex::new(Runtime::default()));
     let handle = app.clone();
     let _ = app.notification().on_action(move |action| {
-        let target = action.notification().and_then(|n| {
-            handle
-                .state::<Mutex<Runtime>>()
-                .lock()
-                .unwrap()
-                .targets
-                .get(&n.id())
-                .cloned()
-        });
+        let target = action
+            .notification()
+            .and_then(|n| runtime(&handle).targets.get(&n.id()).cloned());
         let Some(target) = target else {
             return;
         };
@@ -119,6 +117,10 @@ fn accessible(store: &StateStore, channel: Id) -> bool {
             .is_some_and(|p| p.contains(Permissions::VIEW_CHANNEL))
 }
 #[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri extracts command arguments by value"
+)]
 pub fn notification_preferences(state: State<'_, AppState>) -> Preferences {
     state.storage.notifications()
 }
@@ -138,9 +140,11 @@ pub async fn save_notification_preferences(
             "Too many notification preferences.",
         ));
     }
+    let saved = preferences.clone();
     state
         .storage
-        .save_notifications(preferences.clone())
+        .write(move |storage| storage.save_notifications(saved))
+        .await
         .map_err(api_error)?;
     if let Some(active) = state.voice.lock().await.as_ref() {
         active.session.set_cues_enabled(!preferences.dnd);
@@ -150,11 +154,7 @@ pub async fn save_notification_preferences(
     }
     if preferences.dnd {
         let _ = app.notification().remove_all_active();
-        app.state::<Mutex<Runtime>>()
-            .lock()
-            .unwrap()
-            .targets
-            .clear();
+        runtime(&app).targets.clear();
     }
     {
         let clients: Vec<_> = state
@@ -174,6 +174,10 @@ pub async fn save_notification_preferences(
     Ok(())
 }
 #[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri extracts command arguments by value"
+)]
 pub fn test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<(), ApiError> {
     let prefs = state.storage.notifications();
     if !prefs.desktop || prefs.dnd {
@@ -196,6 +200,34 @@ pub fn test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<(
 pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &ClientEvent) {
     let state = app.state::<AppState>();
     let prefs = state.storage.notifications();
+    update_badge(app, server, store);
+    if matches!(event, ClientEvent::Resynced)
+        && prefs.dnd
+        && let Ok(id) = parse_server_id(server)
+        && let Some(client) = state.client(&id)
+    {
+        let _ = client
+            .set_presence(v1::SetPresence {
+                status: v1::PresenceStatus::Dnd as i32,
+                activity: String::new(),
+            })
+            .await;
+    }
+    voice_cues(app, &state, server, store, event, &prefs).await;
+    let ClientEvent::MessageReceived {
+        channel,
+        message: message_id,
+    } = event
+    else {
+        return;
+    };
+    let (channel, message_id) = (*channel, *message_id);
+    notify_message(app, &state, server, store, channel, message_id).await;
+}
+
+/// Refresh this server's mention count, drop activation targets the user can
+/// no longer open, and show the total on the dock or taskbar badge.
+fn update_badge(app: &AppHandle, server: &str, store: &StateStore) {
     let connected = store.read().connection == ConnectionState::Connected;
     let count = {
         let view = store.read();
@@ -213,8 +245,7 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
         }
     };
     {
-        let runtime = app.state::<Mutex<Runtime>>();
-        let mut runtime = runtime.lock().unwrap();
+        let mut runtime = runtime(app);
         runtime.counts.insert(server.to_owned(), count);
         runtime.targets.retain(|_, t| {
             t.server != server
@@ -227,18 +258,17 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
             let _ = window.set_badge_count((total > 0).then_some(total));
         }
     }
-    if matches!(event, ClientEvent::Resynced)
-        && prefs.dnd
-        && let Ok(id) = parse_server_id(server)
-        && let Some(client) = state.client(&id)
-    {
-        let _ = client
-            .set_presence(v1::SetPresence {
-                status: v1::PresenceStatus::Dnd as i32,
-                activity: String::new(),
-            })
-            .await;
-    }
+}
+
+/// Join, leave, lost and restored cues for the call on this server.
+async fn voice_cues(
+    app: &AppHandle,
+    state: &AppState,
+    server: &str,
+    store: &StateStore,
+    event: &ClientEvent,
+    prefs: &Preferences,
+) {
     if let Some(active) = state
         .voice
         .lock()
@@ -257,18 +287,14 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
                 .filter_map(|v| Id::try_from(v.user_id.as_ref()).ok())
                 .collect::<BTreeSet<_>>()
         };
-        let previous = app
-            .state::<Mutex<Runtime>>()
-            .lock()
-            .unwrap()
+        let previous = runtime(app)
             .voices
             .insert(server.into(), (active.session.channel(), members.clone()));
         if prefs.sounds(server) {
             if matches!(event, ClientEvent::VoiceChanged)
-                && let Some((channel, previous)) =
+                && let Some((_, previous)) =
                     previous.filter(|(channel, _)| *channel == active.session.channel())
             {
-                let _ = channel;
                 if members.difference(&previous).next().is_some() {
                     active.session.play_cue(Cue::Join);
                 } else if previous.difference(&members).next().is_some() {
@@ -286,32 +312,29 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
             }
         }
     } else {
-        app.state::<Mutex<Runtime>>()
-            .lock()
-            .unwrap()
-            .voices
-            .remove(server);
+        runtime(app).voices.remove(server);
     }
-    let ClientEvent::MessageReceived {
-        channel,
-        message: message_id,
-    } = event
-    else {
-        return;
-    };
-    let (channel, message_id) = (*channel, *message_id);
+}
+
+/// Alert for, and possibly show a desktop notification of, one new message.
+async fn notify_message(
+    app: &AppHandle,
+    state: &AppState,
+    server: &str,
+    store: &StateStore,
+    channel: Id,
+    message_id: Id,
+) {
     if !accessible(store, channel) {
         return;
     }
     {
-        let runtime = app.state::<Mutex<Runtime>>();
-        let mut runtime = runtime.lock().unwrap();
+        let mut runtime = runtime(app);
         if !runtime.seen.insert((server.into(), message_id)) {
             return;
         }
         if runtime.seen.len() > 512 {
-            let first = runtime.seen.first().cloned().unwrap();
-            runtime.seen.remove(&first);
+            runtime.seen.pop_first();
         }
     }
     let active = state.voice.lock().await;
@@ -360,8 +383,7 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
         return;
     }
     let id = {
-        let runtime = app.state::<Mutex<Runtime>>();
-        let mut runtime = runtime.lock().unwrap();
+        let mut runtime = runtime(app);
         runtime.next = runtime.next.checked_add(1).unwrap_or(1);
         let id = runtime.next;
         if runtime.targets.len() >= 128
@@ -402,21 +424,17 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
 
 // Output-only playback uses the same self-made cue PCM as the voice graph.
 // Device opening latency is platform-dependent and remains an installed-app check.
+/// Clears the idle-cue flag when the playback task ends.
+struct Reset(Arc<AtomicBool>);
+impl Drop for Reset {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 fn play_idle(app: &AppHandle, server: &str, cue: Cue) {
-    let playing = app
-        .state::<Mutex<Runtime>>()
-        .lock()
-        .unwrap()
-        .idle_playing
-        .clone();
+    let playing = runtime(app).idle_playing.clone();
     if playing.swap(true, Ordering::AcqRel) {
         return;
-    }
-    struct Reset(Arc<AtomicBool>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            self.0.store(false, Ordering::Release);
-        }
     }
     let app = app.clone();
     let server = server.to_owned();

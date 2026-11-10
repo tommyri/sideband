@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { invokeBridge } from '../../../lib/tauri'
 import {
+  cancelShortcutCapture,
+  captureShortcut,
+  configureSystemShortcuts,
+  saveShortcuts,
   conflicts,
   empty,
   refreshShortcuts,
   useShortcuts,
-  type Binding,
   type Preferences,
-  type Snapshot,
 } from './store'
 const actions = ['ptt', 'mute', 'deafen'] as const
 const titles = ['Push-to-talk', 'Toggle mute', 'Toggle deafen'] as const
@@ -41,7 +42,7 @@ export function ShortcutSettings({ close }: { close: () => void }) {
     return () => {
       live = false
       clearInterval(timer)
-      void invokeBridge('cancel_shortcut_capture').catch(() => {})
+      void cancelShortcutCapture().catch(() => {})
       previous?.focus()
     }
   }, [])
@@ -51,7 +52,7 @@ export function ShortcutSettings({ close }: { close: () => void }) {
     setError('')
     setSaved(false)
     try {
-      const result = await invokeBridge<{ binding: Binding; label: string }>('capture_shortcut')
+      const result = await captureShortcut()
       setDraft((d) => ({ ...d, [actions[index]!]: result.binding }))
       setLabels((l) => l.map((v, i) => (i === index ? result.label : v)))
     } catch (e) {
@@ -67,7 +68,7 @@ export function ShortcutSettings({ close }: { close: () => void }) {
     setError('')
     setSaved(false)
     try {
-      const snapshot = await invokeBridge<Snapshot>('save_shortcuts', { preferences })
+      const snapshot = await saveShortcuts(preferences)
       useShortcuts.setState({ snapshot })
       setLabels(snapshot.labels)
       setSaved(true)
@@ -218,11 +219,7 @@ export function ShortcutSettings({ close }: { close: () => void }) {
               Press and release a key{current?.mouse ? ' or mouse button' : ''}. Global actions are
               suspended during capture. Capture times out after 15 seconds.
             </p>
-            <button
-              onClick={() =>
-                void invokeBridge('cancel_shortcut_capture').catch((e) => setError(message(e)))
-              }
-            >
+            <button onClick={() => void cancelShortcutCapture().catch((e) => setError(message(e)))}>
               Cancel capture
             </button>
           </div>
@@ -256,9 +253,7 @@ export function ShortcutSettings({ close }: { close: () => void }) {
           {(current?.permission === 'Input Monitoring' || current?.systemBinding) && (
             <button
               disabled={busy}
-              onClick={() =>
-                void invokeBridge('configure_system_shortcuts').catch((e) => setError(message(e)))
-              }
+              onClick={() => void configureSystemShortcuts().catch((e) => setError(message(e)))}
             >
               Open system shortcut permissions/settings
             </button>

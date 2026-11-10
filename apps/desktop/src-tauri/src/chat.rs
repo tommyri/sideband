@@ -78,14 +78,18 @@ pub struct ChatSnapshot {
     can_manage: bool,
 }
 #[tauri::command]
+#[allow(
+    clippy::unused_async,
+    reason = "async commands run on the runtime, not the main thread"
+)]
 pub async fn chat_snapshot(
     state: State<'_, AppState>,
     server_id: String,
     channel_id: String,
 ) -> Result<ChatSnapshot, ApiError> {
-    snapshot_for(&state, &server_id, &channel_id).await
+    snapshot_for(&state, &server_id, &channel_id)
 }
-async fn snapshot_for(
+fn snapshot_for(
     state: &AppState,
     server_id: &str,
     channel_id: &str,
@@ -237,6 +241,10 @@ fn external_url(value: &str) -> Result<reqwest::Url, ApiError> {
     Ok(url)
 }
 #[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri extracts command arguments by value"
+)]
 pub fn open_chat_link(app: tauri::AppHandle, url: String) -> Result<(), ApiError> {
     use tauri_plugin_opener::OpenerExt;
     let url = external_url(&url)?;
@@ -261,6 +269,27 @@ mod tests {
         }
         assert!(external_url("https://example.com/path?q=hello").is_ok());
     }
+    async fn wait_for(
+        state: &AppState,
+        server: &str,
+        channel: &str,
+        predicate: impl Fn(&ChatSnapshot) -> bool,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if predicate(&snapshot_for(state, server, channel).unwrap()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario against a real server"
+    )]
     #[tokio::test]
     async fn live_bridge_tracks_send_edit_read_and_delete() {
         use ss_client_core::{Client, Credentials, ServerAddr};
@@ -314,23 +343,6 @@ mod tests {
             .await
             .unwrap();
         state.clients().insert(client).unwrap();
-        async fn wait_for(
-            state: &AppState,
-            server: &str,
-            channel: &str,
-            predicate: impl Fn(&ChatSnapshot) -> bool,
-        ) {
-            tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                loop {
-                    if predicate(&snapshot_for(state, server, channel).await.unwrap()) {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-        }
         let channel = channel.to_string();
         wait_for(&state, key.as_str(), &channel, |v| {
             v.messages.len() == 1
@@ -379,11 +391,7 @@ mod tests {
             v.messages.len() == 1 && v.messages[0].deleted && v.messages[0].content.is_empty()
         })
         .await;
-        assert!(
-            snapshot_for(&state, key.as_str(), &Id::generate().to_string())
-                .await
-                .is_err()
-        );
+        assert!(snapshot_for(&state, key.as_str(), &Id::generate().to_string()).is_err());
         assert!(
             action_for(
                 &state,

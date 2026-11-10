@@ -54,7 +54,8 @@ export default function App() {
           {startupError}
         </p>
       )}
-      <DebugPanel />
+      {/* Development builds only: Vite drops the inspector from packaged builds. */}
+      {import.meta.env.DEV && <DebugPanel />}
       <ConnectDialog />
       {isTauri() && (
         <>

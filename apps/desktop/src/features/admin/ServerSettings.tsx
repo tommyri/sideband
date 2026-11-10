@@ -2,13 +2,12 @@ import { validServerSettings } from './serverSettingsModel'
 import { useEffect, useRef, useState } from 'react'
 import type { ServerSettingsView } from '../../lib/generated/ServerSettingsView'
 import type { ServerSettingsFields } from '../../lib/generated/ServerSettingsFields'
-import { invokeBridge } from '../../lib/tauri'
+import { saveServerSettings, serverSettings, uploadServerIcon } from './serverSettingsApi'
 import { errorText } from '../chat/api'
 import './admin.css'
 type Props = { server: string; connected: boolean; permitted: boolean; close: () => void }
 type Icon = { data: string; preview: string }
-const read = (serverId: string) =>
-  invokeBridge<ServerSettingsView>('get_server_settings', { serverId })
+const read = serverSettings
 export function ServerSettings(props: Props) {
   return <SettingsPanel key={`${props.server}:${props.connected}:${props.permitted}`} {...props} />
 }
@@ -113,19 +112,13 @@ function SettingsPanel({ server, connected, permitted, close }: Props) {
     try {
       let next = { ...fields, name: fields.name.trim() }
       if (icon) {
-        const iconId = await invokeBridge<string>('upload_server_icon', {
-          serverId: server,
-          data: icon.data,
-        })
+        const iconId = await uploadServerIcon(server, icon.data)
         if (!alive.current) return
         next = { ...next, iconId }
         setFields(next)
         setIcon(null)
       }
-      const result = await invokeBridge<ServerSettingsView>('save_server_settings', {
-        serverId: server,
-        fields: next,
-      })
+      const result = await saveServerSettings(server, next)
       if (alive.current) {
         apply(result)
         setNotice('Server settings saved.')

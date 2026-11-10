@@ -179,13 +179,23 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-092](T-092-transfer-listener-limits.md) | Stream attachments, bound listeners, retire the spike default | M | T-027, T-033, T-066 | todo |
 | [T-093](T-093-session-revocation.md) | Session revocation, logout and expiry | S | T-021, T-061 | in-progress |
 | [T-094](T-094-server-event-correctness.md) | Member events, deleted content, cache races, media lock | M | T-024, T-025, T-026, T-029, T-091 | todo |
-| [T-095](T-095-desktop-shell-hardening.md) | Desktop shell: capabilities, lints, locks, scaffold leftovers | M | T-042, T-085 | todo |
+| [T-095](T-095-desktop-shell-hardening.md) | Desktop shell: capabilities, lints, locks, scaffold leftovers | M | T-042, T-085 | in-progress |
 | [T-096](T-096-chat-history-notices-redaction.md) | Chat history robustness, user-visible notices, export redaction | M | T-045A, T-076, T-095 | todo |
 | [T-097](T-097-release-pipeline-gating.md) | Gate releases: main only, tested commit, isolated signing, provenance | M | T-057, T-034 | todo |
 | [T-098](T-098-deploy-ci-hygiene.md) | Deploy and CI hygiene: fail-closed checks, compose/NGINX limits, backups | M | T-034, T-001 | todo |
 | [T-099](T-099-plan-doc-reconciliation.md) | Reconcile the plan with the code; acceptance status page | S | — | todo |
 | [T-100](T-100-screen-share-backend-decision.md) | Decide the screen-share backend before adaptive bitrate | M | T-070, T-071, T-072 | todo |
 | [T-101](T-101-router-tolerance-parser-fuzzing.md) | Router tolerates what the protocol allows; fuzz the real parsers | M | T-004, T-061 | todo |
+
+Opened by T-095 for the shell business logic and download checks it did not
+move:
+
+| ID | Task | Size | Depends on | Status |
+|---|---|---|---|---|
+| [T-102](T-102-client-core-notification-policy.md) | Notification policy moves to ss-client-core | M | T-095 | todo |
+| [T-103](T-103-client-core-voice-following.md) | Voice membership reconciliation moves to ss-client-core | M | T-084, T-089, T-095 | todo |
+| [T-104](T-104-download-provenance-marks.md) | Mark saved downloads as coming from the internet | S | T-095, T-096 | todo |
+| [T-105](T-105-shell-permission-projections.md) | Remaining permission projections use ss-client-core authority | S | T-095, T-096 | todo |
 
 Tasks that edit the same files are chained through "Depends on" so they do
 not run at once: T-082 → T-083 → T-084 share the voice worker; T-081 →
@@ -282,8 +292,8 @@ decide how many sub-agents to spawn.
 | 13 | T-063 |
 | 14 | T-081, T-082, T-085, T-087, T-088, T-090, T-091, T-092, T-093, T-097, T-098, T-099, T-100, T-101 |
 | 15 | T-083, T-086, T-094, T-095, T-074 |
-| 16 | T-084, T-089, T-096 |
-| 17 | T-018 |
+| 16 | T-084, T-089, T-096, T-102 |
+| 17 | T-018, T-103, T-104, T-105 |
 
 Release gate: T-018 must record a "go" before voice quality is approved for
 a stable/public release. UI work, packaging and labelled test builds proceed

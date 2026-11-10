@@ -38,9 +38,7 @@ impl AppState {
 
     /// The client map, for synchronous reads and ownership changes only.
     pub fn clients(&self) -> std::sync::MutexGuard<'_, Clients> {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.clients)
     }
 
     /// A shared handle to one server's client. The map lock is released before
@@ -48,6 +46,16 @@ impl AppState {
     pub fn client(&self, server: &ServerId) -> Option<Arc<Client>> {
         self.clients().get(server).cloned()
     }
+}
+
+/// Lock a std mutex even if a panic poisoned it. The shell's std mutexes guard
+/// registries and caches that each update changes with one assignment or
+/// insert, so the value stays usable, and one panic must not make every later
+/// command panic.
+pub fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Connected clients by normalized server identity. Commands share a client

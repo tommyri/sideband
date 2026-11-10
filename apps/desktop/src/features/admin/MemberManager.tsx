@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ModerationPage } from '../../lib/generated/ModerationPage'
-import { invokeBridge } from '../../lib/tauri'
+import { moderateMember, moderationPage } from './moderation'
 import { errorText } from '../chat/api'
 import './admin.css'
 type Props = { server: string; connected: boolean; permitted: boolean; close: () => void }
@@ -48,7 +48,7 @@ function MemberPanel({ server, connected, permitted, close }: Props) {
   useEffect(() => {
     const current = ++generation.current
     if (!allowed) return
-    void invokeBridge<ModerationPage>('get_moderation_page', {
+    void moderationPage({
       serverId: server,
       bans,
       before,
@@ -92,14 +92,11 @@ function MemberPanel({ server, connected, permitted, close }: Props) {
     setError('')
     setNotice('')
     try {
-      await invokeBridge('moderate_member', {
-        serverId: server,
-        action: {
-          kind: target.kind,
-          userId: target.id,
-          reason,
-          durationSeconds: target.kind === 'ban' && duration !== '' ? Number(duration) : null,
-        },
+      await moderateMember(server, {
+        kind: target.kind,
+        userId: target.id,
+        reason,
+        durationSeconds: target.kind === 'ban' && duration !== '' ? Number(duration) : null,
       })
       if (!alive.current) return
       setNotice(

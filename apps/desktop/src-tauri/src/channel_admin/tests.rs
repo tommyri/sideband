@@ -147,6 +147,10 @@ async fn wait(state: &AppState, server: &str, predicate: impl Fn(&ClientState) -
     .await
     .unwrap();
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario against a real server"
+)]
 #[tokio::test]
 async fn real_bridge_creates_edits_moves_and_cascade_deletes() {
     let world = World::new().await;

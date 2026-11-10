@@ -47,7 +47,7 @@ fn display(bytes: &[u8]) -> Result<String, ApiError> {
         .map(|id| id.to_string())
         .map_err(|_| error("Invalid invite identifier"))
 }
-fn project(invite: v1::Invite) -> Result<InviteView, ApiError> {
+fn project(invite: &v1::Invite) -> Result<InviteView, ApiError> {
     Ok(InviteView {
         id: display(&invite.id)?,
         created_by: display(&invite.created_by)?,
@@ -75,7 +75,7 @@ pub async fn invite_page(
         .list_invites(before)
         .await
         .map_err(api_error)?
-        .into_iter()
+        .iter()
         .map(project)
         .collect()
 }
@@ -157,7 +157,7 @@ mod tests {
     }
     #[test]
     fn metadata_projection_discards_plaintext_codes() {
-        let row = project(v1::Invite {
+        let row = project(&v1::Invite {
             id: Id::generate().as_bytes().to_vec().into(),
             created_by: Id::generate().as_bytes().to_vec().into(),
             code: "secret".into(),

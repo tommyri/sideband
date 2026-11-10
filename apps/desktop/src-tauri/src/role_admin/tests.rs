@@ -93,6 +93,10 @@ fn input(name: &str) -> RoleFields {
         permissions: Permissions::SEND_MESSAGES.bits().to_string(),
     }
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario against a real server"
+)]
 #[tokio::test]
 async fn real_bridge_roles_assignments_reorder_clear_and_delete() {
     let world = World::new().await;
@@ -213,6 +217,10 @@ async fn real_bridge_roles_assignments_reorder_clear_and_delete() {
     world.task.abort();
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture checked against every hierarchy rule"
+)]
 #[test]
 fn snapshot_matches_server_hierarchy_and_administrator_bypass() {
     let own = Id::generate();

@@ -23,8 +23,13 @@ pub struct ActiveVoice {
     pub store: StateStore,
     pub muted: bool,
     pub deafened: bool,
-    pub local_ptt: bool,
-    pub global_ptt: bool,
+    ptt: PttInputs,
+}
+/// The two inputs of the combined push-to-talk gate.
+#[derive(Default)]
+struct PttInputs {
+    local: bool,
+    global: bool,
 }
 impl ActiveVoice {
     fn new(server: ServerId, session: VoiceSession, client: &Client) -> Result<Self, ApiError> {
@@ -35,8 +40,7 @@ impl ActiveVoice {
             deafened: session.self_deafened(),
             server,
             session: Arc::new(session),
-            local_ptt: false,
-            global_ptt: false,
+            ptt: PttInputs::default(),
         })
     }
     /// Whether the call's server connection is up. Never waits for a lock.
@@ -44,16 +48,15 @@ impl ActiveVoice {
         self.store.read().connection == ConnectionState::Connected
     }
     pub fn set_local_ptt(&mut self, pressed: bool) {
-        self.local_ptt = pressed;
-        self.session.set_ptt(self.local_ptt || self.global_ptt);
+        self.ptt.local = pressed;
+        self.session.set_ptt(self.ptt.local || self.ptt.global);
     }
     pub fn set_global_ptt(&mut self, pressed: bool) {
-        self.global_ptt = pressed;
-        self.session.set_ptt(self.local_ptt || self.global_ptt);
+        self.ptt.global = pressed;
+        self.session.set_ptt(self.ptt.local || self.ptt.global);
     }
     pub fn release_ptt(&mut self) {
-        self.local_ptt = false;
-        self.global_ptt = false;
+        self.ptt = PttInputs::default();
         self.session.release_ptt();
     }
     /// Mirror the gate the session actually applies.
@@ -517,9 +520,14 @@ mod tests {
         (port, task)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario against a real server"
+    )]
     #[tokio::test]
     async fn ptt_and_mute_never_wait_for_slow_requests_or_connect() {
-        use crate::input::{PttArming, apply_ptt, session_identity};
+        use crate::input::{apply_ptt, session_identity};
+        use ss_client_core::ptt::PttArming;
         let dir = tempfile::tempdir().unwrap();
         let pool = Arc::new(
             ss_server::db::Pool::open(dir.path().join("server.db"))
@@ -646,8 +654,13 @@ mod tests {
         task.abort();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario against a real server"
+    )]
     #[tokio::test]
     async fn desktop_voice_switches_releases_and_cancels_reconnect_membership() {
+        use ss_client_core::storage::Storage;
         let dir = tempfile::tempdir().unwrap();
         let pool = Arc::new(
             ss_server::db::Pool::open(dir.path().join("server.db"))
@@ -711,7 +724,7 @@ mod tests {
         {
             let mut voice = state.voice.lock().await;
             let active = voice.as_mut().unwrap();
-            assert!(active.session.speaking_users().is_empty());
+            assert_eq!(active.session.speaking_users().len(), 0);
             active.set_global_ptt(true);
             active.set_local_ptt(true);
             active.set_local_ptt(false);
@@ -795,7 +808,6 @@ mod tests {
             state.clients().get(&key).is_none(),
             "leaving during retry must cancel desired membership"
         );
-        use ss_client_core::storage::Storage;
         let reopened =
             crate::persistence::DesktopStorage::open(dir.path().join("desktop/sessions.json"))
                 .unwrap();

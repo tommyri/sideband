@@ -1,6 +1,7 @@
 //! One native listener, bounded semantic diagnostics, and fail-closed PTT delivery.
 use crate::{state::AppState, types::ApiError};
 use serde::{Deserialize, Serialize};
+use ss_client_core::ptt::{PttAction, PttArming};
 use ss_input::{Backend, Binding, CapturedBinding, Handle, PttEvent, ShortcutAction};
 use std::{
     collections::VecDeque,
@@ -53,6 +54,10 @@ impl Preferences {
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags serialized for the webview"
+)]
 pub struct Snapshot {
     backend: String,
     preferences: Preferences,
@@ -93,9 +98,7 @@ pub struct InputManager {
 }
 impl InputManager {
     fn lock(&self) -> std::sync::MutexGuard<'_, Runtime> {
-        self.runtime
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::state::lock(&self.runtime)
     }
 }
 fn record(rt: &mut Runtime, text: impl Into<String>) {
@@ -285,49 +288,7 @@ pub fn init(app: &tauri::AppHandle) {
         drive(target, rx).await;
     });
 }
-/// Global push-to-talk arming. A press opens the gate only once the current
-/// call is armed: a call the periodic check has seen, or a key released since
-/// the call changed or since a press was refused while disconnected.
-#[derive(Default)]
-pub(crate) struct PttArming {
-    session: Option<usize>,
-    armed: bool,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PttAction {
-    /// Close the gate now, skipping the release tail.
-    Release,
-    /// Set the global half of the combined PTT gate.
-    Set(bool),
-}
-impl PttArming {
-    /// A key event for the call identified by `session`.
-    pub(crate) fn key(&mut self, session: usize, connected: bool, pressed: bool) -> PttAction {
-        if pressed && !connected {
-            self.armed = false;
-            return PttAction::Release;
-        }
-        if self.session != Some(session) {
-            self.session = Some(session);
-            self.armed = false;
-        }
-        if !pressed {
-            self.armed = true;
-        }
-        PttAction::Set(pressed && self.armed)
-    }
-    /// The periodic check. A call it has not seen before is armed.
-    pub(crate) fn tick(&mut self, session: Option<usize>) {
-        if session != self.session {
-            self.session = session;
-            self.armed = true;
-        }
-    }
-    /// After a listener failure, require a fresh press.
-    pub(crate) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
+/// Identifies one call for [`PttArming`].
 pub(crate) fn session_identity(voice: &crate::voice::ActiveVoice) -> usize {
     Arc::as_ptr(&voice.session) as usize
 }
@@ -511,7 +472,7 @@ pub async fn save_shortcuts(
             Ok(())
         })();
         if let Err(e) = persist {
-            rt.error = e.message.clone();
+            rt.error.clone_from(&e.message);
             return Err(e);
         }
         rt.preferences = preferences;
@@ -684,51 +645,13 @@ mod tests {
     fn defaults_do_not_enable_a_listener_and_trigger_conflicts_are_rejected() {
         let mut p = Preferences::default();
         assert!(!p.enabled());
-        assert!(p.bindings().is_empty());
+        assert_eq!(p.bindings().len(), 0);
         p.ptt = Some(Binding::key(ss_input::Code::KeyV));
         p.mute = p.ptt;
         assert!(p.validate().is_err());
         p.mute = Some(Binding::key(ss_input::Code::KeyM));
         assert!(p.validate().is_ok());
         assert_eq!(p.bindings()[1].action, ShortcutAction::ToggleMute);
-    }
-    #[test]
-    fn ptt_opens_only_for_presses_after_the_call_is_armed() {
-        let mut ptt = PttArming::default();
-        // A press for a call the periodic check has not seen yet stays closed
-        // until the key is released.
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
-        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
-        // A new call seen by the tick is armed for the next press.
-        ptt.tick(Some(2));
-        assert_eq!(ptt.key(2, true, true), PttAction::Set(true));
-        // A key already down when the call changes must be released first.
-        assert_eq!(ptt.key(3, true, true), PttAction::Set(false));
-        assert_eq!(ptt.key(3, true, false), PttAction::Set(false));
-        assert_eq!(ptt.key(3, true, true), PttAction::Set(true));
-        ptt.tick(Some(3));
-        assert_eq!(ptt.key(3, true, true), PttAction::Set(true));
-    }
-    #[test]
-    fn ptt_refused_while_disconnected_or_after_failure_needs_a_fresh_press() {
-        let mut ptt = PttArming::default();
-        ptt.tick(Some(1));
-        assert_eq!(ptt.key(1, false, true), PttAction::Release);
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
-        // Releases always close, even while disconnected.
-        assert_eq!(ptt.key(1, false, false), PttAction::Set(false));
-        ptt.disarm();
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
-        // Leaving the call and joining again re-arms through the tick.
-        ptt.tick(None);
-        ptt.tick(Some(1));
-        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
     }
     #[test]
     fn diagnostics_keep_only_ten_semantic_events() {

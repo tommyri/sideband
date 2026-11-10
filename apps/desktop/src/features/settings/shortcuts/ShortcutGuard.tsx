@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
-import { invokeBridge } from '../../../lib/tauri'
-import { refreshShortcuts } from './store'
+import { refreshShortcuts, suspendShortcuts } from './store'
 let revision = 0
 export function ShortcutGuard() {
   useEffect(() => {
@@ -12,10 +11,10 @@ export function ShortcutGuard() {
       const suspended = privateInput || !!document.querySelector('[data-binding-capture="true"]')
       if (last === suspended) return
       last = suspended
-      void invokeBridge('suspend_shortcuts', {
+      void suspendShortcuts(
         suspended,
-        revision: (revision = Math.max(revision + 1, Date.now() * 1000)),
-      }).catch(() => {})
+        (revision = Math.max(revision + 1, Date.now() * 1000)),
+      ).catch(() => {})
     }
     const observer = new MutationObserver(update)
     observer.observe(document.body, {

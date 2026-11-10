@@ -92,7 +92,7 @@ fn invalid(message: &str) -> ApiError {
 fn expiry(seconds: Option<u32>, now: i64) -> Result<Option<i64>, ApiError> {
     seconds
         .map(|value| {
-            if !matches!(value, 3600 | 86400 | 604800 | 2592000) {
+            if !matches!(value, 3600 | 86_400 | 604_800 | 2_592_000) {
                 return Err(invalid("Choose a supported ban duration"));
             }
             now.checked_add(i64::from(value) * 1000)
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn ban_presets_are_bounded_and_computed_at_submission() {
         assert_eq!(expiry(None, 1000).unwrap(), None);
-        for seconds in [3600, 86400, 604800, 2592000] {
+        for seconds in [3600, 86_400, 604_800, 2_592_000] {
             assert_eq!(
                 expiry(Some(seconds), 1000).unwrap(),
                 Some(1000 + i64::from(seconds) * 1000)

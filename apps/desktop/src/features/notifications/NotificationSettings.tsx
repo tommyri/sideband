@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bell, X } from 'lucide-react'
-import { invokeBridge } from '../../lib/tauri'
+import { notificationPreferences, saveNotificationPreferences, testNotification } from './api'
 import { useAppStore } from '../../store/app-store'
 import { useVoiceStore } from '../voice/store'
 import { defaults, notificationLevel, type Preferences, type Level } from './model'
@@ -19,7 +19,7 @@ export function NotificationSettings({ close }: { close: () => void }) {
     const previous = document.activeElement as HTMLElement | null
     dialog.current?.showModal()
     let live = true
-    void invokeBridge<Preferences>('notification_preferences')
+    void notificationPreferences()
       .then((p) => {
         if (live) {
           setDraft(p)
@@ -40,7 +40,7 @@ export function NotificationSettings({ close }: { close: () => void }) {
     setError('')
     setStatus('')
     try {
-      await invokeBridge('save_notification_preferences', { preferences: draft })
+      await saveNotificationPreferences(draft)
       setStatus('Notification settings saved.')
     } catch (e) {
       setError(e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
@@ -52,8 +52,8 @@ export function NotificationSettings({ close }: { close: () => void }) {
     setBusy(true)
     setError('')
     try {
-      await invokeBridge('save_notification_preferences', { preferences: draft })
-      await invokeBridge('test_notification')
+      await saveNotificationPreferences(draft)
+      await testNotification()
       setStatus(
         'Test sent. If it does not appear, check your operating system notification settings.',
       )

@@ -46,5 +46,5 @@ fn main() {
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo provides OUT_DIR"));
     std::fs::write(output.join("build-identity.json"), identity.to_string())
         .expect("write build identity");
-    tauri_build::build()
+    tauri_build::build();
 }

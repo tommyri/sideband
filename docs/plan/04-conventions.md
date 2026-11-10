@@ -58,10 +58,21 @@ These apply to every task. Sub-agents: read before writing code.
 ## Frontend (apps/desktop/src)
 
 - React 19 + TypeScript strict + Vite + Tailwind. State in Zustand stores fed
-  by Tauri events; components never call Tauri directly—go through
-  `src/lib/api.ts`.
-- No network access from the webview except through the Tauri-provided
-  `fetch` wrapper in `src/lib/http.ts` (honors cert pinning and auth).
+  by Tauri events. Components never call Tauri directly: shell-wide commands
+  go through `src/lib/api.ts`, feature commands through that feature's
+  `api.ts` (or its store/model module), and both use `invokeBridge` from
+  `src/lib/tauri.ts`. ESLint rejects `@tauri-apps/*` and `invokeBridge`
+  imports in non-test `.tsx` files.
+- No network access from the webview: no `fetch`, XHR, WebSocket,
+  EventSource or `sendBeacon` (ESLint rejects them). History, attachments,
+  previews and uploads are Rust commands, which keep certificate pins and
+  bearer tokens out of script.
+- The webview capability (`src-tauri/capabilities/default.json`) grants only
+  what the frontend imports; `config_tests.rs` fails when an import needs a
+  permission the file does not grant, or the file grants one nothing uses.
+  Rust-side plugin use needs no capability.
+- Development-only UI (the event inspector) renders only under
+  `import.meta.env.DEV`, so packaged builds do not contain it.
 - Accessibility: keyboard navigable, focus-visible, ARIA roles on custom
   widgets. Respect `prefers-reduced-motion`.
 - `pnpm` as package manager. `pnpm check` = `tsc --noEmit && eslint && vitest
