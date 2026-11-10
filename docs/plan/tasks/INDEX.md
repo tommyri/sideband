@@ -166,7 +166,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
 | [T-081](T-081-media-pump-independence.md) | Keep voice datagrams flowing while control commands are pending | M | T-041, T-060 | todo |
-| [T-082](T-082-talk-burst-boundaries.md) | Correct talk-burst boundaries for voice activation and gate close | S | T-052, T-041 | todo |
+| [T-082](T-082-talk-burst-boundaries.md) | Correct talk-burst boundaries for voice activation and gate close | S | T-052, T-041 | in-progress |
 | [T-083](T-083-playback-pacing-lag-recovery.md) | Bounded playback latency: ring-level pacing, jitter lag recovery | M | T-015, T-041, T-082 | todo |
 | [T-084](T-084-device-reopen-retry.md) | Retry failed device reopens during a call | S | T-010, T-041, T-054, T-083 | todo |
 | [T-085](T-085-mute-fail-closed-shortcuts.md) | Mute fails closed; global shortcuts are never dropped | M | T-041, T-058 | todo |

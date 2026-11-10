@@ -18,6 +18,8 @@ use ss_net::media::{self, DatagramHeader, TALK_END, TALK_START};
 use super::Cue;
 
 const UNKNOWN_TTL: Duration = Duration::from_millis(500);
+/// Samples per channel in one 10 ms capture quantum.
+const QUANTUM_SAMPLES: u32 = 480;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum GraphError {
@@ -80,6 +82,8 @@ pub(super) struct VoiceGraph {
     timestamp: u32,
     track_id: u32,
     talking: bool,
+    voiced: bool,
+    retractable: usize,
     outgoing: Vec<Bytes>,
     tracks: HashMap<u32, Track>,
     unknown: HashMap<u32, VecDeque<Pending>>,
@@ -111,6 +115,8 @@ impl VoiceGraph {
             timestamp: 0,
             track_id: 0,
             talking: false,
+            voiced: false,
+            retractable: 0,
             outgoing: Vec::new(),
             tracks: HashMap::new(),
             unknown: HashMap::new(),
@@ -196,15 +202,49 @@ impl VoiceGraph {
         }
     }
 
+    /// Push one 10 ms capture quantum. Call once per captured quantum whatever
+    /// the gate says, so the capture clock keeps running while it is closed.
+    ///
+    /// A closed quantum is never transmitted: inside a burst it becomes
+    /// silence that completes the `TALK_END` frame (which also flushes the
+    /// encoder), and between bursts it only advances the timestamp, so the
+    /// next burst starts on any quantum with a timestamp gap.
     pub fn push_capture(&mut self, input: &[f32], gate: bool) -> Result<(), GraphError> {
         if input.len() != self.quantum {
             return Err(GraphError::Frame);
         }
-        self.pending.extend_from_slice(input);
+        if gate {
+            self.pending.extend_from_slice(input);
+            self.voiced = true;
+            self.retractable = 0;
+        } else if self.talking || !self.pending.is_empty() {
+            self.pending.resize(self.pending.len() + self.quantum, 0.0);
+            self.retractable += 1;
+        } else {
+            self.timestamp = self.timestamp.wrapping_add(QUANTUM_SAMPLES);
+            self.retractable += 1;
+        }
         while self.pending.len() >= self.frame_samples {
             self.finish_frame(gate)?;
         }
         Ok(())
+    }
+
+    /// Take back up to `quanta` of the most recent closed quanta that have not
+    /// been sent. Voice activation replays them as pre-roll when it opens;
+    /// without this the capture clock would count them twice per burst.
+    pub fn retract_closed(&mut self, quanta: usize) {
+        let count = quanta.min(self.retractable);
+        self.retractable -= count;
+        for _ in 0..count {
+            // Unsent closed quanta are either the silent tail of `pending` or,
+            // between bursts, timestamp advances with `pending` empty.
+            if self.pending.len() >= self.quantum {
+                self.pending.truncate(self.pending.len() - self.quantum);
+            } else {
+                self.timestamp = self.timestamp.wrapping_sub(QUANTUM_SAMPLES);
+            }
+        }
     }
 
     pub fn pop_outgoing(&mut self) -> Vec<Bytes> {
@@ -313,7 +353,9 @@ impl VoiceGraph {
         self.pending.drain(..self.frame_samples);
         let timestamp = self.timestamp;
         self.timestamp = self.timestamp.wrapping_add(self.samples_per_channel);
-        if !gate && !self.talking {
+        self.retractable = 0;
+        let voiced = std::mem::take(&mut self.voiced);
+        if !gate && !self.talking && !voiced {
             return Ok(());
         }
         let mut flags = 0;
@@ -362,8 +404,129 @@ fn audio_packet(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// A burst's expected first-sample timestamp and the capture position just
+    /// after its last gated quantum, both in 48 kHz samples.
+    #[derive(Debug, Clone, Copy)]
+    pub(in crate::voice) struct Expected {
+        pub start: u32,
+        pub gated_end: u32,
+    }
+
+    /// Every burst starts with `TALK_START` at the capture position of its
+    /// first sample, is contiguous, and ends with exactly one `TALK_END` in
+    /// the frame that holds the first closed quantum.
+    pub(in crate::voice) fn assert_bursts(packets: &[Bytes], frame: u32, expected: &[Expected]) {
+        let headers: Vec<_> = packets
+            .iter()
+            .map(|packet| DatagramHeader::parse(packet).unwrap().0)
+            .collect();
+        let mut bursts: Vec<Vec<DatagramHeader>> = Vec::new();
+        for header in &headers {
+            if header.flags & TALK_START != 0 {
+                bursts.push(Vec::new());
+            }
+            bursts
+                .last_mut()
+                .expect("the first packet must carry TALK_START")
+                .push(*header);
+        }
+        assert_eq!(bursts.len(), expected.len(), "bursts: {headers:?}");
+        let mut seq = headers[0].seq;
+        let mut previous_end: Option<u32> = None;
+        for (burst, expected) in bursts.iter().zip(expected) {
+            assert_eq!(burst[0].timestamp, expected.start, "burst start: {burst:?}");
+            if let Some(end) = previous_end {
+                assert!(
+                    expected.start >= end,
+                    "burst overlaps one ending at {end}: {burst:?}"
+                );
+            }
+            let mut timestamp = expected.start;
+            for (index, header) in burst.iter().enumerate() {
+                assert_eq!(header.seq, seq);
+                assert_eq!(header.timestamp, timestamp);
+                assert_eq!(
+                    header.flags & TALK_END != 0,
+                    index + 1 == burst.len(),
+                    "exactly one TALK_END, on the last packet: {burst:?}"
+                );
+                seq = seq.wrapping_add(1);
+                timestamp = timestamp.wrapping_add(frame);
+            }
+            assert!(
+                timestamp > expected.gated_end && timestamp <= expected.gated_end + frame,
+                "TALK_END frame ends at {timestamp}, gated audio at {}",
+                expected.gated_end
+            );
+            previous_end = Some(timestamp);
+        }
+    }
+
+    /// Bursts of 1..=5 quanta (odd and even) separated by `gap` closed quanta.
+    /// A 20 ms frame needs two closed quanta to end a burst.
+    fn gate_script(gap: usize) -> (Vec<bool>, Vec<Expected>) {
+        let mut gates = vec![false; gap];
+        let mut expected = Vec::new();
+        for length in 1..=5 {
+            let start = u32::try_from(gates.len() * 480).unwrap();
+            gates.extend(std::iter::repeat_n(true, length));
+            expected.push(Expected {
+                start,
+                gated_end: u32::try_from(gates.len() * 480).unwrap(),
+            });
+            gates.extend(std::iter::repeat_n(false, gap));
+        }
+        (gates, expected)
+    }
+
+    #[test]
+    fn every_burst_ends_with_talk_end_and_the_next_starts_after_a_gap() {
+        for profile in [
+            VoiceProfile::Voice,
+            VoiceProfile::Music,
+            VoiceProfile::LowLatency,
+        ] {
+            for gap in [2, 3, 7] {
+                let mut graph =
+                    VoiceGraph::new(profile, profile.encoder_params().default_bitrate_bps).unwrap();
+                graph.set_track_id(1);
+                let (gates, expected) = gate_script(gap);
+                let speech = vec![0.1; graph.quantum()];
+                let mut packets = Vec::new();
+                for gate in gates {
+                    graph.push_capture(&speech, gate).unwrap();
+                    packets.extend(graph.pop_outgoing());
+                }
+                assert!(!graph.snapshot().talking, "{profile:?} gap {gap}");
+                assert_bursts(&packets, graph.samples_per_channel, &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn closing_quantum_is_zeroed_even_when_the_microphone_still_hears_speech() {
+        for profile in [VoiceProfile::Voice, VoiceProfile::LowLatency] {
+            for open in [1, 2, 3] {
+                let mut graph = VoiceGraph::new(profile, 64_000).unwrap();
+                graph.set_track_id(1);
+                let speech = vec![0.1; graph.quantum()];
+                for _ in 0..open {
+                    graph.push_capture(&speech, true).unwrap();
+                }
+                let mut closed = 0;
+                while graph.snapshot().talking {
+                    graph.push_capture(&speech, false).unwrap();
+                    closed += 1;
+                }
+                let tail = (closed * graph.quantum()).min(graph.frame_samples);
+                let frame = &graph.frame[graph.frame_samples - tail..];
+                assert!(frame.iter().all(|s| *s == 0.0), "{profile:?} open {open}");
+            }
+        }
+    }
 
     #[test]
     fn cue_queue_is_bounded_and_dnd_clear_discards_pending_samples() {
@@ -415,6 +578,43 @@ mod tests {
                 .iter()
                 .all(|s| *s == 0.0)
         );
+    }
+
+    fn flags(graph: &mut VoiceGraph) -> Vec<(u8, u32)> {
+        graph
+            .pop_outgoing()
+            .iter()
+            .map(|packet| {
+                let header = DatagramHeader::parse(packet).unwrap().0;
+                (header.flags, header.timestamp)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pre_roll_retraction_rewinds_only_unsent_closed_quanta() {
+        let mut graph = VoiceGraph::new(VoiceProfile::Voice, 64_000).unwrap();
+        graph.set_track_id(1);
+        let speech = vec![0.1; graph.quantum()];
+        for gate in [true, true, false, false, false] {
+            graph.push_capture(&speech, gate).unwrap();
+        }
+        assert_eq!(flags(&mut graph), [(TALK_START, 0), (TALK_END, 960)]);
+        // One closed quantum follows the TALK_END frame; only it is unsent.
+        graph.retract_closed(2);
+        assert_eq!(graph.capture_timestamp(), 1920);
+        graph.push_capture(&speech, true).unwrap();
+        graph.push_capture(&speech, true).unwrap();
+        assert_eq!(flags(&mut graph), [(TALK_START, 1920)]);
+
+        // Inside a burst, a closed quantum still waiting in `pending` is
+        // replaced by the replayed audio and the burst simply continues.
+        graph.push_capture(&speech, false).unwrap();
+        graph.retract_closed(1);
+        graph.push_capture(&speech, true).unwrap();
+        graph.push_capture(&speech, true).unwrap();
+        assert_eq!(flags(&mut graph), [(0, 2880)]);
+        assert!(graph.snapshot().talking);
     }
 
     fn tone(frame: &mut [f32], channels: usize, start: usize) {
