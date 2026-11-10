@@ -4,9 +4,14 @@
 //! connection emits `PresenceUpdated`; the last disconnect emits offline.
 //! Explicit idle and do-not-disturb survive a reconnect until the process
 //! restarts.
+//!
+//! Each connection also remembers which voice connections it was told are in
+//! a channel. A `VoiceStateUpdated` without a channel (a leave) names no
+//! channel to check visibility against, so it is only sent to connections
+//! that saw the matching arrival. See [`ConnectionRegistry::admit_voice`].
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -155,6 +160,8 @@ struct Peer {
     client: ClientInfo,
     rtt: Option<Duration>,
     blocked_since: Option<Instant>,
+    /// Voice connections this peer was told are in a channel.
+    voice_seen: HashSet<Id>,
 }
 
 struct Inner {
@@ -210,9 +217,32 @@ impl ConnectionRegistry {
                 client: registration.client,
                 rtt: None,
                 blocked_since: None,
+                voice_seen: HashSet::new(),
             },
         );
         event
+    }
+
+    /// Records the voice connections a `Welcome` snapshot showed `conn`.
+    pub(crate) fn seed_voice(&self, conn: Id, seen: impl IntoIterator<Item = Id>) {
+        if let Some(peer) = self.inner.lock().peers.get_mut(&conn) {
+            peer.voice_seen.extend(seen);
+        }
+    }
+
+    /// Whether `frame`, already cleared for channel visibility, may go to
+    /// `conn` as far as voice state is concerned.
+    ///
+    /// A `VoiceStateUpdated` naming a channel is remembered and passes. One
+    /// naming no channel passes only once for a voice connection `conn` was
+    /// told about, so a leave from a channel `conn` cannot see stays quiet.
+    /// Other frames pass. [`Self::enqueue`] applies this itself.
+    pub(crate) fn admit_voice(&self, conn: Id, frame: &v1::ServerEnvelope) -> bool {
+        self.inner
+            .lock()
+            .peers
+            .get_mut(&conn)
+            .is_some_and(|peer| admit(&mut peer.voice_seen, frame))
     }
 
     /// Drops the connection. The returned event is offline when it was the
@@ -291,6 +321,9 @@ impl ConnectionRegistry {
             let Some(peer) = inner.peers.get_mut(&conn) else {
                 return;
             };
+            if !admit(&mut peer.voice_seen, &frame) {
+                return;
+            }
             match peer.outbound.try_send(frame) {
                 Ok(()) => {
                     peer.blocked_since = None;
@@ -424,6 +457,21 @@ fn presence_event(user: Id, status: i32, activity: String) -> v1::server_envelop
         status,
         activity,
     })
+}
+
+fn admit(seen: &mut HashSet<Id>, frame: &v1::ServerEnvelope) -> bool {
+    let Some(v1::server_envelope::Msg::VoiceStateUpdated(state)) = &frame.msg else {
+        return true;
+    };
+    let Ok(conn) = ss_proto::validate::id_from_bytes(&state.conn_id) else {
+        return false;
+    };
+    if state.channel_id.is_some() {
+        seen.insert(conn);
+        true
+    } else {
+        seen.remove(&conn)
+    }
 }
 
 #[cfg(test)]

@@ -134,10 +134,42 @@ flags, own presence, DMs (membership is the grant; only the creator adds).
   (`can_act_on`, `membership`, author or creator comparisons);
 - every `.route(..)` must have a policy and reach `caller(` plus its checks.
 
-Behavior is covered by `tests/permissions.rs` (table-driven) and the feature
-suites. T-061 fixed two gaps the audit surfaced: `UpdateProfile` changed the
-display name without `CHANGE_NICKNAME`, and `ServerMuteUser` did not apply the
-role hierarchy, so a moderator could server-mute the owner.
+- every outbound path in its `OUTBOUND` list (the actor's reply, fan-out,
+  the voice-state gate, seat refresh and resume, `MoveUser`'s view checks,
+  the CLI ban) must keep reaching its visibility or revocation call, and the
+  audit-log query must keep hiding `dm.*` rows.
+
+Behavior is covered by `tests/permissions.rs` (table-driven), `tests/revocation.rs`,
+and the feature suites. T-061 fixed two gaps the audit surfaced: `UpdateProfile`
+changed the display name without `CHANGE_NICKNAME`, and `ServerMuteUser` did not
+apply the role hierarchy, so a moderator could server-mute the owner.
+
+T-090 closed the gaps a later review found, each with a test that failed first:
+
+- *Granting.* Role creates, role edits, and role assignments could add any bit
+  except `ADMINISTRATOR`, so a `MANAGE_ROLES` holder could put `MANAGE_SERVER`
+  or `BAN_MEMBERS` on `@everyone`. Override `allow` masks were unlimited. Now
+  only bits the actor holds can be added: server-wide for roles, in that
+  channel for overrides.
+- *Hidden channels.* Overrides and channel update, move, and delete needed only
+  server-wide `MANAGE_CHANNELS`, so a manager could allow `VIEW_CHANNEL` on a
+  channel hidden from them and read it. Every channel command now needs
+  `VIEW_CHANNEL` on each channel it touches; a hidden one is not found.
+- *Voice seats.* The post-command refresh only updated the speak bit, and a
+  resume restored a seat unchecked. A member who loses `VIEW_CHANNEL` or
+  `CONNECT` is now removed and stops receiving datagrams; resume rechecks.
+- *Administrators.* `03-data-model.md` promised an owner who always wins. There
+  is none: administrators are peers, a non-administrator can no longer act on
+  an administrator even from a higher role position, and the seeded Admin role
+  cannot be deleted or stripped, so `user grant-admin` keeps working.
+- *Leaks.* The actor's own reply skipped the fan-out filter, so muting someone
+  in a hidden voice channel returned that channel's id; replies now pass the
+  same filter. A leave (`VoiceStateUpdated` without a channel) went to every
+  session; the registry now sends it only to connections that were told about
+  the arrival. `MoveUser` needs the actor to see both channels. The audit-log
+  API no longer returns `dm.*` rows.
+- *Invites.* A ban left the member's invites usable, and `CREATE_INVITES` is
+  in the default role. A ban, from the command or the CLI, now revokes them.
 
 ## 6. Rate limits
 

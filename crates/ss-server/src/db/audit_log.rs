@@ -56,7 +56,7 @@ pub async fn get(conn: &mut SqliteConnection, id: Id) -> Result<Option<AuditEntr
     Ok(row.map(AuditRow::into_entry))
 }
 
-const PAGE: &str = "SELECT id, actor_id, action, target_kind, target_id, details, created_at FROM audit_log WHERE (?1 IS NULL OR created_at < (SELECT created_at FROM audit_log WHERE id = ?1) OR (created_at = (SELECT created_at FROM audit_log WHERE id = ?1) AND id < ?1)) AND (?3 IS NULL OR actor_id = ?3) AND (?4 IS NULL OR action = ?4) AND (?5 IS NULL OR created_at >= ?5) AND (?6 IS NULL OR created_at < ?6) ORDER BY created_at DESC, id DESC LIMIT ?2";
+const PAGE: &str = "SELECT id, actor_id, action, target_kind, target_id, details, created_at FROM audit_log WHERE (?1 IS NULL OR created_at < (SELECT created_at FROM audit_log WHERE id = ?1) OR (created_at = (SELECT created_at FROM audit_log WHERE id = ?1) AND id < ?1)) AND (?3 IS NULL OR actor_id = ?3) AND (?4 IS NULL OR action = ?4) AND (?5 IS NULL OR created_at >= ?5) AND (?6 IS NULL OR created_at < ?6) AND action NOT LIKE 'dm.%' ORDER BY created_at DESC, id DESC LIMIT ?2";
 
 /// Newest `limit` audit rows. `limit = 0` is empty.
 pub async fn recent(conn: &mut SqliteConnection, limit: u32) -> Result<Vec<AuditEntry>, Error> {
@@ -95,6 +95,10 @@ pub async fn page(
 }
 
 /// Page matching audit rows, ordered by timestamp and id descending.
+///
+/// Direct-message rows (`dm.*`) are never returned: who talks to whom in
+/// private is not moderation history. They stay in the table for the
+/// operator.
 pub async fn filtered_page(
     conn: &mut SqliteConnection,
     before: Option<Id>,

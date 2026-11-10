@@ -122,6 +122,23 @@ pub async fn revoke(
     .await)?)
 }
 
+/// Revokes every open invite `creator` made and returns them as revoked.
+pub async fn revoke_by_creator(
+    conn: &mut SqliteConnection,
+    creator: Id,
+    revoked_at: Timestamp,
+) -> Result<Vec<Invite>, Error> {
+    let rows = db(sqlx::query_as::<_, InviteRow>(
+        "UPDATE invites SET revoked_at = ? WHERE created_by = ? AND revoked_at IS NULL
+         RETURNING id, created_by, max_uses, uses, expires_at, revoked_at, created_at",
+    )
+    .bind(revoked_at.as_millis())
+    .bind(creator)
+    .fetch_all(&mut *conn)
+    .await)?;
+    Ok(rows.into_iter().map(InviteRow::into_invite).collect())
+}
+
 /// Deletes an invite.
 pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
     changed(db(sqlx::query("DELETE FROM invites WHERE id = ?")

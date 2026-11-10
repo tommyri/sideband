@@ -76,7 +76,10 @@ enum Command {
     Handled(&'static [(&'static str, Policy)]),
 }
 
-const CHANNEL_ADMIN: &[&str] = &["MANAGE_CHANNELS"];
+const CHANNEL_ADMIN: &[&str] = &["MANAGE_CHANNELS", "VIEW_CHANNEL"];
+
+/// Guild channel commands: the bit, plus view on every channel touched.
+const CHANNEL_COMMAND: Policy = perms_and(CHANNEL_ADMIN, &["ensure_visible("]);
 
 /// Every `ClientEnvelope` variant, by message name.
 const COMMANDS: &[(&str, Command)] = &[
@@ -195,12 +198,12 @@ const COMMANDS: &[(&str, Command)] = &[
     ),
     (
         "CreateChannel",
-        Command::Handled(&[("handlers/channels.rs", perms(CHANNEL_ADMIN))]),
+        Command::Handled(&[("handlers/channels.rs", CHANNEL_COMMAND)]),
     ),
     (
         "UpdateChannel",
         Command::Handled(&[
-            ("handlers/channels.rs", perms(CHANNEL_ADMIN)),
+            ("handlers/channels.rs", CHANNEL_COMMAND),
             (
                 "handlers/dm.rs",
                 scoped(&["membership("], "any member may rename their group DM"),
@@ -209,11 +212,11 @@ const COMMANDS: &[(&str, Command)] = &[
     ),
     (
         "DeleteChannel",
-        Command::Handled(&[("handlers/channels.rs", perms(CHANNEL_ADMIN))]),
+        Command::Handled(&[("handlers/channels.rs", CHANNEL_COMMAND)]),
     ),
     (
         "MoveChannel",
-        Command::Handled(&[("handlers/channels.rs", perms(CHANNEL_ADMIN))]),
+        Command::Handled(&[("handlers/channels.rs", CHANNEL_COMMAND)]),
     ),
     (
         "CreateInvite",
@@ -240,7 +243,7 @@ const COMMANDS: &[(&str, Command)] = &[
         "BanUser",
         Command::Handled(&[(
             "handlers/moderation.rs",
-            perms_and(&["BAN_MEMBERS"], &["can_act_on("]),
+            perms_and(&["BAN_MEMBERS"], &["can_act_on(", "revoke_by_creator("]),
         )]),
     ),
     (
@@ -254,7 +257,9 @@ const COMMANDS: &[(&str, Command)] = &[
         "MoveUser",
         Command::Handled(&[(
             "handlers/moderation.rs",
-            perms_and(&["MOVE_MEMBERS"], &["can_act_on("]),
+            // `Voice::move_member` checks the actor's view of both channels;
+            // `visibility_follows_every_outbound_path` pins that side.
+            perms_and(&["MOVE_MEMBERS"], &["can_act_on(", "move_member(actor,"]),
         )]),
     ),
     (
@@ -270,7 +275,11 @@ const COMMANDS: &[(&str, Command)] = &[
             "handlers/roles.rs",
             perms_and(
                 &["MANAGE_ROLES"],
-                &["ensure_position(", "ensure_admin_bits("],
+                &[
+                    "ensure_position(",
+                    "ensure_admin_bits(",
+                    "ensure_grantable(",
+                ],
             ),
         )]),
     ),
@@ -278,14 +287,17 @@ const COMMANDS: &[(&str, Command)] = &[
         "UpdateRole",
         Command::Handled(&[(
             "handlers/roles.rs",
-            perms_and(&["MANAGE_ROLES"], &["ensure_can_edit("]),
+            perms_and(
+                &["MANAGE_ROLES"],
+                &["ensure_can_edit(", "ensure_grantable(", "ADMIN_ROLE_ID"],
+            ),
         )]),
     ),
     (
         "DeleteRole",
         Command::Handled(&[(
             "handlers/roles.rs",
-            perms_and(&["MANAGE_ROLES"], &["ensure_can_edit("]),
+            perms_and(&["MANAGE_ROLES"], &["ensure_can_edit(", "ADMIN_ROLE_ID"]),
         )]),
     ),
     (
@@ -299,14 +311,20 @@ const COMMANDS: &[(&str, Command)] = &[
         "SetUserRoles",
         Command::Handled(&[(
             "handlers/roles.rs",
-            perms_and(&["MANAGE_ROLES"], &["can_act_on(", "ensure_can_edit("]),
+            perms_and(
+                &["MANAGE_ROLES"],
+                &["can_act_on(", "ensure_can_edit(", "ensure_grantable("],
+            ),
         )]),
     ),
     (
         "SetChannelOverride",
         Command::Handled(&[(
             "handlers/roles.rs",
-            perms_and(&["MANAGE_CHANNELS"], &["ensure_can_edit("]),
+            perms_and(
+                &["MANAGE_CHANNELS", "VIEW_CHANNEL"],
+                &["ensure_can_edit(", "allow.difference(current)"],
+            ),
         )]),
     ),
     (
@@ -507,7 +525,50 @@ const NOT_HANDLERS: &[(&str, &str)] = &[
 ];
 
 /// Calls that perform a permission check.
-const CHECK_CALLS: &[&str] = &[".check(", ".require(", ".allow("];
+const CHECK_CALLS: &[&str] = &[".check(", ".require(", ".allow(", ".holds("];
+
+/// Paths that are not commands but must keep a visibility or revocation
+/// check: `(file, function, calls it must reach)`. These close the gaps T-090
+/// found, where a command was authorized but its output or its leftovers
+/// were not.
+const OUTBOUND: &[(&str, &str, &[&str])] = &[
+    // The actor's own reply passes the fan-out filter and the voice-state gate.
+    (
+        "connection.rs",
+        "reply_visible",
+        &["snapshot::delivers(", "admit_voice("],
+    ),
+    ("connection.rs", "deliver", &["snapshot::delivers("]),
+    // A leave names no channel; only connections that saw the arrival get it.
+    ("registry.rs", "enqueue", &["admit("]),
+    // Seats are rechecked after every command and on resume.
+    (
+        "voice/session.rs",
+        "refresh_seats",
+        &["may_hold(", ".refresh("],
+    ),
+    ("voice/session.rs", "resume", &["may_hold("]),
+    (
+        "voice/session.rs",
+        "may_hold",
+        &["Permissions::VIEW_CHANNEL", "Permissions::CONNECT"],
+    ),
+    // A moderator cannot move into or out of a channel they cannot see.
+    (
+        "voice/session.rs",
+        "move_member",
+        &[
+            "self.sees(actor, channel_id)",
+            "self.sees(actor, seat.channel)",
+        ],
+    ),
+    // The CLI ban revokes invites like the command does.
+    (
+        "handlers/moderation.rs",
+        "ban_account",
+        &["revoke_by_creator("],
+    ),
+];
 
 #[test]
 fn every_client_command_is_classified() {
@@ -636,6 +697,38 @@ fn every_http_route_reaches_its_checks() {
                 "{file}: expected route `{method} {path}`; the audit is stale"
             ));
         }
+    }
+    assert!(
+        failures.is_empty(),
+        "authorization audit failed:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+#[test]
+fn visibility_follows_every_outbound_path() {
+    let sources = Sources::load();
+    let mut failures = Vec::new();
+    for (file, function, calls) in OUTBOUND {
+        let reached = sources.reachable(file, function);
+        if reached.is_empty() {
+            failures.push(format!("{file}: `{function}` is gone; the audit is stale"));
+            continue;
+        }
+        for call in *calls {
+            if !reached.contains(call) {
+                failures.push(format!("{file}: `{function}` never reaches `{call}`"));
+            }
+        }
+    }
+    // The audit-log query is a string literal, so read the raw source.
+    let audit = sources
+        .raw
+        .get("db/audit_log.rs")
+        .cloned()
+        .unwrap_or_default();
+    if !audit.contains("action NOT LIKE 'dm.%'") {
+        failures.push("db/audit_log.rs: the audit page no longer hides dm.* rows".to_owned());
     }
     assert!(
         failures.is_empty(),

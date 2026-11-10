@@ -3,6 +3,8 @@
 //! A server mute is remembered until the process restarts; that flag lives
 //! in the voice rooms. This module records the audit row for the other
 //! moderator commands and closes the target's connections on kick and ban.
+//! A ban also revokes every open invite the banned member created, since
+//! `CREATE_INVITES` is in the default role.
 
 use std::sync::Arc;
 
@@ -176,7 +178,8 @@ impl Moderation {
         if active_ban(self.perms.as_ref(), target).await? {
             return Err(Error::Invalid("already banned"));
         }
-        self.insert_ban(actor, target, reason.clone(), expires_at)
+        let revoked = self
+            .insert_ban(actor, target, reason.clone(), expires_at)
             .await?;
         self.registry.disconnect_user(
             target,
@@ -187,7 +190,17 @@ impl Moderation {
             registry::CLOSE_BANNED,
             b"banned",
         );
-        Ok(empty())
+        Ok(CommandReply {
+            ack: ack::Result::Empty(v1::Empty {}),
+            events: revoked
+                .iter()
+                .map(|invite| {
+                    server_envelope::Msg::InviteRevoked(v1::InviteRevoked {
+                        invite: Some(wire_invite(invite, None)),
+                    })
+                })
+                .collect(),
+        })
     }
 
     async fn unban(&self, actor: Id, command: &v1::UnbanUser) -> Result<CommandReply, Error> {
@@ -208,7 +221,7 @@ impl Moderation {
         self.require(actor, Permissions::MOVE_MEMBERS, "missing move members")?;
         let target = self.member(actor, &command.user_id).await?;
         let channel = required_id(&command.channel_id, "channel id must be 16 bytes")?;
-        let (outcome, conn) = self.voice.move_member(target, channel).await?;
+        let (outcome, conn) = self.voice.move_member(actor, target, channel).await?;
         self.write_audit(
             actor,
             "user.move",
@@ -231,13 +244,15 @@ impl Moderation {
         })
     }
 
+    /// Stores the ban and revokes the target's open invites in one
+    /// transaction. Returns the revoked invites.
     async fn insert_ban(
         &self,
         actor: Id,
         target: Id,
         reason: Option<String>,
         expires_at: Option<Timestamp>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<db::Invite>, Error> {
         let mut guard = self.perms.pool().write().await;
         let mut tx = guard.begin().await.map_err(db::Error::from)?;
         bans::insert(
@@ -260,8 +275,9 @@ impl Moderation {
             &reason_json(reason.as_deref()),
         )
         .await?;
+        let revoked = invites::revoke_by_creator(&mut tx, target, Timestamp::now()).await?;
         tx.commit().await.map_err(db::Error::from)?;
-        Ok(())
+        Ok(revoked)
     }
 
     async fn member(&self, actor: Id, raw: &[u8]) -> Result<Id, Error> {
@@ -302,8 +318,9 @@ impl Moderation {
     }
 }
 
-/// Records a permanent ban. A live connection stays up until the process
-/// restarts or a moderator kicks it; the next `Hello` is rejected.
+/// Records a permanent ban and revokes the user's open invites. A live
+/// connection stays up until the process restarts or a moderator kicks it;
+/// the next `Hello` is rejected.
 pub async fn ban_account(
     pool: &db::Pool,
     username: &str,
@@ -333,6 +350,7 @@ pub async fn ban_account(
         &reason_json(reason.as_deref()),
     )
     .await?;
+    invites::revoke_by_creator(&mut tx, user.id, Timestamp::now()).await?;
     tx.commit().await.map_err(db::Error::from)?;
     Ok(())
 }

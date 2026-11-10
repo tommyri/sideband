@@ -1,9 +1,11 @@
 //! `CreateChannel`, `UpdateChannel`, `DeleteChannel`, and `MoveChannel`.
 //!
-//! All four require `MANAGE_CHANNELS`. Sibling positions are dense and start
-//! at 0 for each parent. Deleting a category soft-deletes its descendants.
-//! Messages stay in the database. Voice sessions are T-025, so a delete does
-//! not emit `VoiceStateUpdated`.
+//! All four require `MANAGE_CHANNELS` and `VIEW_CHANNEL` on every channel they
+//! touch: the target, a new parent category, and, for a delete, every
+//! descendant. A channel the actor cannot see is not found, so a manager can
+//! neither edit nor probe it. Sibling positions are dense and start at 0 for
+//! each parent. Deleting a category soft-deletes its descendants. Messages stay
+//! in the database. The connection evacuates voice seats in deleted channels.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -72,6 +74,9 @@ impl Channels {
         }
         let topic = stored_topic(command.topic.as_deref())?;
         let voice = voice_columns(kind, command.voice.as_ref())?;
+        if let Some(parent) = parent {
+            self.ensure_visible(actor, parent)?;
+        }
         let id = Id::generate();
         let channel = {
             let mut guard = self.perms.pool().write().await;
@@ -131,6 +136,7 @@ impl Channels {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
             let current = live_channel(&mut tx, id).await?;
+            self.ensure_visible(actor, id)?;
             let kind = match command.kind {
                 Some(value) => guild_kind(value)?,
                 None => current.kind,
@@ -147,6 +153,7 @@ impl Channels {
                 None => current.parent_id,
                 Some(bytes) => Some(required_id(bytes)?),
             };
+            self.ensure_new_parent_visible(actor, current.parent_id, parent)?;
             let voice = if command.voice.is_some() || kind != current.kind {
                 voice_columns(kind, command.voice.as_ref())?
             } else {
@@ -203,8 +210,12 @@ impl Channels {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
             let current = live_channel(&mut tx, id).await?;
+            self.ensure_visible(actor, id)?;
             let all = channels::list(&mut tx).await?;
             let doomed = subtree(&all, id);
+            if doomed.iter().any(|doomed_id| !self.sees(actor, *doomed_id)) {
+                return Err(Error::Forbidden("cannot delete a channel you cannot see"));
+            }
             let mut wires = Vec::with_capacity(doomed.len());
             for doomed_id in &doomed {
                 let channel = all
@@ -250,6 +261,8 @@ impl Channels {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
             let current = live_channel(&mut tx, id).await?;
+            self.ensure_visible(actor, id)?;
+            self.ensure_new_parent_visible(actor, current.parent_id, parent)?;
             prepare_parent(&mut tx, id, current.kind, parent).await?;
             if parent != current.parent_id {
                 detach(&mut tx, current.parent_id, id).await?;
@@ -276,6 +289,35 @@ impl Channels {
         self.perms
             .check(actor, None, Permissions::MANAGE_CHANNELS)
             .map_err(|_| Error::Forbidden("missing permission"))
+    }
+
+    fn sees(&self, actor: Id, channel: Id) -> bool {
+        self.perms
+            .check(actor, Some(channel), Permissions::VIEW_CHANNEL)
+            .is_ok()
+    }
+
+    /// A channel the actor cannot see answers like a missing one.
+    fn ensure_visible(&self, actor: Id, channel: Id) -> Result<(), Error> {
+        if self.sees(actor, channel) {
+            Ok(())
+        } else {
+            Err(Error::NotFound("channel not found"))
+        }
+    }
+
+    /// A move under a different category needs that category to be visible.
+    /// Keeping the current parent does not.
+    fn ensure_new_parent_visible(
+        &self,
+        actor: Id,
+        current: Option<Id>,
+        parent: Option<Id>,
+    ) -> Result<(), Error> {
+        match parent {
+            Some(parent) if Some(parent) != current => self.ensure_visible(actor, parent),
+            _ => Ok(()),
+        }
     }
 }
 

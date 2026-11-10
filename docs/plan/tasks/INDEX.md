@@ -174,7 +174,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-087](T-087-input-stuck-key-reconcile.md) | PTT cannot stick: XI 2.1 and physical-state reconcile | S | T-049, T-050 | todo |
 | [T-088](T-088-capture-channel-voiceio-frames.md) | Capture channel selection and whole-frame ring transfers | S | T-010, T-054 | todo |
 | [T-089](T-089-reconnect-policy.md) | Reconnect policy: retryable errors, address fallback, backoff, stale cache | M | T-060, T-081, T-086 | todo |
-| [T-090](T-090-authorization-gaps.md) | Authorization gaps: overrides, role edits, voice seats, owner | M | T-022, T-025, T-030, T-061 | todo |
+| [T-090](T-090-authorization-gaps.md) | Authorization gaps: overrides, role edits, voice seats, owner | M | T-022, T-025, T-030, T-061 | in-progress |
 | [T-091](T-091-dm-welcome-fanout-limits.md) | Bound DMs, Welcome size and fan-out | M | T-028, T-024, T-061 | todo |
 | [T-092](T-092-transfer-listener-limits.md) | Stream attachments, bound listeners, retire the spike default | M | T-027, T-033, T-066 | todo |
 | [T-093](T-093-session-revocation.md) | Session revocation, logout and expiry | S | T-021, T-061 | todo |

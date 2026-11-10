@@ -122,7 +122,11 @@ session's visible channel view: `ChannelCreated` grants visibility,
 means visibility was revoked. Clients discard that channel's cached content.
 Shared command acknowledgements may omit personalized permission bits.
 `TrackAdded` and `VoiceStateUpdated` reach only sessions that may view the
-named channel; `TrackRemoved` carries only the opaque track id.
+named channel; `TrackRemoved` carries only the opaque track id. A
+`VoiceStateUpdated` without a channel (a leave) reaches only sessions that were
+told that connection was in a channel. The actor's own command reply is
+filtered the same way. A member who loses `VIEW_CHANNEL` or `CONNECT` is removed
+from voice with the usual leave events.
 
 ### Limits
 

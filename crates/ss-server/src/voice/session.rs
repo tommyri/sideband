@@ -11,7 +11,7 @@ use crate::{
     handlers::Error,
     media::Forwarder,
     perms::{AccessError, PermissionService},
-    voice::rooms::{self, JoinError, JoinPlan, Rooms},
+    voice::rooms::{self, JoinError, JoinPlan, Placement, Rooms},
 };
 
 /// Events for the actor's command reply. `broadcast` is also published.
@@ -70,31 +70,53 @@ impl Voice {
         self.rooms.lock().attach(conn, user, connection);
     }
 
-    pub(crate) fn resume(
+    /// Reattaches a leased seat when the member may still hold it.
+    ///
+    /// `Ok` is the resumed connection id. `Err` carries the leave events for
+    /// a leased seat that was dropped because the member lost access (or the
+    /// seat is already gone); the caller publishes them and attaches fresh.
+    fn resume(
         &self,
         token: &str,
         user: Id,
         connection: quinn::Connection,
-    ) -> Option<Id> {
-        let lease = self.leases.lock().remove(token)?;
-        if lease.user != user || !self.rooms.lock().reattach(lease.conn, user, connection) {
-            return None;
+    ) -> Result<Id, Vec<v1::server_envelope::Msg>> {
+        let lease = {
+            let mut leases = self.leases.lock();
+            match leases.get(token) {
+                Some(lease) if lease.user == user => leases.remove(token),
+                _ => None,
+            }
+        };
+        let Some(lease) = lease else {
+            return Err(Vec::new());
+        };
+        let mut rooms = self.rooms.lock();
+        let allowed = rooms
+            .seat(lease.conn)
+            .is_some_and(|seat| self.may_hold(user, seat.channel, seat.flags.moved()));
+        if allowed && rooms.reattach(lease.conn, user, connection) {
+            return Ok(lease.conn);
         }
-        Some(lease.conn)
+        Err(rooms.detach(lease.conn))
     }
 
+    /// Attaches `conn`, or the leased seat `token` names, and returns the
+    /// connection id in use. The events are the leave of a leased seat the
+    /// member may no longer hold; the caller publishes them.
     pub(crate) fn connect(
         &self,
         conn: Id,
         token: &str,
         user: Id,
         connection: quinn::Connection,
-    ) -> Id {
-        if let Some(resumed) = self.resume(token, user, connection.clone()) {
-            resumed
-        } else {
-            self.attach(conn, user, connection);
-            conn
+    ) -> (Id, Vec<v1::server_envelope::Msg>) {
+        match self.resume(token, user, connection.clone()) {
+            Ok(resumed) => (resumed, Vec::new()),
+            Err(events) => {
+                self.attach(conn, user, connection);
+                (conn, events)
+            }
         }
     }
 
@@ -159,12 +181,37 @@ impl Voice {
         }
     }
 
-    pub(crate) fn refresh_speak(&self) -> Vec<v1::server_envelope::Msg> {
-        let perms = Arc::clone(&self.perms);
-        self.rooms.lock().refresh_speak(move |user, channel| {
-            perms.check(user, Some(channel), Permissions::SPEAK).is_ok()
-        });
-        self.rooms.lock().video.refresh(&self.perms)
+    /// Rechecks every seat after a permission change. A member who lost
+    /// `VIEW_CHANNEL`, or `CONNECT` on a seat they joined themselves, is
+    /// removed; the rest get their speak bit updated. Video publishers and
+    /// viewers are rechecked too. Returns the leave and removal events.
+    pub(crate) fn refresh_seats(&self) -> Vec<v1::server_envelope::Msg> {
+        let mut rooms = self.rooms.lock();
+        let mut events = rooms.video.refresh(&self.perms);
+        events.extend(rooms.refresh(|user, channel, moved| {
+            self.may_hold(user, channel, moved).then(|| {
+                self.perms
+                    .check(user, Some(channel), Permissions::SPEAK)
+                    .is_ok()
+            })
+        }));
+        events
+    }
+
+    fn sees(&self, user: Id, channel: Id) -> bool {
+        self.perms
+            .check(user, Some(channel), Permissions::VIEW_CHANNEL)
+            .is_ok()
+    }
+
+    /// Whether `user` may keep a seat in `channel`. A moved seat skips `CONNECT`.
+    fn may_hold(&self, user: Id, channel: Id, moved: bool) -> bool {
+        let needed = if moved {
+            Permissions::VIEW_CHANNEL
+        } else {
+            Permissions::VIEW_CHANNEL | Permissions::CONNECT
+        };
+        self.perms.check(user, Some(channel), needed).is_ok()
     }
 
     /// Drop every seat in a channel that is about to disappear.
@@ -221,6 +268,7 @@ impl Voice {
                     .perms
                     .check(user, Some(channel_id), Permissions::SPEAK)
                     .is_ok(),
+                placement: Placement::Joined,
                 limit: if bypass_limit {
                     None
                 } else {
@@ -300,14 +348,21 @@ impl Voice {
 
     /// Moves `target`, who is already in voice, into `channel_id`.
     ///
-    /// The caller has already required `MOVE_MEMBERS`. View is still required.
+    /// The caller has already required `MOVE_MEMBERS`. `actor` must see both
+    /// the destination and the channel `target` sits in: a destination they
+    /// cannot see is not found, and a target in a channel they cannot see is
+    /// not in voice as far as they can tell. `target` still needs view.
     /// Connect and the user limit are bypassed.
     pub(crate) async fn move_member(
         &self,
+        actor: Id,
         target: Id,
         channel_id: Id,
     ) -> Result<(Outcome, Id), Error> {
         let channel = self.channel(channel_id).await?;
+        if !self.sees(actor, channel_id) {
+            return Err(Error::NotFound("unknown channel"));
+        }
         if channel.kind != ChannelKind::Voice {
             return Err(Error::Invalid("not a voice channel"));
         }
@@ -317,10 +372,12 @@ impl Voice {
             Permissions::VIEW_CHANNEL,
             "missing view channel",
         )?;
-        let (conn, self_mute, self_deaf) = self
-            .rooms
-            .lock()
-            .placed(target)
+        let placed = self.rooms.lock().placed(target);
+        let (conn, self_mute, self_deaf) = placed
+            .filter(|(conn, _, _)| {
+                let current = self.rooms.lock().seat(*conn);
+                current.is_some_and(|seat| self.sees(actor, seat.channel))
+            })
             .ok_or(Error::Invalid("not in a voice channel"))?;
         let profile = channel.voice_profile.unwrap_or(VoiceProfile::Voice);
         let events = self
@@ -337,6 +394,7 @@ impl Voice {
                     .perms
                     .check(target, Some(channel_id), Permissions::SPEAK)
                     .is_ok(),
+                placement: Placement::Moved,
                 limit: None,
             })
             .map_err(join_error)?;

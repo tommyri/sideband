@@ -108,17 +108,28 @@ impl PermissionService {
 
     /// Whether `actor` may change `target`.
     ///
-    /// An `ADMINISTRATOR` always may. That is the owner short-circuit: the
-    /// owner holds the seeded Admin role, and there is no separate owner
-    /// column. Otherwise the actor's highest role must strictly outrank the
-    /// target's.
+    /// An `ADMINISTRATOR` always may, and nobody else may change an
+    /// administrator, whatever the role positions. There is no separate
+    /// owner: the owner holds the seeded Admin role like any other
+    /// administrator, and the operator CLI is the recovery path. Otherwise
+    /// the actor's highest role must strictly outrank the target's.
     #[must_use]
     pub fn can_act_on(&self, actor: Id, target: Id) -> bool {
         let snapshot = self.cache.load();
         if snapshot.is_administrator(actor) {
             return true;
         }
+        if snapshot.is_administrator(target) {
+            return false;
+        }
         Permissions::hierarchy_allows(snapshot.highest(actor), snapshot.highest(target))
+    }
+
+    /// Whether `user` holds every bit of `permissions` on the server, or in
+    /// `channel` after overrides. An empty set always holds.
+    #[must_use]
+    pub fn holds(&self, user: Id, channel: Option<Id>, permissions: Permissions) -> bool {
+        permissions.is_empty() || self.check(user, channel, permissions).is_ok()
     }
 
     /// Whether `user` holds `ADMINISTRATOR` through a role.
