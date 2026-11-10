@@ -4,7 +4,9 @@ Open [Release desktop installers](https://github.com/tommyri/sideband/actions/wo
 choose **Run workflow**, select `main`, enter a version (default `0.0.1`), and
 check the operating systems to build. At least one is required. Nothing runs on
 pushes, pull requests or a schedule. Only selected platform runners are started,
-plus small preparation/publication jobs.
+plus CI on the same commit and small preparation/publication jobs. Other refs are
+refused, and the run waits for approval before building and before publishing; see
+[release gates](release.md#release-gates).
 
 | Selection | Architecture | Downloads |
 | --- | --- | --- |

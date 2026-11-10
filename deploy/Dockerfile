@@ -2,7 +2,8 @@
 # binary, arm64 produces the aarch64 one. The release workflow also uses
 # native runners for each architecture.
 
-FROM rust:1.99.1-bookworm AS build
+# Base images are pinned by digest; Dependabot (docker, /deploy) proposes updates.
+FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends musl-tools binutils ca-certificates \
@@ -32,7 +33,7 @@ RUN set -eux; \
     fi; \
     chown 65532:65532 /data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/ss-server /ss-server
 COPY --from=build --chown=65532:65532 /data /data

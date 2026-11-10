@@ -13,6 +13,11 @@ on:
       version:
         type: string
         required: true
+      # Set by the release workflow to the environment holding OS signing credentials.
+      # Standalone test builds use none and see no secrets.
+      environment:
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -29,13 +34,32 @@ jobs:
     timeout-minutes: 75
     name: test package (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    environment: ${{ inputs.environment || '' }}
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix || '{"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]}') }}
     steps:
+      - name: Refuse refs other than main for signing builds
+        if: inputs.environment
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Signing builds run only from refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check environment protection
+        if: inputs.environment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+        run: node scripts/release-gate.mjs environment "$RELEASE_ENVIRONMENT"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
@@ -98,6 +122,8 @@ jobs:
               "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
             } finally { Remove-Item $certPath }
           }
+      # No updater key or notarization password here: build scripts and proc macros
+      # run in this step. The script refuses to start if one is present.
       - name: Create labelled test packages
         id: packages
         shell: bash
@@ -106,16 +132,24 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           BUILD_UPDATES: ${{ inputs.updates }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           args=()
           if [ "$BUILD_UPDATES" = "true" ]; then args+=(--updates); fi
           node scripts/build-test-desktop.mjs --target ${{ matrix.target }} --version "$BUILD_VERSION" "${args[@]}"
+      - name: Notarize macOS DMG
+        if: runner.os == 'macOS' && inputs.updates
+        env:
+          ARTIFACT_DIRECTORY: ${{ steps.packages.outputs.artifact_directory }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_ID" ]; then
+            node scripts/build-test-desktop.mjs notarize "$ARTIFACT_DIRECTORY"
+          else
+            echo "No notarization credentials; the DMG is signed but not notarized."
+          fi
       - name: Validate macOS bundle
         if: runner.os == 'macOS'
         run: |

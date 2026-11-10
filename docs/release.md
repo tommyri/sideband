@@ -1,8 +1,98 @@
-# Packaging and signed updates
+# Packaging, signed updates and server releases
 
 All GitHub Actions remain manually triggered. No push, pull-request, tag, or
 schedule starts a build. [Release desktop installers](https://github.com/tommyri/sideband/actions/workflows/release-desktop.yml)
 calls the reusable packaging workflow only after **Run workflow**.
+
+## Release gates
+
+Nothing reaches the desktop update feed or the image registry unless it was
+built from a commit on `main` that passed CI in the same run, and a maintainer
+approved the publication.
+
+| | Desktop installers and update feed | Server binaries and image |
+| --- | --- | --- |
+| Dispatch on | `main` only | a `server-vX.Y.Z` tag whose commit is on `main` |
+| Version | the `version` input (mutable during development) | from the tag; must equal the `ss-server` crate version |
+| Tested | `ci.yml` runs as a required job of the same run | `ci.yml` runs as a required job of the same run |
+| Approval | `desktop-release` environment: when the run starts (`prepare`) and before signing and publishing (`publish`) | `server-release` environment, before `publish` |
+| Secrets | updater key only in the `sign` step of `publish`; OS signing credentials in `desktop-signing` for the platform builds | none; `GITHUB_TOKEN` only |
+| Overwrites | same-version assets are replaced; feeds never move backwards | an existing version tag or release fails unless `force` is set; `latest` only moves forward |
+| Provenance | `SHA256SUMS` per platform and a build provenance attestation for every asset | `SHA256SUMS` and attestations for the binaries and the image |
+
+Every job that publishes or reads a release secret starts with a ref check and
+then asks the GitHub API whether its environment has the expected policy
+(`node scripts/release-gate.mjs environment NAME`). Until the environments below
+are set up, those jobs fail before any secret is read.
+
+These checks live in workflow files, and a branch can change its own workflow
+files. The boundary is the environment: its secrets are given only to jobs on
+the allowed ref, after approval. The checks make the trusted workflow on `main`
+fail closed when that configuration is missing or loosened. Two limits remain
+and are not fixed by any workflow file:
+
+- Any branch with write access can dispatch a workflow that uses `GITHUB_TOKEN`
+  with `contents: write` or `packages: write` to change releases or push to
+  GHCR. Restrict who has write access; protect `main` and `server-v*` tags.
+- Steps in one job share a runner. A build script or proc macro that leaves a
+  background process running can watch later steps of the same job. This is why
+  the updater key is used in a different job from the build. Apple and Windows
+  code signing still happen in the build job, because Tauri signs while
+  bundling; their certificates are imported there when configured.
+
+### One-time GitHub setup (repository admin)
+
+Do these in **Settings** of `tommyri/sideband`. None of them can be done from a
+workflow.
+
+1. **Environments → New environment `desktop-release`.**
+   - Required reviewers: add yourself. Leave *Prevent self-review* off while
+     you are the only maintainer.
+   - Deployment branches and tags: **Selected branches and tags**, add the
+     branch rule `main`. No other rules.
+   - Environment secrets: `TAURI_SIGNING_PRIVATE_KEY`,
+     `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (see below).
+2. **New environment `desktop-signing`.** No reviewer (the run was approved
+   at `prepare`). Selected branches and tags: branch `main` only. Environment
+   secrets, only when you configure OS signing: `APPLE_CERTIFICATE`,
+   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
+   `APPLE_PASSWORD`, `APPLE_TEAM_ID`, `WINDOWS_CERTIFICATE`,
+   `WINDOWS_CERTIFICATE_PASSWORD`.
+3. **New environment `server-release`.** Required reviewer: yourself.
+   Selected branches and tags: add a **tag** rule `server-v*`. No secrets.
+4. **Repository secrets: none.** Delete any of the names above from
+   *Secrets and variables → Actions → Repository secrets*; a repository secret is
+   readable by a workflow on any branch. Keep the repository *variable*
+   `TAURI_UPDATER_PUBLIC_KEY`; it is public.
+5. **Rules → Rulesets.** `main` currently has no protection, so "on `main`"
+   only means "pushed by someone with write access".
+   - Branch ruleset for `main`: block force pushes and deletion, require a pull
+     request. Put yourself in the bypass list if you merge locally and push.
+   - Tag ruleset for `server-v*`: restrict creations, updates and deletions,
+     with only yourself in the bypass list.
+6. Check the result with the same API the workflows use:
+
+   ```sh
+   for e in desktop-release desktop-signing server-release; do
+     gh api repos/tommyri/sideband/environments/$e \
+       --jq '{name, rules: [.protection_rules[].type], policy: .deployment_branch_policy}'
+     gh api repos/tommyri/sideband/environments/$e/deployment-branch-policies \
+       --jq '[.branch_policies[] | "\(.type):\(.name)"]'
+   done
+   ```
+
+   `desktop-release` and `server-release` must list `required_reviewers`, and
+   each must show exactly one rule: `branch:main`, `branch:main` and
+   `tag:server-v*`.
+7. Dispatch **Release desktop installers** on any branch other than `main`.
+   It must fail in `prepare` (environment branch policy, or the ref check)
+   without running any step that reads a secret. Note the run URL in T-097.
+
+The existing `build-<run>-amd64`/`-arm64` tags in
+`ghcr.io/tommyri/sideband-server` came from the old workflow. They point at the
+same manifests as `0.0.1` and `latest`: deleting those package versions deletes
+those images too. Leave them, or delete the whole `0.0.1` index and its two
+platform manifests together once nothing pulls `0.0.1`.
 
 ## First-time updater setup
 
@@ -18,14 +108,39 @@ Back up the private key and password securely. Never commit them. Configure:
 | GitHub setting | Value |
 | --- | --- |
 | Repository variable `TAURI_UPDATER_PUBLIC_KEY` | Complete contents of `sideband.key.pub` (base64 text, not a path) |
-| Secret `TAURI_SIGNING_PRIVATE_KEY` | Complete contents of `sideband.key` |
-| Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Key password; empty only for an unencrypted key |
+| `desktop-release` environment secret `TAURI_SIGNING_PRIVATE_KEY` | Complete contents of `sideband.key` |
+| `desktop-release` environment secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Key password; empty only for an unencrypted key |
 
 Keep this keypair stable. Changing the public key prevents already-installed
 clients from trusting new updates; key rotation needs an explicit migration or
 manual reinstall. Missing keys fail update-enabled packaging; they never produce
 an unsigned automatic update. Select **Create signed auto-update packages = false**
 for the existing manual test-installer path.
+
+### Where signing happens
+
+The platform builds run `tauri build` with the public key and endpoint only.
+`scripts/build-test-desktop.mjs` refuses to start if an updater key or Apple
+notarization credential is in its environment, and Tauri's own updater signing
+is off (`createUpdaterArtifacts: false`). The installers are the update payloads
+on Windows and Linux; on macOS the script writes `Sideband-test-X.Y.Z.app.tar.gz`
+in Tauri's layout. `build-info.json` lists the payloads unsigned.
+
+The `publish` job then, on a fresh runner:
+
+1. installs the locked Tauri CLI with `pnpm install --frozen-lockfile --ignore-scripts`,
+   so no dependency code runs;
+2. **Sign updater payloads** is the only step given `TAURI_SIGNING_PRIVATE_KEY`.
+   It runs `tauri signer sign --app-version X.Y.Z` per payload with an
+   environment of just `PATH` and the key, then verifies each signature against
+   `TAURI_UPDATER_PUBLIC_KEY`;
+3. **Verify and name release assets** checks every checksum, checks each
+   signature against the public key and the release version again, and writes the
+   per-platform `SHA256SUMS` and feeds;
+4. attests every asset with `actions/attest`, then uploads.
+
+A private key that does not match the configured public key stops the run before
+anything is uploaded.
 
 The public key and HTTPS endpoint are compiled into the native app. The webview
 cannot choose an endpoint, key, URL, version, or package to install. Tauri verifies
@@ -37,8 +152,10 @@ updater need one manual installation of an update-enabled build.
 
 ## Cut a development release
 
-Select a version, OSes, optional Intel Mac runner, and whether to enable signed
-updates. Windows produces NSIS `.exe` and WiX `.msi`; macOS produces `.dmg`, app
+Dispatch from `main`, then approve twice in the run page's **Review deployments**:
+once for `prepare` (starts the builds and CI) and once for `publish` (signs and
+uploads, after every build and CI job passed). Select a version, OSes, optional
+Intel Mac runner, and whether to enable signed updates. Windows produces NSIS `.exe` and WiX `.msi`; macOS produces `.dmg`, app
 ZIP and (for updates) `.app.tar.gz`; Linux produces `.deb` and `.AppImage`.
 Apple Silicon and Intel macOS are separate selectable builds. Intel is opt-in to
 avoid spending extra runner minutes. No release is declared stable by this workflow.
@@ -66,6 +183,68 @@ installer names remain replaceable. Feeds upload last, after all referenced
 payloads succeed; publication is not transactional, so rerun a failed publication.
 Source identity/checksums remain attached to each platform download.
 
+## Release the server
+
+1. Set `[workspace.package] version` in `Cargo.toml` to the new version and
+   merge that to `main`. The binary reports this version; the tag must match it.
+2. Tag the merged commit and push only the tag:
+
+   ```sh
+   git tag server-v0.1.0 <commit-on-main>
+   git push origin server-v0.1.0
+   ```
+
+3. Dispatch on the tag, not a branch:
+
+   ```sh
+   gh workflow run release-server.yml --ref server-v0.1.0
+   ```
+
+4. Approve `publish` in the `server-release` environment once CI and both
+   architecture builds have passed.
+
+The `gate` job refuses a ref that is not a `server-vX.Y.Z` tag, a tagged commit
+not on `main`, a tag that does not match the crate version, and an existing image
+tag or GitHub release for that version. To replace an existing version during
+development, dispatch again with `-f force=true`. `latest` moves only when the
+version is at least the one `latest` already carries (its
+`org.opencontainers.image.version` label), even when forced. `publish` repeats
+these checks before pushing.
+
+Each architecture is built and smoke-tested on its own native runner; nothing is
+pushed from there. `publish` builds the two-platform image from those same
+binaries and `deploy/Dockerfile.release` (which only copies files), pushes it as
+one index tagged `X.Y.Z`, `sha-<commit>` and possibly `latest`, attests the
+index, and creates the GitHub release with both binaries, the systemd unit and
+`SHA256SUMS`. No per-architecture tags are created.
+
+## Verify a download
+
+Each desktop platform has `Sideband-X.Y.Z-<platform>-SHA256SUMS`; the server
+release has `SHA256SUMS`. Check a download against it, then check that GitHub
+Actions built it from `main` (desktop) or the release tag (server):
+
+```sh
+shasum -a 256 --check --ignore-missing Sideband-0.1.0-macos-arm64-SHA256SUMS
+gh attestation verify Sideband-0.1.0-macos-arm64.dmg --repo tommyri/sideband \
+  --signer-workflow tommyri/sideband/.github/workflows/release-desktop.yml \
+  --source-ref refs/heads/main
+
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify ss-server-x86_64-unknown-linux-musl --repo tommyri/sideband \
+  --signer-workflow tommyri/sideband/.github/workflows/release-server.yml \
+  --source-ref refs/tags/server-v0.1.0
+gh attestation verify oci://ghcr.io/tommyri/sideband-server:0.1.0 --repo tommyri/sideband \
+  --signer-workflow tommyri/sideband/.github/workflows/release-server.yml \
+  --source-ref refs/tags/server-v0.1.0
+```
+
+Without `--signer-workflow` and `--source-ref`, `gh attestation verify` accepts
+an attestation from any workflow on any branch of the repository. A checksum
+file from the same release only shows the download is intact; the attestation
+shows where it was built. Updater payloads are also verified by the app against
+the compiled-in public key before installation.
+
 ## Optional operating-system signing
 
 ### macOS
@@ -79,8 +258,14 @@ For Developer ID distribution configure these secrets:
 - `APPLE_SIGNING_IDENTITY`: full Developer ID Application identity.
 - `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `APPLE_TEAM_ID`: notarization credentials.
 
-The manual workflow imports the certificate into a temporary runner keychain.
-Tauri signs with the selected identity and notarizes when credentials are present.
+These are `desktop-signing` environment secrets. The workflow imports the
+certificate into a temporary runner keychain and Tauri signs with the selected
+identity during the build. Notarization is a separate step after the build
+(**Notarize macOS DMG**), so `APPLE_PASSWORD` never reaches `tauri build`. It
+submits the DMG with `xcrun notarytool --wait` and staples the DMG. The app
+inside is notarized by that submission, but the app ZIP and updater archive are
+not stapled, so their first launch needs Gatekeeper to reach Apple. This path
+has not run with real credentials.
 Keep the bundle identifier `com.socialspeak.desktop` and signing team stable to
 preserve macOS permission identity. The existing hardened-runtime audio-input
 entitlement and microphone usage description are retained.
@@ -91,7 +276,7 @@ Verify Input Monitoring permissions survive N→N+1, including background PTT.
 
 ### Windows
 
-Optional secrets `WINDOWS_CERTIFICATE` (base64 PFX) and
+Optional `desktop-signing` environment secrets `WINDOWS_CERTIFICATE` (base64 PFX) and
 `WINDOWS_CERTIFICATE_PASSWORD` import a signing certificate into the runner's
 current-user certificate store. Packaging passes its thumbprint to Tauri and
 uses SHA-256 with a timestamp service. Hardware-token/cloud signing is not wired

@@ -1,10 +1,17 @@
-import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+// Release steps, each run as its own workflow step:
+//   select          prepare job: inputs and platform matrix (sees only whether the key is set)
+//   sign INPUT      publish job: the only step given the updater key
+//   stage INPUT OUT publish job: verify signatures and checksums, name the assets
+//   publish OUT     publish job: upload the release, then the update feeds
+import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash, createPublicKey, verify } from 'node:crypto'
+import { appendFile, copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { validateVersion, updateConfiguration } from './build-test-desktop.mjs'
+import { parseUpdaterPublicKey, validateVersion, updateConfiguration } from './build-test-desktop.mjs'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const feedPattern = /^(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu)\.json$/
 
 const platforms = {
   windows: { os: 'windows-latest', target: 'x86_64-pc-windows-msvc', label: 'windows-x64', suffixes: ['.exe', '.msi'] },
@@ -20,9 +27,78 @@ export function selectPlatforms(selection) {
   return { include }
 }
 
+export function selectRelease(env) {
+  validateVersion(env.RELEASE_VERSION)
+  const matrix = selectPlatforms(Object.fromEntries(Object.keys(platforms).map((key) => [key, env[`RELEASE_${key.toUpperCase()}`] === 'true'])))
+  if (env.RELEASE_UPDATES === 'true') {
+    // Fail before spending runner time; the key itself is given only to the signing step.
+    if (env.TAURI_SIGNING_KEY_CONFIGURED !== 'true') throw new Error('Signed updates need the updater signing key (secret TAURI_SIGNING_PRIVATE_KEY in the desktop-release environment)')
+    for (const entry of matrix.include) updateConfiguration(env, entry.target)
+  }
+  return matrix
+}
+
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
-export async function prepareAssets(input, output, version, commit, repo, notes = `Sideband ${version} development preview.`) {
+// Tauri updater signatures are base64 minisign signatures over the BLAKE2b-512 hash of
+// the payload; the trusted comment carries the version the updater requires.
+export function verifyUpdaterSignature({ bytes, signature, publicKey, version }) {
+  const { keyId, key } = parseUpdaterPublicKey(publicKey)
+  const lines = Buffer.from(String(signature ?? '').trim(), 'base64').toString('utf8').split('\n')
+  const box = Buffer.from(lines[1] ?? '', 'base64'), global = Buffer.from(lines[3] ?? '', 'base64')
+  const trusted = lines[2]?.startsWith('trusted comment: ') ? lines[2].slice('trusted comment: '.length) : undefined
+  if (box.length !== 74 || box.subarray(0, 2).toString() !== 'ED' || global.length !== 64 || trusted === undefined) {
+    throw new Error('Malformed updater signature')
+  }
+  if (!box.subarray(2, 10).equals(keyId)) throw new Error('Updater signature was made with a different key than TAURI_UPDATER_PUBLIC_KEY')
+  const publicKeyObject = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: key.toString('base64url') }, format: 'jwk' })
+  const value = box.subarray(10)
+  if (!verify(null, createHash('blake2b512').update(bytes).digest(), publicKeyObject, value) ||
+      !verify(null, Buffer.concat([value, Buffer.from(trusted)]), publicKeyObject, global)) {
+    throw new Error('Updater signature does not verify against TAURI_UPDATER_PUBLIC_KEY')
+  }
+  const signed = trusted.split('\t').find((field) => field.startsWith('version:'))?.slice('version:'.length)
+  if (!signed) throw new Error('Updater signature has no signed version')
+  if (signed !== version) throw new Error(`Updater signature is signed for version ${signed}, not ${version}`)
+}
+
+function runChecked(command, args, options) {
+  const result = spawnSync(command, args, { stdio: ['ignore', 'ignore', 'inherit'], ...options })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`${path.basename(args[0] ?? command)} failed with status ${result.status}`)
+}
+
+// The signer gets the key and nothing else from the job environment.
+export async function signUpdaters({ input, version, env, cli, run = runChecked }) {
+  validateVersion(version)
+  if (!env.TAURI_SIGNING_PRIVATE_KEY) throw new Error('TAURI_SIGNING_PRIVATE_KEY is not set in the desktop-release environment')
+  const signerEnv = {
+    PATH: env.PATH, CI: 'true', TAURI_SIGNING_PRIVATE_KEY: env.TAURI_SIGNING_PRIVATE_KEY,
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
+  }
+  let signed = 0
+  for (const entry of await readdir(input, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const directory = path.join(input, entry.name)
+    const identity = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
+    if (!identity.updater) continue
+    if (identity.version !== version) throw new Error('Artifact version does not match this release')
+    for (const { file } of identity.updater) {
+      const artifact = identity.artifacts.find((item) => item.file === file)
+      if (!artifact || path.basename(file) !== file) throw new Error('Updater payload is not a listed artifact')
+      const payload = path.join(directory, file)
+      const bytes = await readFile(payload)
+      if (bytes.length !== artifact.bytes || digest(bytes) !== artifact.sha256) throw new Error('Updater payload checksum mismatch')
+      await run(process.execPath, [cli, 'signer', 'sign', '--app-version', version, payload], { env: signerEnv })
+      verifyUpdaterSignature({ bytes, signature: await readFile(payload + '.sig', 'utf8'), publicKey: env.TAURI_UPDATER_PUBLIC_KEY, version })
+      signed++
+    }
+  }
+  if (!signed) throw new Error('No updater payloads to sign')
+  return signed
+}
+
+export async function prepareAssets(input, output, version, commit, repo, notes = `Sideband ${version} development preview.`, publicKey) {
   validateVersion(version)
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected a full source commit')
   await mkdir(output, { recursive: true })
@@ -53,20 +129,27 @@ export async function prepareAssets(input, output, version, commit, repo, notes 
     if (platform.suffixes.some(suffix => !suffixes.has(suffix))) throw new Error('Missing installer format')
     if (identity.updater) {
       if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo ?? '')) throw new Error('Updater requires a valid repository')
+      if (!publicKey) throw new Error('Updater feeds need the updater public key (TAURI_UPDATER_PUBLIC_KEY) to verify signatures')
       const updates = Array.isArray(identity.updater) ? identity.updater : [identity.updater]
       if (updates.length !== (identity.target.includes('windows') ? 2 : 1)) throw new Error('Missing updater format')
       const entries = {}
       for (const update of updates) {
         const original = identity.artifacts.find(a => a.file === update.file)
         const expected = identity.target.includes('apple') ? '.app.tar.gz' : identity.target.includes('windows') ? (update.file.endsWith('.msi') ? '.msi' : '.exe') : '.AppImage'
-        if (!original || !original.file.endsWith(expected) || typeof update.signature !== 'string' || !update.signature.trim()) throw new Error('Invalid updater payload or signature')
+        if (!original || !original.file.endsWith(expected)) throw new Error('Invalid updater payload')
+        let signature
+        try { signature = (await readFile(path.join(directory, original.file + '.sig'), 'utf8')).trim() }
+        catch { throw new Error(`Missing updater signature for ${original.file}`) }
+        // A key mismatch would publish a feed every installed client rejects.
+        verifyUpdaterSignature({ bytes: await readFile(path.join(directory, original.file)), signature, publicKey, version })
+        update.signature = signature
         // Immutable payload URLs prevent same-version replacement racing a cached feed.
         const immutable = `${prefix}-${commit}-${original.sha256}${expected}`
         await copyFile(path.join(directory, original.file), path.join(output, immutable))
         files.push(path.join(output, immutable))
         const key = identity.target.includes('apple') ? (identity.target.startsWith('aarch64') ? 'darwin-aarch64' : 'darwin-x86_64') : identity.target.includes('windows') ? `windows-x86_64-${expected === '.msi' ? 'msi' : 'nsis'}` : 'linux-x86_64'
         if (entries[key]) throw new Error('Duplicate updater format')
-        entries[key] = { url: `https://github.com/${repo}/releases/download/v${version}/${immutable}`, signature: update.signature }
+        entries[key] = { url: `https://github.com/${repo}/releases/download/v${version}/${immutable}`, signature }
       }
       if (identity.target.includes('windows') && (!entries['windows-x86_64-msi'] || !entries['windows-x86_64-nsis'])) throw new Error('Both Windows updater formats are required')
       const manifest = { version, notes: `${notes}\n\nSource: ${commit}.`, platforms: entries }
@@ -137,23 +220,45 @@ export async function publishFeeds({ repo, commit, feeds, run = gh }) {
   run(['release', 'upload', 'desktop-updates', ...accepted, '--repo', repo, '--clobber'])
 }
 
+function releaseNotes(repo, commit) {
+  return `Development preview for testing. Without optional OS-signing credentials, Windows installers are unsigned and macOS packages are ad-hoc signed, not notarized. Linux packages target Ubuntu 24.04.
+
+This version is mutable during development. Reruns replace downloads for selected operating systems; other platforms retain their previous downloads. The tag points to the latest publication; each platform's build-info.json records its exact source commit. Update-enabled builds can install newer signed versions from App updates. Same-version replacements require re-download and reinstall. OS signing status depends on the configured signing credentials; updater signing is separate.
+
+Latest publication: ${commit}
+
+See the platform INSTALL.md and SHA256SUMS assets for installation instructions and checksums. Every asset has a build provenance attestation:
+
+\`\`\`sh
+gh attestation verify FILE --repo ${repo} --signer-workflow ${repo}/.github/workflows/release-desktop.yml --source-ref refs/heads/main
+\`\`\`
+`
+}
+
 async function main() {
+  const [command, input, output] = process.argv.slice(2)
+  if (command === 'select') {
+    await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selectRelease(process.env))}\n`)
+    return
+  }
   const version = validateVersion(process.env.RELEASE_VERSION)
-  if (process.argv[2] === 'select') {
-    const matrix = selectPlatforms(Object.fromEntries(Object.keys(platforms).map((key) => [key, process.env[`RELEASE_${key.toUpperCase()}`] === 'true'])))
-    if (process.env.RELEASE_UPDATES === 'true') for (const entry of matrix.include) updateConfiguration(process.env, entry.target)
-    await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`)
-  } else if (process.argv[2] === 'publish') {
-    const output = await mkdtemp(path.join(tmpdir(), 'sideband-release-'))
-    const commit = process.env.GITHUB_SHA, repo = process.env.GITHUB_REPOSITORY
-    const files = await prepareAssets(process.argv[3], output, version, commit, repo, process.env.RELEASE_NOTES || undefined)
-    const notes = path.join(output, 'release-notes.md')
-    await writeFile(notes, `Development preview for testing. Without optional OS-signing credentials, Windows installers are unsigned and macOS packages are ad-hoc signed, not notarized. Linux packages target Ubuntu 24.04.\n\nThis version is mutable during development. Reruns replace downloads for selected operating systems; other platforms retain their previous downloads. The tag points to the latest publication; each platform's build-info.json records its exact source commit. Update-enabled builds can install newer signed versions from App updates. Same-version replacements require re-download and reinstall. OS signing status depends on the configured signing credentials; updater signing is separate.\n\nLatest publication: ${commit}\n\nSee the platform INSTALL.md and SHA256SUMS assets for installation instructions and checksums.\n`)
-    publishRelease({ repo, commit, version, files, notes })
-    const feeds = (await readdir(output)).filter(name => /^(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu)\.json$/.test(name))
-    await publishFeeds({ repo, commit, feeds: feeds.map(name => path.join(output, name)) })
+  const commit = process.env.GITHUB_SHA, repo = process.env.GITHUB_REPOSITORY
+  if (command === 'sign' && input) {
+    const cli = path.join(root, 'apps', 'desktop', 'node_modules', '@tauri-apps', 'cli', 'tauri.js')
+    console.log(`Signed ${await signUpdaters({ input, version, env: process.env, cli })} updater payloads`)
+  } else if (command === 'stage' && input && output) {
+    const assets = path.join(output, 'assets'), feeds = path.join(output, 'feeds')
+    await mkdir(feeds, { recursive: true })
+    await prepareAssets(input, assets, version, commit, repo, process.env.RELEASE_NOTES || undefined, process.env.TAURI_UPDATER_PUBLIC_KEY || undefined)
+    for (const name of await readdir(assets)) if (feedPattern.test(name)) await rename(path.join(assets, name), path.join(feeds, name))
+    await writeFile(path.join(output, 'release-notes.md'), releaseNotes(repo, commit))
+  } else if (command === 'publish' && input) {
+    const assets = path.join(input, 'assets'), feeds = path.join(input, 'feeds')
+    const files = (await readdir(assets)).sort().map((name) => path.join(assets, name))
+    publishRelease({ repo, commit, version, files, notes: path.join(input, 'release-notes.md') })
+    await publishFeeds({ repo, commit, feeds: (await readdir(feeds)).sort().map((name) => path.join(feeds, name)) })
     console.log(`https://github.com/${repo}/releases/tag/v${version}`)
-  } else throw new Error('Usage: node scripts/release-desktop.mjs select|publish INPUT_DIRECTORY')
+  } else throw new Error('Usage: node scripts/release-desktop.mjs select | sign INPUT | stage INPUT OUTPUT | publish OUTPUT')
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

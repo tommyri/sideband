@@ -7,6 +7,12 @@ on:
         description: Run release-profile audio benchmarks on all platforms (extra build time)
         type: boolean
         default: false
+  # The release workflows call this as a required job for the commit they publish.
+  workflow_call:
+    inputs:
+      benchmarks:
+        type: boolean
+        default: false
 
 permissions:
   contents: read

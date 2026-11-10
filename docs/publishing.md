@@ -19,15 +19,24 @@ Before the first push:
    secret scanning and push protection where available. Configure branch rules
    to require review. Automatic CI is currently disabled to control Actions
    usage; require status checks only when automatic runs are enabled again.
+   Set up the release environments, move signing secrets into them and protect
+   `server-v*` tags as described in [release gates](release.md#release-gates);
+   the release workflows fail until that is done.
 5. Manually dispatch workflows when ready to spend Actions minutes, then verify
    the hosted Windows, macOS and Linux jobs. Locally passing checks do
    not establish that every hosted runner or installed package works.
 
 All workflows start manually (`workflow_dispatch`); the desktop packaging
-workflow can also be called by the manual installer release workflow. See
-[desktop releases](desktop-releases.md) for OS selection and version replacement. Pushes, pull requests and schedules do not start them. The server release workflow publishes only when
-manually dispatched against a `server-v*` tag. Select a release tag only when
-intentionally publishing binaries. Desktop test packages remain
+workflow and CI can also be called by the manual release workflows. See
+[desktop releases](desktop-releases.md) for OS selection and version replacement. Pushes, pull requests and schedules do not start them.
+
+Releases publish only from reviewed refs. The desktop release runs only on
+`main`. The server release runs only when dispatched on a `server-vX.Y.Z` tag
+whose commit is on `main` and whose version matches the `ss-server` crate; on
+any other ref its jobs fail before building, and an existing version is not
+replaced unless `force` is set. Both run CI on the published commit in the same
+run and wait for approval in a GitHub Environment before publishing; signing
+secrets exist only in those environments. Desktop test packages remain
 unsigned/ad-hoc signed without optional OS credentials. Signed updater packaging
 is available through the manual release workflow; see [release setup](release.md).
 Installed signing/upgrade acceptance and complete binary dependency notices remain. See [third-party notices](../THIRD_PARTY_NOTICES.md).

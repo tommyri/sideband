@@ -1,6 +1,6 @@
 # T-097 — Gate releases: main only, tested commit, isolated signing, provenance
 
-Status: todo
+Status: in-progress
 Phase: 4
 Size: M
 Depends on: T-057, T-034
@@ -62,3 +62,94 @@ Apple notarization and Windows signing acceptance (T-057).
   `docs/release.md` explains how to verify them.
 
 ## Notes from implementation
+
+No workflow was run, pushed or dispatched, and nothing on GitHub was changed.
+Read-only `gh api` and registry calls on 2026-11-10 checked the findings:
+
+| Finding | Result |
+|---|---|
+| No `environment:`, no ref check, `secrets: inherit` | Confirmed in the files. The repository has no secrets, variables or environments yet, so no key has been exposed. `main` has no branch protection or ruleset. |
+| Server version not tied to the tag or the binary | Confirmed. The workspace version is 0.1.0; `:0.0.1` and `:latest` were published from a dispatch on `main` (2026-11-06), so `docs/publishing.md` was wrong. |
+| Updater key in the whole `tauri build` | Confirmed. Tauri 2.12.4 also refuses `createUpdaterArtifacts: true` without the private key ("A public key has been found, but no private key"), so updater artifacts had to be turned off in the build, not only the env var removed. |
+| No server checksums or attestation | Confirmed. |
+| Per-architecture tags left public | Confirmed: `build-42280236293-1-amd64` and `-arm64` are in the GHCR tag list. The suggested fix is wrong: on GHCR a tag is a package version, i.e. the manifest, and the `0.0.1` index points at those manifests, so deleting them breaks the image. The workflow no longer creates them. |
+| Base images by tag; no docker or `/fuzz` Dependabot entry | Confirmed. |
+
+What changed:
+
+- `release-desktop.yml`: `prepare` and `publish` run in the `desktop-release`
+  environment. Each starts with a `refs/heads/main` check, then
+  `scripts/release-gate.mjs environment` checks over the API that the environment
+  allows only `main` and requires a reviewer. `prepare` gets only
+  `secrets.TAURI_SIGNING_PRIVATE_KEY != ''`. `ci.yml` is a required job. No
+  `secrets: inherit`; the builds use `desktop-signing` for OS signing only.
+  `publish` installs the locked Tauri CLI with `--ignore-scripts`, signs in one
+  step (`release-desktop.mjs sign`, env of `PATH` and the key), verifies every
+  signature against the public key and version (`stage`), attests all assets
+  with `actions/attest`, then uploads.
+- `test-desktop.yml`: optional `environment` input; ref and environment checks
+  first when set. The build step has no updater key or Apple password, and
+  `build-test-desktop.mjs` refuses to start if one is present. Updater payloads
+  are listed unsigned; the script writes the macOS `.app.tar.gz` in Tauri's
+  layout. Notarization is a separate `notarize` step that staples the DMG.
+- `release-server.yml`: runs only on a `server-vX.Y.Z` tag whose commit is on
+  `main` (compare API). The version comes from the tag and must equal the
+  `ss-server` crate version. An existing image tag or release fails unless
+  `force`; `latest` moves only forward (read from its version label). CI is a
+  required job. Builds only smoke-test locally (and check `ss-server --version`);
+  `publish` (environment `server-release`) repeats the plan, writes `SHA256SUMS`,
+  attests the binaries, pushes one two-platform index with buildx (pinned
+  BuildKit), attests it in the registry, and creates or (forced) updates the
+  release.
+- `ci.yml`: `workflow_call`. `deploy/Dockerfile*`: digests pinned;
+  `Dockerfile.release` copies `ss-server-${TARGETARCH}`. `dependabot.yml`:
+  `cargo` for `/fuzz`, `docker` for `/deploy`.
+- New `scripts/release-gate.mjs` and its test (outside the listed Paths), and
+  small fixes to `deploy/README.md` and `docs/desktop-releases.md`, which
+  described the old server flow.
+
+Validated here: all script tests (`node --test scripts/*.test.mjs`, 23 pass).
+Signature verification is tested against real `tauri signer` 2.12.4 output; a
+local sign-and-stage ran with the real CLI and a disposable key. The gate's
+`server-plan` was run against live GHCR and the API for this repository
+(0.1.0: proceed, latest moves; 0.0.1: refused, crate is 0.1.0; a branch ref:
+refused). `Dockerfile.release` built for both architectures, and the pinned
+BuildKit produced a two-platform index locally. No `actionlint` was available:
+the workflows were parsed with js-yaml and checked for SHA pins, `needs`,
+reusable-workflow inputs and a ref check before any secret, nothing more.
+Unverified until a real run: `environment: ''` meaning no environment for
+standalone test builds, the environment API with `GITHUB_TOKEN`, attestation
+and GHCR push, notarization, and the macOS updater archive installing through
+the updater.
+
+Not pinned: the BuildKit image is pinned by digest inside a `run:` step, which
+Dependabot does not update; `dtolnay/rust-toolchain` stays on its `master`
+commit; runner labels and the runner's default Node in `prepare`/`gate`. The
+Compose files' image references are not covered (T-098 owns `deploy/` hygiene).
+
+Manual steps (Tommy, repository admin; details in `docs/release.md`, "One-time
+GitHub setup"):
+
+- [ ] Create environment `desktop-release`: required reviewer (you), branch
+      policy `main` only. Add secrets `TAURI_SIGNING_PRIVATE_KEY` and
+      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` there.
+- [ ] Create environment `desktop-signing`: branch policy `main` only, no
+      reviewer. Apple and Windows signing secrets go there when configured.
+- [ ] Create environment `server-release`: required reviewer, tag policy
+      `server-v*` only.
+- [ ] Keep no release secrets at repository level; keep the variable
+      `TAURI_UPDATER_PUBLIC_KEY`.
+- [ ] Rulesets: protect `main` (no force push or deletion, require pull
+      requests, yourself as bypass if you push merges) and `server-v*` tags.
+- [ ] Run the check loop in `docs/release.md` step 6.
+- [ ] Dispatch **Release desktop installers** on a branch other than `main`
+      and record the failing run URL here (acceptance 1).
+- [ ] First server release: tag `server-v0.1.0` on `main` (the workspace
+      version), dispatch on the tag, approve, then run the verification commands
+      in `docs/release.md`. Dispatch it again without `force` and record that it
+      fails (acceptance 2).
+- [ ] First update-enabled desktop release: confirm the build step log shows no
+      signing variables and the `sign` step signs every payload (acceptance 3);
+      verify an asset with `gh attestation verify` (acceptance 4).
+- [ ] Leave the old `build-42280236293-1-*` GHCR tags, or delete them only
+      together with `0.0.1`.
