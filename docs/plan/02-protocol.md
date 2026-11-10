@@ -57,6 +57,50 @@ QUIC application close codes (`ss_server::registry` and
 | 6 | server | signed out: the `Ack` of `Logout` (or of `RevokeSession` for the current session) is the last frame, or `SessionRevoked` came first. The token is dead |
 | 73 | client | reconnecting |
 
+A close can overtake the event queued in front of it, so a client decides
+by the code as well: after 3, 4 or 6 it does not reconnect, whether or not
+`Kicked`, `Banned` or `SessionRevoked` arrived. After any other code, or a
+lost connection, it reconnects.
+
+### 1.2 Reconnecting
+
+A client resumes with `Hello{resume_token}`. The server's answer to that
+`Hello` decides what happens next:
+
+| `Error` code | Client |
+|---|---|
+| `UNAUTHENTICATED`, `BANNED`, `FORBIDDEN`, `PROTOCOL_VERSION` | Final: stop and ask the user (log in again, banned, upgrade) |
+| `RATE_LIMITED` | Wait `retry_after_ms`, plus up to a quarter more, then try again |
+| anything else (`INTERNAL`, …) | Try again after the backoff |
+
+The server allows 30 `Hello`s per address before it refuses with
+`RATE_LIMITED` (section 3, Limits), so after a restart clients behind one
+NAT are told to wait, not to give up.
+
+Backoff (the Sideband client): 2, 4, 8, 16, then 24 s, each plus up to a
+quarter more, so never over 30 s and still spread at the cap. It starts
+over after a session that lasted 30 s, or one the server closed with code
+1 (shutdown); a session that dies sooner, or with code 5, keeps climbing.
+Each resolved address gets 3 s for its QUIC handshake when another address
+follows, so an address family that drops packets falls back to the next.
+Message sends wait in a queue of at most 100 while reconnecting.
+
+A `SendMessage` whose `Ack` never came is replayed with the same `nonce`.
+The server deduplicates a nonce for 5 minutes after storing it, so a client
+replays a send only within 4 minutes of first sending it; after that the
+send fails as timed out (its outcome is unknown) instead of risking a
+duplicate. A send that never left the client is sent whenever the
+connection is back.
+
+After `Welcome`, the client re-reads the history it had cached (section 6):
+for each channel the newest page, then `before=` pages until one reaches
+the oldest cached message, at most 4 pages. Each page replaces the cached
+messages in its id range, so edits and deletes made while the client was
+away show; if the 4 pages do not reach the old cache, the older messages
+are dropped and load again on scroll, so no gap is left. A message a page
+brought in before its own `MessageCreated` still counts as new when that
+event arrives.
+
 ## 2. Control stream framing
 
 ```
@@ -217,7 +261,8 @@ Quotas and input limits are listed in [`docs/security.md`](../security.md)
 sections 6 and 7. The ones a client must handle:
 
 - A rejected `Hello` because of a quota is `RATE_LIMITED` with
-  `retry_after_ms`, and the connection closes. Reconnect after the wait.
+  `retry_after_ms`, and the connection closes. Reconnect after the wait
+  (section 1.2 lists which `Hello` errors are retryable).
 - Commands other than `Ping` share a per-account budget (burst 100, then 20
   per second). `SendMessage` and `Typing` have tighter quotas of their own.
   `Ping` is never rate limited.

@@ -17,6 +17,8 @@ struct Session {
     hello: v1::Hello,
     connection: ss_net::Connection,
     events: UnboundedSender<v1::ServerEnvelope>,
+    /// Every command the client sent on this connection, `Ping` excluded.
+    commands: UnboundedReceiver<v1::ClientEnvelope>,
 }
 
 /// QUIC server that answers Hello with a fixed snapshot and acknowledges
@@ -27,6 +29,10 @@ struct Peer {
     pins: Arc<MemoryPinStore>,
     channels: Vec<ss_core::Id>,
     sessions: UnboundedReceiver<Session>,
+    /// Errors to answer the next `Hello`s with, in order; then Welcome.
+    refusals: Arc<parking_lot::Mutex<VecDeque<v1::Error>>>,
+    /// When each `Hello` arrived, refused or not.
+    hellos: UnboundedReceiver<StdInstant>,
     task: JoinHandle<()>,
     dir: PathBuf,
 }
@@ -59,13 +65,26 @@ impl Peer {
             ..Default::default()
         };
         let (found, sessions) = unbounded_channel();
-        let task = tokio::spawn(serve(endpoint.clone(), ack_delay, snapshot, found));
+        let (hello_times, hellos) = unbounded_channel();
+        let refusals = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        let task = tokio::spawn(serve(
+            endpoint.clone(),
+            Script {
+                ack_delay,
+                snapshot,
+                found,
+                refusals: refusals.clone(),
+                hellos: hello_times,
+            },
+        ));
         Self {
             endpoint,
             address,
             pins,
             channels,
             sessions,
+            refusals,
+            hellos,
             task,
             dir,
         }
@@ -97,12 +116,22 @@ impl Drop for Peer {
     }
 }
 
-async fn serve(
-    endpoint: Endpoint,
+struct Script {
     ack_delay: Duration,
     snapshot: v1::Snapshot,
     found: UnboundedSender<Session>,
-) {
+    refusals: Arc<parking_lot::Mutex<VecDeque<v1::Error>>>,
+    hellos: UnboundedSender<StdInstant>,
+}
+
+async fn serve(endpoint: Endpoint, script: Script) {
+    let Script {
+        ack_delay,
+        snapshot,
+        found,
+        refusals,
+        hellos,
+    } = script;
     let user = ss_core::Id::generate();
     while let Some(incoming) = endpoint.accept().await {
         let Ok(mut connection) = incoming.accept().await else {
@@ -118,6 +147,21 @@ async fn serve(
         let Some(Msg::Hello(hello)) = first.msg else {
             continue;
         };
+        let _ = hellos.send(StdInstant::now());
+        let refusal = refusals.lock().pop_front();
+        if let Some(mut error) = refusal {
+            // As the real server does: the Error, then close.
+            error.request_id = first.request_id;
+            let _ = sender
+                .send(&v1::ServerEnvelope {
+                    request_id: first.request_id,
+                    msg: Some(Event::Error(error)),
+                })
+                .await;
+            let _ = timeout(Duration::from_secs(1), connection.quic().closed()).await;
+            connection.close(0, b"hello refused");
+            continue;
+        }
         let (events, mut outbound) = unbounded_channel::<v1::ServerEnvelope>();
         let _ = events.send(v1::ServerEnvelope {
             request_id: first.request_id,
@@ -142,11 +186,13 @@ async fn serve(
             }
         });
         let acks = events.clone();
+        let (seen, commands) = unbounded_channel();
         tokio::spawn(async move {
             while let Ok(envelope) = receiver.recv().await {
                 if matches!(envelope.msg, Some(Msg::Ping(_))) {
                     continue;
                 }
+                let _ = seen.send(envelope.clone());
                 let acks = acks.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(ack_delay).await;
@@ -162,6 +208,7 @@ async fn serve(
                 hello,
                 connection,
                 events,
+                commands,
             })
             .is_err()
         {
@@ -396,7 +443,7 @@ async fn reconnect_resumes_audio_before_a_slow_resync_and_drains_events() {
         });
     }
     timeout(WAIT, async {
-        while client.state().message_cursors().len() < 10 {
+        while client.state().resync_floors().len() < 10 {
             let _ = events.recv().await;
         }
     })
@@ -475,6 +522,230 @@ async fn a_wall_clock_jump_reconnects_with_the_resume_token() {
         Some(v1::hello::Auth::ResumeToken(_))
     ));
     until_connected(&client, &mut events).await;
+}
+
+fn refusal(code: v1::ErrorCode, retry_after_ms: Option<u32>) -> v1::Error {
+    v1::Error {
+        request_id: 0,
+        code: code.into(),
+        message: format!("scripted {code:?}"),
+        min_version: None,
+        max_version: None,
+        retry_after_ms,
+    }
+}
+
+/// The next `Reconnecting` state the client reports.
+async fn next_reconnecting(events: &mut broadcast::Receiver<ClientEvent>) -> (u32, Duration) {
+    timeout(WAIT, async {
+        loop {
+            if let Ok(ClientEvent::Connection(ConnectionState::Reconnecting { attempt, delay })) =
+                events.recv().await
+            {
+                return (attempt, delay);
+            }
+        }
+    })
+    .await
+    .expect("client did not start reconnecting")
+}
+
+async fn until_state(
+    client: &Client,
+    events: &mut broadcast::Receiver<ClientEvent>,
+    done: impl Fn(&ConnectionState) -> bool,
+) {
+    timeout(WAIT, async {
+        while !done(&client.state().read().connection) {
+            let _ = events.recv().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("state: {:?}", client.state().read().connection));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rate_limited_resume_is_retried_after_the_stated_wait() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let _ = timeout(WAIT, peer.hellos.recv()).await.unwrap();
+    let mut events = client.subscribe();
+    // Thirty clients behind one NAT came back first: this one is told to wait.
+    peer.refusals
+        .lock()
+        .push_back(refusal(v1::ErrorCode::RateLimited, Some(1000)));
+    first.connection.close(1, b"server shutting down");
+    let refused = timeout(WAIT, peer.hellos.recv()).await.unwrap().unwrap();
+    let second = peer.session().await;
+    let retried = timeout(WAIT, peer.hellos.recv()).await.unwrap().unwrap();
+    let waited = retried.duration_since(refused);
+    assert!(
+        waited >= Duration::from_millis(1000),
+        "retried after {waited:?}, before the stated wait"
+    );
+    // The stated wait, not the next backoff step (4 s or more).
+    assert!(waited < Duration::from_secs(3), "retried after {waited:?}");
+    assert!(matches!(
+        second.hello.auth,
+        Some(v1::hello::Auth::ResumeToken(_))
+    ));
+    until_connected(&client, &mut events).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_banned_resume_is_terminal() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let _ = timeout(WAIT, peer.hellos.recv()).await.unwrap();
+    let mut events = client.subscribe();
+    peer.refusals
+        .lock()
+        .push_back(refusal(v1::ErrorCode::Banned, None));
+    first.connection.close(0, b"scripted restart");
+    until_state(&client, &mut events, |state| {
+        matches!(state, ConnectionState::Failed(_))
+    })
+    .await;
+    let _ = timeout(WAIT, peer.hellos.recv()).await.unwrap();
+    assert!(
+        timeout(Duration::from_secs(3), peer.hellos.recv())
+            .await
+            .is_err(),
+        "a banned client tried again"
+    );
+}
+
+/// Closes the connection with `code` and no event in front of it, the way a
+/// close can overtake a queued `Kicked`. Returns whether the client came back.
+async fn reconnects_after_close(code: u32) -> bool {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let mut events = client.subscribe();
+    first.connection.close(code, b"scripted close");
+    let back = timeout(Duration::from_secs(4), peer.sessions.recv())
+        .await
+        .is_ok();
+    if !back {
+        assert_eq!(
+            client.state().read().connection,
+            ConnectionState::Disconnected,
+            "close code {code}"
+        );
+        let mut removed = false;
+        while let Ok(event) = events.try_recv() {
+            removed |= matches!(event, ClientEvent::Removed { .. });
+        }
+        assert!(
+            removed,
+            "close code {code} ended the session without Removed"
+        );
+    }
+    back
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_codes_tell_kicks_and_sign_outs_from_restarts() {
+    let (shutdown, slow, kicked, banned, signed_out) = tokio::join!(
+        reconnects_after_close(1),
+        reconnects_after_close(2),
+        reconnects_after_close(3),
+        reconnects_after_close(4),
+        reconnects_after_close(6),
+    );
+    assert!(shutdown, "a server shutdown must be reconnected");
+    assert!(slow, "a slow-consumer close must be reconnected");
+    assert!(!kicked, "a kick reconnected");
+    assert!(!banned, "a ban reconnected");
+    assert!(!signed_out, "a sign-out reconnected");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_that_dies_right_after_resume_backs_off_further() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let mut events = client.subscribe();
+    first.connection.close(0, b"scripted restart");
+    let (_, delay) = next_reconnecting(&mut events).await;
+    assert!(delay <= Duration::from_millis(2500), "{delay:?}");
+    let second = peer.session().await;
+    until_connected(&client, &mut events).await;
+    // Resumed, then lost again at once: the next wait must grow.
+    second.connection.close(0, b"scripted restart");
+    let (_, delay) = next_reconnecting(&mut events).await;
+    assert!(
+        delay >= Duration::from_secs(4),
+        "a session that lasted no time was retried after {delay:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_announced_shutdown_starts_the_backoff_over() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let mut events = client.subscribe();
+    first.connection.close(0, b"scripted restart");
+    let _ = next_reconnecting(&mut events).await;
+    let second = peer.session().await;
+    until_connected(&client, &mut events).await;
+    // Short-lived too, but the server said it is restarting.
+    second.connection.close(1, b"server shutdown");
+    let (_, delay) = next_reconnecting(&mut events).await;
+    assert!(
+        delay <= Duration::from_millis(2500),
+        "a restart announced by the server was retried after {delay:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_older_than_the_nonce_window_is_not_replayed() {
+    // Acks never arrive in time: the send is still in flight when the
+    // connection drops.
+    let mut peer = Peer::new(Duration::from_secs(60), 1).await;
+    let client = Arc::new(peer.client().await);
+    let mut first = peer.session().await;
+    let mut events = client.subscribe();
+    let send = {
+        let client = client.clone();
+        let channel = peer.channels[0];
+        tokio::spawn(async move {
+            client
+                .command(Msg::SendMessage(v1::SendMessage {
+                    channel_id: channel.as_bytes().to_vec().into(),
+                    content: "maybe stored".into(),
+                    ..Default::default()
+                }))
+                .await
+        })
+    };
+    let first_send = timeout(WAIT, first.commands.recv()).await.unwrap().unwrap();
+    assert!(matches!(first_send.msg, Some(Msg::SendMessage(_))));
+    // Six minutes pass before the client is back, as in a long outage or a
+    // laptop asleep: the server no longer remembers the nonce (5 min).
+    client
+        .clock
+        .wall_skew
+        .store(360, std::sync::atomic::Ordering::Relaxed);
+    first.connection.close(0, b"scripted restart");
+    let mut second = peer.session().await;
+    let replayed = timeout(Duration::from_secs(2), second.commands.recv()).await;
+    assert!(
+        !matches!(
+            replayed,
+            Ok(Some(v1::ClientEnvelope {
+                msg: Some(Msg::SendMessage(_)),
+                ..
+            }))
+        ),
+        "a send whose nonce the server forgot was replayed"
+    );
+    until_connected(&client, &mut events).await;
+    let outcome = timeout(WAIT, send).await.unwrap().unwrap();
+    assert!(matches!(outcome, Err(Error::Timeout)), "{outcome:?}");
 }
 
 #[test]

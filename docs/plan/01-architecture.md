@@ -118,10 +118,11 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   macOS `Instant` stops while the machine sleeps, so a wall-clock jump of more
   than 3 s reconnects with the resume token.
 - On resume the client installs the snapshot, rejoins voice and replays
-  queued sends, then reports `Connected`. Messages missed while offline are
-  fetched over HTTPS (one pinned client for the whole run) on a separate task.
-  The connection loop merges each page between live events, and a live edit
-  or delete wins over the older copy in a page.
+  queued sends, then reports `Connected`. The cached history is then re-read
+  over HTTPS, newest page first (one pinned client for the whole run), on a
+  separate task, so messages, edits and deletes from while it was offline all
+  show (`02-protocol.md` §1.2). The connection loop merges each page between
+  live events, and a live edit or delete wins over the older copy in a page.
 - Datagram send buffers are small because quinn drops the oldest queued
   datagram only when the buffer is full: 3 KiB on the client (about
   100–250 ms of one sender's audio, depending on profile) and 16 KiB on the

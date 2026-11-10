@@ -3,6 +3,7 @@
 mod messages;
 use crate::{ClientEvent, ConnectionState, Error};
 pub use messages::MessageCache;
+pub(crate) use messages::Span;
 use parking_lot::{RwLock, RwLockReadGuard};
 use ss_core::{Id, Permissions};
 use ss_proto::{
@@ -280,28 +281,33 @@ impl StateStore {
         Ok(())
     }
 
-    pub(crate) fn message_cursors(&self) -> Vec<(Id, Id)> {
+    /// Channels with cached messages and the oldest cached id: how far back
+    /// a reconnect resync re-reads each one.
+    pub(crate) fn resync_floors(&self) -> Vec<(Id, Id)> {
         self.0
             .read()
             .messages
             .iter()
             .filter_map(|(&channel, cache)| {
                 cache
-                    .newest()
+                    .oldest()
                     .and_then(|message| id(&message.id).ok())
-                    .map(|cursor| (channel, cursor))
+                    .map(|floor| (channel, floor))
             })
             .collect()
     }
 
-    /// Merge a reconnect resync page fetched for snapshot `generation`. Runs
-    /// while connected, concurrently with live events; `load` never replaces
-    /// a live copy.
+    /// Merge a reconnect resync page fetched for snapshot `generation`: the
+    /// page replaces the cached messages in `span`, except those `live`
+    /// events brought since the fetch began. Runs while connected,
+    /// concurrently with live events.
     pub(crate) fn resync(
         &self,
         generation: u64,
         channel: Id,
+        span: Span,
         page: Vec<v1::Message>,
+        live: impl Fn(&Id) -> bool,
     ) -> Result<(), Error> {
         let mut state = self.0.write();
         if state.generation != generation
@@ -310,7 +316,11 @@ impl StateStore {
         {
             return Err(Error::StateChanged);
         }
-        state.messages.entry(channel).or_default().load(page)?;
+        state
+            .messages
+            .entry(channel)
+            .or_default()
+            .replace(span, page, live)?;
         state.revision = state.revision.wrapping_add(1);
         Ok(())
     }
@@ -369,7 +379,11 @@ impl State {
         // delta over the server's snapshot count, deduplicating cached echoes.
         // ReadStateUpdated remains authoritative and replaces this count.
         if let Some(own) = self.own_user.as_ref() {
-            let previous = cache.get(key);
+            // A resync page that overtook this event is not an earlier copy:
+            // the snapshot did not count the message, so this event does.
+            let previous = cache
+                .get(key)
+                .filter(|_| !(created && cache.unannounced(key)));
             let before = previous.is_some_and(|m| mentions_user(m, &own.id));
             let after =
                 !deleted && (created || previous.is_some()) && mentions_user(&message, &own.id);
@@ -912,21 +926,25 @@ mod tests {
         assert_eq!(store.read().revision, before);
     }
     #[test]
-    fn reconnect_snapshot_keeps_visible_message_cursors_and_merges_deltas() {
+    fn reconnect_snapshot_keeps_the_cache_and_resync_pages_replace_their_span() {
         let (store, channel_id, _) = store();
-        let first = Id::generate();
-        let second = Id::generate();
-        let (first, second) = if first < second {
-            (first, second)
-        } else {
-            (second, first)
+        let mut keys: Vec<_> = (0..5).map(|_| Id::generate()).collect();
+        keys.sort();
+        let [older, edited, gone, live, new] = keys[..] else {
+            unreachable!()
         };
-        store
-            .apply(Msg::MessageCreated(v1::MessageCreated {
-                message: Some(message(first, channel_id, "before")),
-                nonce: None,
-            }))
-            .unwrap();
+        for (key, content) in [
+            (older, "older"),
+            (edited, "draft"),
+            (gone, "deleted offline"),
+        ] {
+            store
+                .apply(Msg::MessageCreated(v1::MessageCreated {
+                    message: Some(message(key, channel_id, content)),
+                    nonce: None,
+                }))
+                .unwrap();
+        }
         let welcome = v1::Welcome {
             user: store.read().own_user.clone(),
             snapshot: Some(v1::Snapshot {
@@ -944,33 +962,69 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(store.message_cursors(), vec![(channel_id, first)]);
+        assert_eq!(store.resync_floors(), vec![(channel_id, older)]);
         let generation = store.read().generation;
+        let all = Span {
+            from: None,
+            before: None,
+        };
         assert!(matches!(
             store.resync(
                 generation.wrapping_sub(1),
                 channel_id,
-                vec![message(second, channel_id, "stale")],
+                all,
+                vec![message(new, channel_id, "stale")],
+                |_| false,
             ),
             Err(Error::StateChanged)
         ));
-        // Resync pages merge after `Connected`, alongside live events.
+        // Resync pages merge after `Connected`, alongside live events. A
+        // message a live event brought during the fetch stays.
         store.connection(ConnectionState::Connected);
+        store
+            .apply(Msg::MessageCreated(v1::MessageCreated {
+                message: Some(message(live, channel_id, "live")),
+                nonce: None,
+            }))
+            .unwrap();
+        let contents = || {
+            store.read().messages[&channel_id]
+                .ordered()
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>()
+        };
+        // The page covers `edited` and newer: `older` is outside its span.
         store
             .resync(
                 generation,
                 channel_id,
-                vec![message(second, channel_id, "after")],
+                Span {
+                    from: Some(edited),
+                    before: None,
+                },
+                vec![
+                    message(edited, channel_id, "final"),
+                    message(new, channel_id, "missed"),
+                ],
+                |key| *key == live,
             )
             .unwrap();
-        assert_eq!(
-            store.read().messages[&channel_id]
-                .ordered()
-                .iter()
-                .map(|message| message.content.as_str())
-                .collect::<Vec<_>>(),
-            ["before", "after"]
-        );
+        assert_eq!(contents(), ["older", "final", "live", "missed"]);
+        // A last page reaching the channel's start leaves nothing older.
+        store
+            .resync(
+                generation,
+                channel_id,
+                Span {
+                    from: None,
+                    before: Some(edited),
+                },
+                Vec::new(),
+                |_| false,
+            )
+            .unwrap();
+        assert_eq!(contents(), ["final", "live", "missed"]);
     }
     #[test]
     fn own_profile_presence_roles_and_voice_sessions_reduce_independently() {

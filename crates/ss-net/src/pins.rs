@@ -90,19 +90,24 @@ pub trait PinStore: Send + Sync + 'static {
     }
 }
 
+/// Applies the compare-and-set. `Ok(false)`: `next` is already stored, so
+/// there is nothing to persist.
 fn exchange(
     policies: &mut BTreeMap<String, TrustPolicy>,
     server: &ServerId,
     expected: Option<TrustPolicy>,
     next: TrustPolicy,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     if policies.get(server.as_str()).copied() != expected {
         return Err(Error::Config(
             "server trust changed during verification; retry",
         ));
     }
+    if expected == Some(next) {
+        return Ok(false);
+    }
     policies.insert(server.0.clone(), next);
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Debug, Default)]
@@ -117,7 +122,7 @@ impl PinStore for MemoryPinStore {
         expected: Option<TrustPolicy>,
         next: TrustPolicy,
     ) -> Result<(), Error> {
-        exchange(&mut self.0.lock(), server, expected, next)
+        exchange(&mut self.0.lock(), server, expected, next).map(drop)
     }
 }
 
@@ -204,9 +209,44 @@ impl PinStore for JsonPinStore {
     ) -> Result<(), Error> {
         let mut current = self.policies.lock();
         let mut updated = current.clone();
-        exchange(&mut updated, server, expected, next)?;
+        // Confirming the stored policy writes nothing, so it also works on
+        // a read-only or full disk.
+        if !exchange(&mut updated, server, expected, next)? {
+            return Ok(());
+        }
         self.persist(&updated)?;
         *current = updated;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tls::fingerprint;
+
+    #[test]
+    fn an_unchanged_policy_is_not_written_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pins.json");
+        let store = JsonPinStore::open(&path).unwrap();
+        let server = ServerId::new("localhost", 443).unwrap();
+        let pinned = TrustPolicy::PinnedCertificate {
+            fingerprint: fingerprint(b"test"),
+        };
+        store.compare_exchange(&server, None, pinned).unwrap();
+        // Every write now fails, as on a read-only or full disk.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        store
+            .compare_exchange(&server, Some(pinned), pinned)
+            .expect("confirming the current policy must not touch the disk");
+        assert!(
+            store
+                .compare_exchange(&server, Some(pinned), TrustPolicy::PublicCertificate)
+                .is_err(),
+            "a real change still has to be persisted"
+        );
+        assert_eq!(store.policy(&server).unwrap(), Some(pinned));
     }
 }
