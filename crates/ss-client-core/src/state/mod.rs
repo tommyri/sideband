@@ -257,9 +257,17 @@ impl StateStore {
             .collect()
     }
 
-    pub(crate) fn resync(&self, channel: Id, page: Vec<v1::Message>) -> Result<(), Error> {
+    /// Merge a reconnect resync page fetched for snapshot `generation`. Runs
+    /// while connected, concurrently with live events; `load` never replaces
+    /// a live copy.
+    pub(crate) fn resync(
+        &self,
+        generation: u64,
+        channel: Id,
+        page: Vec<v1::Message>,
+    ) -> Result<(), Error> {
         let mut state = self.0.write();
-        if !matches!(state.connection, ConnectionState::Reconnecting { .. })
+        if state.generation != generation
             || (!state.channels.contains_key(&channel)
                 && !state.direct_messages.contains_key(&channel))
         {
@@ -895,8 +903,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.message_cursors(), vec![(channel_id, first)]);
+        let generation = store.read().generation;
+        assert!(matches!(
+            store.resync(
+                generation.wrapping_sub(1),
+                channel_id,
+                vec![message(second, channel_id, "stale")],
+            ),
+            Err(Error::StateChanged)
+        ));
+        // Resync pages merge after `Connected`, alongside live events.
+        store.connection(ConnectionState::Connected);
         store
-            .resync(channel_id, vec![message(second, channel_id, "after")])
+            .resync(
+                generation,
+                channel_id,
+                vec![message(second, channel_id, "after")],
+            )
             .unwrap();
         assert_eq!(
             store.read().messages[&channel_id]

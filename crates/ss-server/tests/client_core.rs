@@ -442,12 +442,14 @@ async fn forced_restart_resumes_snapshot_and_voice_without_duplicate_commands() 
             .iter()
             .any(|message| message.content == "during restart")
     );
-    assert!(
-        client.state().read().messages[&general]
+    // Missed history is fetched after `Connected`, alongside live traffic.
+    until(&client, &mut events, |s| {
+        s.messages[&general]
             .ordered()
             .iter()
             .any(|message| message.content == "missed while offline")
-    );
+    })
+    .await;
     assert!(!client.state().read().channels.is_empty());
     let mut conn = world.pool.read().await.unwrap();
     let stored: i64 = sqlx::query_scalar(

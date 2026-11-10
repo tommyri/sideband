@@ -66,42 +66,78 @@ pub(crate) async fn fetch_page(
     after: Option<Id>,
     around: Option<Id>,
 ) -> Result<Vec<v1::Message>, Error> {
-    let http = reqwest::Client::builder()
-        .use_preconfigured_tls(ss_net::client::tls_config(trust)?)
-        .https_only(true)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(DEADLINE)
-        .build()?;
-    let host = if address.host.contains(':') {
-        format!("[{}]", address.host)
-    } else {
-        address.host.clone()
-    };
-    let mut url = format!(
-        "https://{host}:{}/api/v1/channels/{channel}/messages",
-        address.https_port
-    );
-    if let Some(around) = around {
-        url.push_str("/around/");
-        url.push_str(&around.to_string());
+    History::new(address, trust, token)?
+        .page(channel, before, after, around)
+        .await
+}
+
+/// One pinned HTTPS client for a run of history pages, so a reconnect resync
+/// reuses one TLS connection instead of a handshake per page.
+pub(crate) struct History {
+    http: reqwest::Client,
+    base: String,
+    token: String,
+}
+
+impl History {
+    pub(crate) fn new(
+        address: &ServerAddr,
+        trust: ss_net::pins::TrustPolicy,
+        token: &str,
+    ) -> Result<Self, Error> {
+        let http = reqwest::Client::builder()
+            .use_preconfigured_tls(ss_net::client::tls_config(trust)?)
+            .https_only(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(DEADLINE)
+            .build()?;
+        let host = if address.host.contains(':') {
+            format!("[{}]", address.host)
+        } else {
+            address.host.clone()
+        };
+        Ok(Self {
+            http,
+            base: format!("https://{host}:{}/api/v1/channels", address.https_port),
+            token: token.to_owned(),
+        })
     }
-    let mut request = http.get(url).bearer_auth(token).query(&[("limit", "50")]);
-    if let Some(before) = before {
-        request = request.query(&[("before", before.to_string())]);
-    }
-    if let Some(after) = after {
-        request = request.query(&[("after", after.to_string())]);
-    }
-    let mut response = request.send().await?.error_for_status()?;
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > MAX_PAGE_BYTES {
-            return Err(Error::Protocol("history page too large"));
+
+    /// Fetch at most 50 messages of `channel`, ascending by id.
+    pub(crate) async fn page(
+        &self,
+        channel: Id,
+        before: Option<Id>,
+        after: Option<Id>,
+        around: Option<Id>,
+    ) -> Result<Vec<v1::Message>, Error> {
+        let mut url = format!("{}/{channel}/messages", self.base);
+        if let Some(around) = around {
+            url.push_str("/around/");
+            url.push_str(&around.to_string());
         }
-        body.extend_from_slice(&chunk);
+        let mut request = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .query(&[("limit", "50")]);
+        if let Some(before) = before {
+            request = request.query(&[("before", before.to_string())]);
+        }
+        if let Some(after) = after {
+            request = request.query(&[("after", after.to_string())]);
+        }
+        let mut response = request.send().await?.error_for_status()?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > MAX_PAGE_BYTES {
+                return Err(Error::Protocol("history page too large"));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        decode(&body, channel)
     }
-    decode(&body, channel)
 }
 
 pub(crate) fn decode(body: &[u8], channel: Id) -> Result<Vec<v1::Message>, Error> {
