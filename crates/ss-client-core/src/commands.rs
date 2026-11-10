@@ -62,6 +62,54 @@ impl Client {
             _ => Err(Error::Protocol("expected message id")),
         }
     }
+    /// End this login session on the server, then stop this client.
+    ///
+    /// The server deletes the session, so the token stops working for QUIC
+    /// and HTTPS, and closes every connection that used it. Whatever the
+    /// outcome, this client stops: no reconnect follows, the HTTPS bearer is
+    /// dropped and the state reports `Disconnected`. Drop the client after
+    /// this. Host storage is not touched; the host forgets the saved token.
+    pub async fn logout(&self) -> Result<(), Error> {
+        let result = self.command(Msg::Logout(v1::Logout {})).await;
+        *self.auth.write() = None;
+        self.abort();
+        self.store.connection(crate::ConnectionState::Disconnected);
+        let _ = self.events.send(crate::ClientEvent::Connection(
+            crate::ConnectionState::Disconnected,
+        ));
+        match result?.result {
+            Some(ack::Result::Empty(_)) => Ok(()),
+            _ => Err(Error::Protocol("expected empty acknowledgement")),
+        }
+    }
+    /// This account's live sessions on the server, oldest first. `current`
+    /// marks the one this client uses.
+    pub async fn list_sessions(&self) -> Result<Vec<v1::SessionInfo>, Error> {
+        match self
+            .command(Msg::ListSessions(v1::ListSessions {}))
+            .await?
+            .result
+        {
+            Some(ack::Result::Sessions(list)) => Ok(list.sessions),
+            _ => Err(Error::Protocol("expected session list")),
+        }
+    }
+    /// End another of this account's sessions, for example a lost device.
+    /// Its connections are closed. Use [`Self::logout`] for this client's own
+    /// session: revoking it here also closes this connection, and the
+    /// reconnect that follows fails as unauthenticated.
+    pub async fn revoke_session(&self, session: Id) -> Result<(), Error> {
+        match self
+            .command(Msg::RevokeSession(v1::RevokeSession {
+                session_id: session.as_bytes().to_vec().into(),
+            }))
+            .await?
+            .result
+        {
+            Some(ack::Result::Empty(_)) => Ok(()),
+            _ => Err(Error::Protocol("expected empty acknowledgement")),
+        }
+    }
     /// Create a guild channel and return its assigned ULID.
     pub async fn create_channel(&self, command: v1::CreateChannel) -> Result<Id, Error> {
         match self.command(Msg::CreateChannel(command)).await?.result {

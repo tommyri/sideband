@@ -66,6 +66,9 @@ message ClientEnvelope {
     StartStream start_stream = 39;
     StopStream stop_stream = 40;
     MoveRole move_role = 41;
+    Logout logout = 42;
+    ListSessions list_sessions = 43;
+    RevokeSession revoke_session = 44;
   }
 }
 
@@ -105,6 +108,7 @@ message ServerEnvelope {
     ServerNotice server_notice = 29;
     RequestKeyframe request_keyframe = 30;
     SubscriberHint subscriber_hint = 31;
+    SessionRevoked session_revoked = 32;
   }
 }
 
@@ -132,6 +136,8 @@ message Ack {
     Webhook webhook = 9;
     // StartStream assigned this video/screen track.
     uint32 track_id = 10;
+    // `ListSessions` returned the caller's sessions.
+    SessionList sessions = 11;
   }
 }
 

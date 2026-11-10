@@ -2,6 +2,7 @@ use crate::{
     state::AppState,
     types::{ApiError, ProbeInput, ServerProbe},
 };
+use ss_client_core::storage::Storage as _;
 use ss_net::{
     pins::{MemoryPinStore, PinStore, ServerId, TrustPolicy},
     tls::Fingerprint,
@@ -183,15 +184,59 @@ pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Res
     let id = ServerId::new(&saved.host, saved.port)
         .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
     let removed = state.clients().remove(&id);
-    if let Some(client) = removed {
-        crate::state::close(client).await;
-    }
+    let token = state
+        .storage
+        .session(&id)
+        .map_err(super::commands::api_error)?;
+    let address = ss_client_core::ServerAddr {
+        https_port: saved.https_port,
+        ..ss_client_core::ServerAddr::new(&saved.host, saved.port)
+            .map_err(super::commands::api_error)?
+    };
+    sign_out(removed, address, token, state.pins.clone()).await;
     // Keep the certificate pin: removing a server must not erase protection
     // against an unexpected certificate when it is added again.
     state
         .storage
         .remove(&server_id)
         .map_err(super::commands::api_error)
+}
+
+/// How long removing a server waits for the server to confirm the logout.
+const SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Ends the saved session on the server so the token is useless even if a
+/// copy survives on disk, then closes the client. Uses the live client when
+/// there is one, otherwise connects once with the saved token. Best effort:
+/// an unreachable server never blocks removal, and the token is forgotten
+/// locally either way.
+async fn sign_out(
+    client: Option<Arc<ss_client_core::Client>>,
+    address: ss_client_core::ServerAddr,
+    token: Option<String>,
+    pins: Arc<dyn PinStore>,
+) {
+    if let Some(client) = client {
+        let done = tokio::time::timeout(SIGN_OUT_TIMEOUT, client.logout()).await;
+        crate::state::close(client).await;
+        if matches!(done, Ok(Ok(()))) {
+            return;
+        }
+    }
+    let Some(token) = token else { return };
+    let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, async move {
+        // Memory storage: this throwaway connection must not save anything.
+        let client = ss_client_core::Client::connect(
+            address,
+            ss_client_core::Credentials::Session(token),
+            pins,
+        )
+        .await?;
+        let result = client.logout().await;
+        client.close().await;
+        result
+    })
+    .await;
 }
 
 #[tauri::command]
@@ -311,11 +356,40 @@ mod tests {
         .unwrap();
         client.close().await;
         let reopened = Arc::new(DesktopStorage::open(dir.path().join("sessions.json")).unwrap());
-        let client =
-            Client::connect_with_storage(address, Credentials::Saved, pins.clone(), reopened)
-                .await
-                .unwrap();
+        let client = Client::connect_with_storage(
+            address.clone(),
+            Credentials::Saved,
+            pins.clone(),
+            reopened.clone(),
+        )
+        .await
+        .unwrap();
+        // Removing a connected server logs its session out on the server.
+        let token = reopened.session(&id).unwrap().unwrap();
+        sign_out(
+            Some(Arc::new(client)),
+            address.clone(),
+            Some(token.clone()),
+            pins.clone(),
+        )
+        .await;
+        assert_rejected(&address, &token, pins.clone()).await;
+        // A disconnected one is logged out with the saved token.
+        let client = Client::connect_with_storage(
+            address.clone(),
+            Credentials::Login(v1::Login {
+                username: "owner".into(),
+                password: "test-password".into(),
+            }),
+            pins.clone(),
+            reopened.clone(),
+        )
+        .await
+        .unwrap();
         client.close().await;
+        let token = reopened.session(&id).unwrap().unwrap();
+        sign_out(None, address.clone(), Some(token.clone()), pins.clone()).await;
+        assert_rejected(&address, &token, pins.clone()).await;
         let old = Fingerprint::try_from("ab".repeat(32)).unwrap();
         pins.set(&id, old).unwrap();
         let changed = probe(input, pins.clone()).await.unwrap();
@@ -329,5 +403,18 @@ mod tests {
         quic.abort();
         https.abort();
         endpoint.close(0, b"test complete");
+    }
+
+    async fn assert_rejected(address: &ServerAddr, token: &str, pins: Arc<JsonPinStore>) {
+        let reused =
+            Client::connect(address.clone(), Credentials::Session(token.into()), pins).await;
+        assert!(
+            matches!(
+                reused,
+                Err(ss_client_core::Error::Server { code, .. })
+                    if code == i32::from(v1::ErrorCode::Unauthenticated)
+            ),
+            "a signed-out token still works"
+        );
     }
 }

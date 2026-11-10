@@ -375,6 +375,36 @@ const COMMANDS: &[(&str, Command)] = &[
         "SetPreferredQuality",
         Command::Handled(&[("media/streams.rs", VIDEO_VIEWER)]),
     ),
+    (
+        "Logout",
+        Command::Handled(&[(
+            "auth/live.rs",
+            scoped(
+                &["caller.session, caller.user"],
+                "deletes only the session that authenticated this connection",
+            ),
+        )]),
+    ),
+    (
+        "ListSessions",
+        Command::Handled(&[(
+            "auth/live.rs",
+            scoped(
+                &["list_for_user(&mut conn, caller.user)"],
+                "lists only the caller's own sessions",
+            ),
+        )]),
+    ),
+    (
+        "RevokeSession",
+        Command::Handled(&[(
+            "auth/live.rs",
+            scoped(
+                &["delete_owned(&mut conn, target, caller.user)"],
+                "deletes only a session of the caller's own account; another id is not found",
+            ),
+        )]),
+    ),
 ];
 
 /// Viewer-side video commands: a voice seat in the track's channel plus

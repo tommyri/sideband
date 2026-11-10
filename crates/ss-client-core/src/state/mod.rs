@@ -539,6 +539,11 @@ impl State {
                 banned: true,
                 reason: event.reason,
             },
+            // The token is dead: like a kick, the client must not reconnect.
+            Msg::SessionRevoked(event) => E::Removed {
+                banned: false,
+                reason: event.reason,
+            },
             Msg::ServerNotice(event) => E::Notice(event.text),
             Msg::Error(error) => E::ServerError(error),
             Msg::RequestKeyframe(event) => E::KeyframeRequested {

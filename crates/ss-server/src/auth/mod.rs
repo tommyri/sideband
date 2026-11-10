@@ -5,8 +5,20 @@
 //! exist before the first user (`created_by` is required).
 
 mod limiter;
+mod live;
 mod password;
 mod token;
+
+pub use live::{CLOSE_SIGNED_OUT, Sessions, list_sessions, revoke_sessions};
+
+/// The connection a session command arrived on.
+pub(crate) const fn sessions_caller(user: Id, session: Id, conn: Id) -> live::Caller {
+    live::Caller {
+        user,
+        session,
+        conn,
+    }
+}
 
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
@@ -26,8 +38,13 @@ const MAX_USERNAME_BYTES: usize = 32;
 /// Longest accepted password, in bytes. Longer logins fail without hashing.
 const MAX_PASSWORD_BYTES: usize = 128;
 
-/// Ninety days, in milliseconds. Presenting the token pushes expiry forward.
-const SESSION_TTL_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Idle lifetime: a token unused for 90 days stops working. Each use pushes
+/// expiry forward again, up to [`SESSION_MAX_AGE_MS`].
+pub const SESSION_IDLE_MS: i64 = 90 * DAY_MS;
+/// Absolute lifetime: 180 days after login the token stops working however
+/// often it is used, and the user logs in with their password again.
+pub const SESSION_MAX_AGE_MS: i64 = 180 * DAY_MS;
 
 /// A failure a `Hello` handler can turn into a control-stream error.
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +140,8 @@ pub struct Authenticated {
     pub user: db::User,
     /// Plaintext session token. Login and register mint a new one. Token reuse echoes it.
     pub resume_token: String,
+    /// The `sessions` row the token belongs to.
+    pub session_id: Id,
     /// OR of the user's roles and `@everyone` at Hello.
     ///
     /// Channel checks use [`crate::perms`]. This value is not refreshed when
@@ -135,6 +154,7 @@ impl std::fmt::Debug for Authenticated {
         f.debug_struct("Authenticated")
             .field("user", &self.user)
             .field("resume_token", &db::REDACTED)
+            .field("session_id", &self.session_id)
             .field("permissions", &self.permissions)
             .finish()
     }
@@ -234,12 +254,13 @@ impl Auth {
             let mut conn = self.pool.read().await?;
             users::get_by_username(&mut conn, &login.username).await?
         };
-        let verified = match found {
-            Some(user) => password::verify(&login.password, &user.password_hash)
-                .await?
-                .then_some(user),
-            None => None,
-        };
+        // An unknown username costs the same argon2 run as a wrong password,
+        // so the reply time does not tell the two apart.
+        let stored = found
+            .as_ref()
+            .map_or(password::DUMMY_HASH, |user| user.password_hash.as_str());
+        let matched = password::verify(&login.password, stored).await?;
+        let verified = found.filter(|_| matched);
         let Some(user) = verified else {
             self.limiter.failed(&login.username, peer);
             return Err(Error::Unauthenticated);
@@ -263,16 +284,23 @@ impl Auth {
             return Err(Error::Unauthenticated);
         };
         let now = Timestamp::now();
-        if session.expires_at.is_some_and(|expires| expires <= now) {
+        if !session_alive(&session, now) {
             return Err(Error::Unauthenticated);
         }
         let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, session.user_id).await?;
-        sessions::slide(&mut conn, session.id, now, expiry(now)).await?;
+        // A revoke may have run between the read and this write.
+        sessions::slide(&mut conn, session.id, now, expiry(session.created_at, now))
+            .await
+            .map_err(|error| match error {
+                db::Error::NotFound => Error::Unauthenticated,
+                other => other.into(),
+            })?;
         let permissions = permissions_for(&mut conn, user.id).await?;
         Ok(Authenticated {
             user,
             resume_token: token.to_owned(),
+            session_id: session.id,
             permissions,
         })
     }
@@ -286,14 +314,14 @@ impl Auth {
         let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, user_id).await?;
         let now = Timestamp::now();
-        sessions::insert(
+        let session = sessions::insert(
             &mut conn,
             NewSession {
                 id: Id::generate(),
                 user_id: user.id,
                 token_hash: issued.hash,
                 device_name,
-                expires_at: Some(expiry(now)),
+                expires_at: Some(expiry(now, now)),
             },
         )
         .await?;
@@ -301,6 +329,7 @@ impl Auth {
         Ok(Authenticated {
             user,
             resume_token: issued.token.to_string(),
+            session_id: session.id,
             permissions,
         })
     }
@@ -330,14 +359,14 @@ impl Auth {
             roles::assign(&mut tx, user.id, ADMIN_ROLE_ID).await?;
         }
         let now = Timestamp::now();
-        sessions::insert(
+        let session = sessions::insert(
             &mut tx,
             NewSession {
                 id: Id::generate(),
                 user_id: user.id,
                 token_hash: pending.issued.hash,
                 device_name: pending.device_name,
-                expires_at: Some(expiry(now)),
+                expires_at: Some(expiry(now, now)),
             },
         )
         .await?;
@@ -346,6 +375,7 @@ impl Auth {
         Ok(Authenticated {
             user,
             resume_token: pending.issued.token.to_string(),
+            session_id: session.id,
             permissions,
         })
     }
@@ -392,16 +422,25 @@ pub(crate) fn hash_token(token: &str) -> String {
     token::hash(token)
 }
 
-/// Replaces `username`'s password hash. The username match is case-insensitive.
-pub async fn set_password(pool: &db::Pool, username: &str, password: &str) -> Result<(), Error> {
+/// Replaces `username`'s password hash and ends every session of that
+/// account, in one transaction. The username match is case-insensitive.
+/// Returns how many sessions were ended.
+///
+/// Rows are gone at once, so HTTPS and new `Hello`s fail immediately. A
+/// running server closes connections that used them on its next
+/// [`Sessions::sweep`].
+pub async fn set_password(pool: &db::Pool, username: &str, password: &str) -> Result<u64, Error> {
     validate_password(password)?;
     let password_hash = password::hash(password).await?;
-    let mut conn = pool.write().await;
-    let user = users::get_by_username(&mut conn, username)
+    let mut guard = pool.write().await;
+    let mut tx = guard.begin().await.map_err(db::Error::from)?;
+    let user = users::get_by_username(&mut tx, username)
         .await?
         .ok_or(Error::NotFound)?;
-    users::set_password(&mut conn, user.id, &password_hash).await?;
-    Ok(())
+    users::set_password(&mut tx, user.id, &password_hash).await?;
+    let ended = sessions::delete_for_user(&mut tx, user.id).await?;
+    tx.commit().await.map_err(db::Error::from)?;
+    Ok(ended)
 }
 
 struct Pending {
@@ -518,8 +557,24 @@ fn banned(expires_at: Option<Timestamp>) -> Error {
     Error::Banned { message }
 }
 
-const fn expiry(now: Timestamp) -> Timestamp {
-    Timestamp::from_millis(now.as_millis().saturating_add(SESSION_TTL_MS))
+/// Next expiry for a session created at `created` and used at `now`: the
+/// idle lifetime from now, never past the absolute lifetime.
+const fn expiry(created: Timestamp, now: Timestamp) -> Timestamp {
+    let idle = now.as_millis().saturating_add(SESSION_IDLE_MS);
+    let absolute = created.as_millis().saturating_add(SESSION_MAX_AGE_MS);
+    Timestamp::from_millis(if idle < absolute { idle } else { absolute })
+}
+
+/// Whether `session` may still authenticate at `now`. Both limits are checked,
+/// so a row written before the absolute lifetime existed is still capped.
+pub(crate) fn session_alive(session: &db::Session, now: Timestamp) -> bool {
+    let idle_ok = session.expires_at.is_none_or(|expires| expires > now);
+    let age_ok = session
+        .created_at
+        .as_millis()
+        .saturating_add(SESSION_MAX_AGE_MS)
+        > now.as_millis();
+    idle_ok && age_ok
 }
 
 /// Rejects a username that reads like an existing one, such as `rnike` next
@@ -601,7 +656,37 @@ fn device_name(hello: &v1::Hello) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{username_skeleton, validate_username};
+    use std::{net::IpAddr, sync::Arc, time::Duration};
+
+    use ss_proto::v1;
+
+    use super::{Auth, Error, password, username_skeleton, validate_username};
+    use crate::db;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn login_for_an_unknown_username_runs_the_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::Pool::open(dir.path().join("t.db")).await.unwrap());
+        let auth = Auth::new(pool);
+        let hello = v1::Hello {
+            protocol_version: 1,
+            auth: Some(v1::hello::Auth::Login(v1::Login {
+                username: "nobody".into(),
+                password: "password-ok".into(),
+            })),
+            ..Default::default()
+        };
+        let (started, release) = password::arm();
+        let login =
+            tokio::spawn(async move { auth.hello(&hello, IpAddr::from([203, 0, 113, 9])).await });
+        let hashed = tokio::time::timeout(Duration::from_secs(5), started).await;
+        let _ = release.send(());
+        assert!(
+            hashed.is_ok(),
+            "an unknown username returned without running argon2"
+        );
+        assert!(matches!(login.await.unwrap(), Err(Error::Unauthenticated)));
+    }
 
     #[test]
     fn confusable_usernames_share_a_skeleton() {

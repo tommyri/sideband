@@ -31,6 +31,12 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
 - Server federation / multi-server identity (explicitly not a goal now).
 - Outgoing webhooks and interaction components for bots.
 - Simulcast for screen share; HEVC/AV1 where hardware exists.
+- Session tokens in the OS keychain (macOS Keychain, Windows Credential
+  Manager, Secret Service) instead of the owner-only desktop JSON file. The
+  `Storage` trait already allows it (T-093 left it out of scope).
+- Desktop "Devices" settings page over `ListSessions`/`RevokeSession`, and a
+  "Sign out" that keeps the saved server (T-093 added the protocol and
+  client-core calls; only "Remove server" signs out today).
 
 ## Ops
 - Automated SQLite backups to S3-compatible storage.

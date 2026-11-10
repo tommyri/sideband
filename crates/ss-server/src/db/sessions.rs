@@ -117,6 +117,45 @@ pub async fn delete(conn: &mut SqliteConnection, id: Id) -> Result<(), Error> {
         .await)?)
 }
 
+/// Deletes `id` only when it belongs to `user_id`. `false` when no row matched.
+pub async fn delete_owned(conn: &mut SqliteConnection, id: Id, user_id: Id) -> Result<bool, Error> {
+    let done = db(
+        sqlx::query("DELETE FROM sessions WHERE id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await,
+    )?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// Deletes every session of one account. Returns how many there were.
+pub async fn delete_for_user(conn: &mut SqliteConnection, user_id: Id) -> Result<u64, Error> {
+    let done = db(sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await)?;
+    Ok(done.rows_affected())
+}
+
+/// Deletes sessions whose sliding expiry is at or before `now`, or that were
+/// created at or before `created_before` (the absolute lifetime). Returns
+/// how many rows went.
+pub async fn delete_expired(
+    conn: &mut SqliteConnection,
+    now: Timestamp,
+    created_before: Timestamp,
+) -> Result<u64, Error> {
+    let done = db(sqlx::query(
+        "DELETE FROM sessions WHERE (expires_at IS NOT NULL AND expires_at <= ?) OR created_at <= ?",
+    )
+    .bind(now.as_millis())
+    .bind(created_before.as_millis())
+    .execute(&mut *conn)
+    .await)?;
+    Ok(done.rows_affected())
+}
+
 async fn load_one(
     conn: &mut SqliteConnection,
     sql: &'static str,
@@ -156,8 +195,86 @@ impl SessionRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{NewSession, delete, get_by_token_hash, insert, list_for_user, slide, touch};
+    use super::{
+        NewSession, delete, delete_expired, delete_for_user, delete_owned, get_by_token_hash,
+        insert, list_for_user, slide, touch,
+    };
     use crate::db::{Error, testing};
+    use ss_core::{Id, Timestamp};
+
+    fn session(id: Id, user_id: Id, token: &str, expires: Option<i64>) -> NewSession {
+        NewSession {
+            id,
+            user_id,
+            token_hash: token.into(),
+            device_name: "laptop".into(),
+            expires_at: expires.map(Timestamp::from_millis),
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_user_and_expired_deletes_touch_only_their_rows() {
+        let db = testing::pool().await;
+        let mut conn = db.write().await;
+        let ada = testing::user(&mut conn, 1).await;
+        let bob = testing::user(&mut conn, 2).await;
+        let now = Timestamp::now().as_millis();
+        insert(
+            &mut conn,
+            session(testing::id(10), ada.id, "a", Some(now + 1000)),
+        )
+        .await
+        .unwrap();
+        insert(
+            &mut conn,
+            session(testing::id(11), ada.id, "b", Some(now - 1)),
+        )
+        .await
+        .unwrap();
+        insert(&mut conn, session(testing::id(12), bob.id, "c", None))
+            .await
+            .unwrap();
+        assert!(
+            !delete_owned(&mut conn, testing::id(12), ada.id)
+                .await
+                .unwrap()
+        );
+        let cutoff = Timestamp::from_millis(now - 1_000_000);
+        assert_eq!(
+            delete_expired(&mut conn, Timestamp::from_millis(now), cutoff)
+                .await
+                .unwrap(),
+            1
+        );
+        let left: Vec<_> = list_for_user(&mut conn, ada.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(left, vec![testing::id(10)]);
+        // Created "now" is after the cutoff; a cutoff in the future takes it.
+        let later = Timestamp::from_millis(now + 10_000);
+        assert_eq!(
+            delete_expired(&mut conn, Timestamp::from_millis(now), later)
+                .await
+                .unwrap(),
+            2
+        );
+        insert(&mut conn, session(testing::id(13), ada.id, "d", None))
+            .await
+            .unwrap();
+        insert(&mut conn, session(testing::id(14), ada.id, "e", None))
+            .await
+            .unwrap();
+        assert!(
+            delete_owned(&mut conn, testing::id(13), ada.id)
+                .await
+                .unwrap()
+        );
+        assert_eq!(delete_for_user(&mut conn, ada.id).await.unwrap(), 1);
+        assert_eq!(delete_for_user(&mut conn, ada.id).await.unwrap(), 0);
+    }
 
     #[tokio::test]
     async fn insert_read_touch_and_delete() {
