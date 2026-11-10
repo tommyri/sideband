@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { deflateRawSync } from 'node:zlib'
 import { access, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -121,25 +122,37 @@ const crcTable = Array.from({ length: 256 }, (_, n) => {
 })
 const crc32 = (bytes) => { let c = 0xffffffff; for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
 
-// entries: [name, kind ('dir' | 'file' | 'link'), content or link target]
+// entries: [name, kind ('dir' | 'file' | 'link'), content or link target, options]
+// options: deflate, descriptor (bit 3 with a data descriptor, as ditto writes files),
+// size (declared uncompressed size), patch(local, central) to forge header fields.
 function zip(entries) {
   const locals = [], centrals = []
   let offset = 0
-  for (const [name, kind, content = ''] of entries) {
+  for (const [name, kind, content = '', options = {}] of entries) {
     const nameBytes = Buffer.from(name), data = Buffer.from(kind === 'dir' ? '' : content)
+    const stored = options.deflate ? deflateRawSync(data) : data
+    const method = options.deflate ? 8 : 0, flags = 0x800 | (options.descriptor ? 0x8 : 0)
+    const crc = crc32(data), size = options.size ?? data.length
     const mode = kind === 'dir' ? 0o40755 : kind === 'link' ? 0o120755 : 0o100644
     const local = Buffer.alloc(30)
-    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6)
-    local.writeUInt32LE(crc32(data), 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22)
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(flags, 6); local.writeUInt16LE(method, 8)
+    if (!options.descriptor) { local.writeUInt32LE(crc, 14); local.writeUInt32LE(stored.length, 18); local.writeUInt32LE(size, 22) }
     local.writeUInt16LE(nameBytes.length, 26)
     const central = Buffer.alloc(46)
-    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(0x0314, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x800, 8)
-    central.writeUInt32LE(crc32(data), 16); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24)
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(0x0314, 4); central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(flags, 8); central.writeUInt16LE(method, 10)
+    central.writeUInt32LE(crc, 16); central.writeUInt32LE(stored.length, 20); central.writeUInt32LE(size, 24)
     central.writeUInt16LE(nameBytes.length, 28); central.writeUInt32LE(((mode << 16) | (kind === 'dir' ? 0x10 : 0)) >>> 0, 38)
     central.writeUInt32LE(offset, 42)
-    locals.push(local, nameBytes, data)
+    const descriptor = Buffer.alloc(options.descriptor ? 16 : 0)
+    if (options.descriptor) {
+      descriptor.writeUInt32LE(0x08074b50, 0); descriptor.writeUInt32LE(crc, 4)
+      descriptor.writeUInt32LE(stored.length, 8); descriptor.writeUInt32LE(size, 12)
+    }
+    options.patch?.(local, central, descriptor)
+    locals.push(local, nameBytes, stored, descriptor)
     centrals.push(central, nameBytes)
-    offset += local.length + nameBytes.length + data.length
+    offset += local.length + nameBytes.length + stored.length + descriptor.length
   }
   const directory = Buffer.concat(centrals), end = Buffer.alloc(22)
   end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
@@ -149,13 +162,14 @@ function zip(entries) {
 
 const appBundle = [
   ['Sideband.app/', 'dir'], ['Sideband.app/Contents/', 'dir'], ['Sideband.app/Contents/MacOS/', 'dir'],
-  ['Sideband.app/Contents/MacOS/sideband', 'file', 'binary'],
+  ['Sideband.app/Contents/MacOS/sideband', 'file', 'binary', { deflate: true, descriptor: true }],
   ['Sideband.app/Contents/Frameworks/', 'dir'], ['Sideband.app/Contents/Frameworks/Kit.framework/', 'dir'],
   ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/', 'dir'], ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/A/', 'dir'],
   ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/A/Kit', 'file', 'lib'],
   ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/Current', 'link', 'A'],
   ['Sideband.app/Contents/Frameworks/Kit.framework/Kit', 'link', 'Versions/Current/Kit'],
-  ['__MACOSX/Sideband.app/Contents/MacOS/._sideband', 'file', 'appledouble'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Resources', 'link', 'Versions/Current/Resources'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/A/Resources/', 'dir'],
 ]
 
 test('the app ZIP is listed and accepted only as one .app with internal symlinks', () => {
@@ -181,6 +195,36 @@ test('the app ZIP is listed and accepted only as one .app with internal symlinks
   assert.throws(() => checkAppArchive(listZip(zip([['Sideband.app', 'link', '/Applications/Sideband.app'], ['Sideband.app/Contents/x', 'file', 'x']]))), /must be a directory/)
   assert.throws(() => checkAppArchive(listZip(zip([['Sideband.app/Contents/', 'dir']]))), /top-level/)
   assert.throws(() => listZip(Buffer.from('not a zip')), /ZIP/)
+})
+
+test('ZIP sidecars and link chains cannot reach outside the bundle', () => {
+  const refuse = (extra, pattern) => assert.throws(() => checkAppArchive(listZip(zip([...appBundle, ...extra]))), pattern)
+  // ditto would apply AppleDouble data through Versions/Current; sidecars are never produced.
+  refuse([['__MACOSX/Sideband.app/Contents/Frameworks/Kit.framework/Versions/Current/._x', 'file', 'appledouble']], /__MACOSX/)
+  refuse([['__MACOSX/', 'dir']], /__MACOSX/)
+  // Each link is inside on its own; the filesystem follows `up` before the trailing `..`.
+  refuse([['Sideband.app/Contents/d1/', 'dir'], ['Sideband.app/Contents/d1/d2/', 'dir'],
+    ['Sideband.app/Contents/d1/d2/up', 'link', '../..'], ['Sideband.app/Contents/x', 'link', 'd1/d2/up/../..']], /outside the bundle/)
+  refuse([['Sideband.app/y', 'link', 'Contents/../..'], ['Sideband.app/Contents/z', 'link', '../y/Contents']], /outside the bundle/)
+  refuse([['Sideband.app/Contents/a', 'link', 'b'], ['Sideband.app/Contents/b', 'link', 'a']], /loop/)
+})
+
+test('local headers must agree with the central directory, and link data is bounded', () => {
+  const link = (options) => [...appBundle, ['Sideband.app/Contents/l', 'link', 'MacOS/sideband', options]]
+  assert.equal(listZip(zip(link())).at(-1).target, 'MacOS/sideband')
+  const refuse = (entries, pattern) => assert.throws(() => listZip(zip(entries)), pattern)
+  refuse(link({ patch: (local) => local.writeUInt16LE(8, 8) }), /method/)
+  refuse(link({ patch: (local) => local.writeUInt32LE(99, 22) }), /size/)
+  refuse(link({ patch: (local) => local.writeUInt32LE(99, 18) }), /size/)
+  refuse(link({ patch: (local) => local.writeUInt32LE(1, 14) }), /CRC/)
+  refuse(link({ patch: (local) => local.writeUInt16LE(0x802, 6) }), /flags/)
+  refuse(link({ patch: (local, central) => { local.writeUInt32LE(1, 14); central.writeUInt32LE(1, 16) } }), /CRC/)
+  refuse(link({ descriptor: true }), /data descriptor/)
+  refuse(link({ patch: (local, central) => { local.writeUInt16LE(12, 8); central.writeUInt16LE(12, 10) } }), /compression/)
+  // A file's data descriptor must agree too.
+  refuse([...appBundle, ['Sideband.app/Contents/f', 'file', 'abc', { deflate: true, descriptor: true, patch: (l, c, d) => d.writeUInt32LE(7, 12) }]], /descriptor/)
+  refuse([['Sideband.app/', 'dir'], ['Sideband.app/l', 'link', 'x'.repeat(5000), { deflate: true }]], /link target/i)
+  refuse([['Sideband.app/', 'dir'], ['Sideband.app/l', 'link', 'x'.repeat(100000), { deflate: true, size: 10 }]], /link target/i)
 })
 
 test('a crafted ZIP is refused before anything is extracted', async () => {
@@ -225,9 +269,12 @@ test('a real ditto ZIP of a bundle with framework symlinks passes', { skip: proc
   await writeFile(path.join(kit, 'Versions', 'A', 'Kit'), 'lib')
   await symlink('A', path.join(kit, 'Versions', 'Current'))
   await symlink('Versions/Current/Kit', path.join(kit, 'Kit'))
+  // With --sequesterRsrc this extended attribute would produce __MACOSX sidecars.
+  execFileSync('xattr', ['-w', 'com.example.detritus', 'x', path.join(kit, 'Versions', 'A', 'Kit')])
   const archive = path.join(root, 'app.zip')
-  execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', path.join(root, 'Sideband.app'), archive])
+  execFileSync('/usr/bin/ditto', ['-c', '-k', '--norsrc', '--noextattr', '--noqtn', '--noacl', '--keepParent', path.join(root, 'Sideband.app'), archive])
   const entries = listZip(await readFile(archive))
+  assert(!entries.some((entry) => entry.name.startsWith('__MACOSX')))
   assert.equal(checkAppArchive(entries), 'Sideband.app')
   const listed = execFileSync('/usr/bin/zipinfo', ['-1', archive], { encoding: 'utf8' }).trim().split('\n').sort()
   assert.deepEqual(entries.map((entry) => entry.name).sort(), listed)

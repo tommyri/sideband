@@ -179,6 +179,8 @@ export async function writeManifest(output, identity, collected, updater) {
   return info
 }
 
+const dittoPlain = ['--norsrc', '--noextattr', '--noqtn', '--noacl']
+
 const capture = async (command, args, options = {}) =>
   execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options })
 const tool = (name) => `/usr/bin/${name}`
@@ -228,8 +230,24 @@ async function readBuildManifest(directory) {
   return info
 }
 
-// Reads a ZIP's central directory without extracting anything. ZIP64, multi-disk,
-// encrypted entries and non-UTF-8 names are refused rather than interpreted.
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  return c >>> 0
+})
+function crc32(bytes) {
+  let c = 0xffffffff
+  for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+const maxLinkTarget = 4096
+
+// Reads a ZIP's central directory without extracting anything. Every entry's local
+// header (and data descriptor, if any) must agree with the central directory, so an
+// extractor reading either sees the same archive. ZIP64, multi-disk, encrypted,
+// overlapping and non-UTF-8 entries are refused, as are methods other than store and
+// deflate. Link targets are read with a size bound and their CRC checked.
 export function listZip(bytes) {
   const minimum = Math.max(0, bytes.length - 0xffff - 22)
   let end = -1
@@ -239,68 +257,125 @@ export function listZip(bytes) {
   if (bytes.readUInt16LE(end + 4) || bytes.readUInt16LE(end + 6) || count === 0xffff || start === 0xffffffff || start + size > end) {
     throw new Error('Unsupported ZIP layout (multi-disk or ZIP64)')
   }
-  const entries = []
+  const entries = [], ranges = []
   let offset = start
   for (let n = 0; n < count; n++) {
     if (offset + 46 > end || bytes.readUInt32LE(offset) !== 0x02014b50) throw new Error('Corrupt ZIP central directory')
     const madeBy = bytes.readUInt16LE(offset + 4) >> 8, flags = bytes.readUInt16LE(offset + 8), method = bytes.readUInt16LE(offset + 10)
-    const compressed = bytes.readUInt32LE(offset + 20), nameLength = bytes.readUInt16LE(offset + 28)
-    const extraLength = bytes.readUInt16LE(offset + 30), commentLength = bytes.readUInt16LE(offset + 32)
-    const external = bytes.readUInt32LE(offset + 38), local = bytes.readUInt32LE(offset + 42)
+    const crc = bytes.readUInt32LE(offset + 16), compressed = bytes.readUInt32LE(offset + 20), uncompressed = bytes.readUInt32LE(offset + 24)
+    const nameLength = bytes.readUInt16LE(offset + 28), extraLength = bytes.readUInt16LE(offset + 30)
+    const commentLength = bytes.readUInt16LE(offset + 32), external = bytes.readUInt32LE(offset + 38), local = bytes.readUInt32LE(offset + 42)
     const raw = bytes.subarray(offset + 46, offset + 46 + nameLength)
+    const name = raw.toString('utf8'), label = JSON.stringify(name)
     if (flags & 0x1) throw new Error('Encrypted ZIP entries are not allowed')
     if (!(flags & 0x800) && raw.some((byte) => byte > 0x7f)) throw new Error('ZIP entry names must be UTF-8')
-    if (compressed === 0xffffffff || local === 0xffffffff || local + 30 > start) throw new Error('Unsupported ZIP layout (ZIP64)')
-    const name = raw.toString('utf8')
-    // Extractors may use the local header name; it must agree with the central one.
-    const localName = local + 30, localLength = bytes.readUInt16LE(local + 26)
-    if (bytes.readUInt32LE(local) !== 0x04034b50 || !bytes.subarray(localName, localName + localLength).equals(raw)) {
-      throw new Error(`ZIP local header does not match the directory for ${JSON.stringify(name)}`)
+    if (method !== 0 && method !== 8) throw new Error(`Unsupported compression method ${method} for ${label}`)
+    if (compressed === 0xffffffff || uncompressed === 0xffffffff || local === 0xffffffff || local + 30 > start) {
+      throw new Error('Unsupported ZIP layout (ZIP64)')
     }
+    if (method === 0 && compressed !== uncompressed) throw new Error(`Stored entry ${label} has two different sizes`)
+    if (bytes.readUInt32LE(local) !== 0x04034b50) throw new Error(`Missing local header for ${label}`)
+    const localLength = bytes.readUInt16LE(local + 26), localName = local + 30
+    if (!bytes.subarray(localName, localName + localLength).equals(raw)) throw new Error(`ZIP local header name differs for ${label}`)
+    if (bytes.readUInt16LE(local + 6) !== flags) throw new Error(`ZIP local header flags differ for ${label}`)
+    if (bytes.readUInt16LE(local + 8) !== method) throw new Error(`ZIP local header compression method differs for ${label}`)
+    const dataStart = localName + localLength + bytes.readUInt16LE(local + 28)
+    let dataEnd = dataStart + compressed
     const unixMode = madeBy === 3 ? external >>> 16 : 0
     const kind = unixMode & 0o170000
     const type = kind === 0o120000 ? 'symlink'
       : kind === 0o040000 || (!kind && name.endsWith('/')) ? 'dir'
         : kind === 0o100000 || !kind ? 'file' : 'other'
+    const sized = [['CRC', 14, crc], ['compressed size', 18, compressed], ['uncompressed size', 22, uncompressed]]
+    if (flags & 0x8) {
+      // ditto writes files this way: zero sizes locally, the real ones after the data.
+      if (type === 'symlink') throw new Error(`Link ${label} uses a data descriptor`)
+      for (const [field, at, value] of sized) {
+        const seen = bytes.readUInt32LE(local + at)
+        if (seen !== 0 && seen !== value) throw new Error(`ZIP local header ${field} differs for ${label}`)
+      }
+      if (dataEnd + 12 > start) throw new Error(`Truncated data descriptor for ${label}`)
+      const at = bytes.readUInt32LE(dataEnd) === 0x08074b50 ? dataEnd + 4 : dataEnd
+      if (bytes.readUInt32LE(at) !== crc || bytes.readUInt32LE(at + 4) !== compressed || bytes.readUInt32LE(at + 8) !== uncompressed) {
+        throw new Error(`ZIP data descriptor disagrees with the directory for ${label}`)
+      }
+      dataEnd = at + 12
+    } else {
+      for (const [field, at, value] of sized) {
+        if (bytes.readUInt32LE(local + at) !== value) throw new Error(`ZIP local header ${field} differs for ${label}`)
+      }
+    }
+    if (dataEnd > start) throw new Error(`ZIP entry ${label} runs into the central directory`)
+    ranges.push([local, dataEnd, label])
     const entry = { name, type, mode: unixMode & 0o7777 }
     if (type === 'symlink') {
-      if (method !== 0 && method !== 8) throw new Error('Unsupported ZIP compression')
-      const dataStart = localName + localLength + bytes.readUInt16LE(local + 28)
-      const data = bytes.subarray(dataStart, dataStart + compressed)
-      entry.target = (method === 8 ? inflateRawSync(data) : data).toString('utf8')
+      if (uncompressed > maxLinkTarget) throw new Error(`Link target for ${label} is too long`)
+      const data = bytes.subarray(dataStart, dataEnd)
+      let target
+      try { target = method === 8 ? inflateRawSync(data, { maxOutputLength: maxLinkTarget }) : data } catch {
+        throw new Error(`Link target for ${label} does not inflate within ${maxLinkTarget} bytes`)
+      }
+      if (target.length !== uncompressed) throw new Error(`Link target for ${label} is not its declared size`)
+      if (crc32(target) !== crc) throw new Error(`Link target for ${label} fails its CRC check`)
+      entry.target = target.toString('utf8')
     }
     entries.push(entry)
     offset += 46 + nameLength + extraLength + commentLength
   }
+  ranges.sort((left, right) => left[0] - right[0])
+  for (let i = 1; i < ranges.length; i++) if (ranges[i][0] < ranges[i - 1][1]) throw new Error(`ZIP entries ${ranges[i - 1][2]} and ${ranges[i][2]} overlap`)
   return entries
 }
 
 const archiveKey = (parts) => parts.join('/').normalize('NFD').toLowerCase()
+const maxLinkHops = 40
+
+// Follows a link through the links already in the archive, component by component as
+// the filesystem would, and returns the path it reaches, or null if that leaves the
+// bundle (parts[0]).
+function resolveLink(parts, links) {
+  const current = parts.slice(0, -1), queue = links.get(archiveKey(parts)).split('/')
+  let hops = 0
+  while (queue.length) {
+    const component = queue.shift()
+    if (component === '' || component === '.') continue
+    if (component === '..') {
+      if (current.length <= 1) return null
+      current.pop()
+      continue
+    }
+    current.push(component)
+    const target = links.get(archiveKey(current))
+    if (target !== undefined) {
+      if (++hops > maxLinkHops) throw new Error(`Link loop at ${JSON.stringify(parts.join('/'))}`)
+      current.pop()
+      queue.unshift(...target.split('/'))
+    }
+  }
+  return current
+}
 
 // Refuses anything an extractor could write outside one top-level <Name>.app: absolute
-// paths, `..`, links leaving the bundle, and entries written through any link (keys
-// are case- and normalization-folded, as on APFS). __MACOSX AppleDouble files from
-// `ditto --sequesterRsrc` are allowed as plain files. Returns the app's name.
+// paths, `..`, links that are absolute or, followed through other links, leave the
+// bundle, and entries written through any link (keys are case- and
+// normalization-folded, as on APFS). __MACOSX sidecars are refused: the build zips with
+// --norsrc --noextattr, and ditto would apply them through links. Returns the app's name.
 export function checkAppArchive(entries) {
   const refuse = (entry, reason) => { throw new Error(`Refusing app ZIP entry ${JSON.stringify(entry.name)}: ${reason}`) }
   let app
-  const seen = new Set(), links = new Set(), parsed = []
+  const seen = new Set(), links = new Map(), parsed = []
   for (const entry of entries) {
     if (!entry.name || /[\u0000-\u001f\u007f\\]/.test(entry.name)) refuse(entry, 'control character or backslash in the name')
     if (entry.name.startsWith('/')) refuse(entry, 'absolute path')
     const parts = entry.name.replace(/\/$/, '').split('/')
     if (parts.some((part) => part === '' || part === '.' || part === '..')) refuse(entry, 'empty, . or .. path component')
+    if (parts[0].normalize('NFD').toLowerCase() === '__macosx') refuse(entry, '__MACOSX sidecars are not accepted')
     if (entry.type === 'other') refuse(entry, 'not a file, directory or symlink')
     if (entry.mode & 0o7000) refuse(entry, 'setuid, setgid or sticky bit')
-    const sidecar = parts[0] === '__MACOSX'
-    const inner = sidecar ? parts.slice(1) : parts
-    if (sidecar && (entry.type === 'symlink' || (entry.type === 'file' && !parts.at(-1).startsWith('._')))) refuse(entry, 'unexpected __MACOSX entry')
-    if (inner.length) {
-      if (!/^[^/]+\.app$/.test(inner[0])) refuse(entry, 'everything must be inside one <Name>.app/')
-      if (app && inner[0] !== app) refuse(entry, 'more than one top-level .app')
-      app ??= inner[0]
-      if (!sidecar && inner.length === 1 && entry.type !== 'dir') refuse(entry, 'the top-level .app must be a directory')
-    }
+    if (!/^[^/]+\.app$/.test(parts[0])) refuse(entry, 'everything must be inside one <Name>.app/')
+    if (app && parts[0] !== app) refuse(entry, 'more than one top-level .app')
+    app ??= parts[0]
+    if (parts.length === 1 && entry.type !== 'dir') refuse(entry, 'the top-level .app must be a directory')
     const key = archiveKey(parts)
     if (seen.has(key)) refuse(entry, 'the same path appears twice')
     seen.add(key)
@@ -308,14 +383,13 @@ export function checkAppArchive(entries) {
       const target = entry.target ?? ''
       if (!target || target.includes('\u0000')) refuse(entry, 'empty symlink target')
       if (target.startsWith('/')) refuse(entry, `absolute symlink target ${JSON.stringify(target)}`)
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(parts.join('/')), target))
-      if (resolved !== app && !resolved.startsWith(app + '/')) refuse(entry, `symlink target ${JSON.stringify(target)} is outside the bundle`)
-      links.add(key)
+      links.set(key, target)
     }
     parsed.push({ entry, parts })
   }
   for (const { entry, parts } of parsed) {
     for (let i = 1; i < parts.length; i++) if (links.has(archiveKey(parts.slice(0, i)))) refuse(entry, 'written through a symlink')
+    if (entry.type === 'symlink' && !resolveLink(parts, links)) refuse(entry, `symlink target ${JSON.stringify(entry.target)} is outside the bundle`)
   }
   if (!app || !parsed.some(({ entry, parts }) => parts.length === 1 && entry.type === 'dir')) {
     throw new Error('The app ZIP needs a top-level <Name>.app/ directory entry')
@@ -326,7 +400,7 @@ export function checkAppArchive(entries) {
 // After extraction: the extractor's view can differ from the listing, so check the
 // tree itself. The app must be a real directory and every link must resolve inside it.
 export async function checkExtractedApp(directory, appName) {
-  const top = (await readdir(directory)).filter((name) => name !== '__MACOSX')
+  const top = await readdir(directory)
   if (top.length !== 1 || top[0] !== appName) throw new Error(`Extraction must produce only ${appName}`)
   const app = path.join(directory, appName)
   if (!(await lstat(app)).isDirectory()) throw new Error(`${appName} is not a real directory`)
@@ -378,7 +452,7 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
   const staging = await mkdtemp(path.join(scratch, 'sideband-dmg-'))
   const secrets = await mkdtemp(path.join(scratch, 'sideband-notary-'))
   try {
-    await run(tool('ditto'), ['-x', '-k', zip, unpacked])
+    await run(tool('ditto'), ['-x', '-k', ...dittoPlain, zip, unpacked])
     const app = await checkExtractedApp(unpacked, appName)
     // Tauri clears extended attributes before signing; do the same for the unpacked copy.
     await run(tool('xattr'), ['-cr', app])
@@ -387,7 +461,7 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
       '--keychain', keychain, '--sign', identity, app])
     await run(tool('codesign'), ['--verify', '--deep', '--strict', '--verbose=2', app])
     await rm(zip)
-    await run(tool('ditto'), ['-c', '-k', '--sequesterRsrc', '--keepParent', app, zip])
+    await run(tool('ditto'), ['-c', '-k', ...dittoPlain, '--keepParent', app, zip])
     if (archive) {
       await rm(archive)
       await run(tool('tar'), archiveArgs(app, archive), { env: { PATH: '/usr/bin:/bin', COPYFILE_DISABLE: '1' } })
@@ -461,9 +535,10 @@ async function main() {
   const collected = []
   for (const bundle of options.bundles) {
     if (bundle === 'app') {
-      // ditto preserves app symlinks, permissions and extended attributes in the zip.
+      // ditto keeps symlinks and permissions. No resource forks, extended attributes,
+      // quarantine or ACLs: no __MACOSX sidecars, which the signing job refuses.
       const name = config.productName + '-test-' + identity.version + '.app.zip'
-      run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, path.join(output, name)])
+      run('/usr/bin/ditto', ['-c', '-k', ...dittoPlain, '--keepParent', app, path.join(output, name)])
       collected.push(name)
       continue
     }

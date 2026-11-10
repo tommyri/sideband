@@ -298,13 +298,20 @@ builds on a fresh macOS runner and runs nothing the build produced:
    jobs only: the same build job wrote both);
 4. `build-test-desktop.mjs sign-macos`, calling only `/usr/bin` tools:
    - before unpacking anything, reads the app ZIP's directory itself and
-     compares it with `zipinfo -1`. It refuses absolute paths, `..`, links
-     with an absolute target or one leaving the bundle, any entry written
-     through a link, duplicate paths (case-folded), special files, setuid
-     bits, and anything outside a single top-level `<Name>.app/` directory.
-     Relative links inside the bundle (framework `Versions/Current`) are
-     allowed;
-   - extracts with `ditto` into a fresh private temporary directory, apart
+     compares it with `zipinfo -1`. Each entry's local header, and data
+     descriptor if any, must agree with the directory (method, flags, CRC,
+     sizes); only store and deflate are accepted, and entries may not overlap.
+     Link targets are read with a 4 KiB bound and checked against their CRC.
+     It refuses absolute paths, `..`, absolute link targets, links that leave
+     the bundle when followed component by component through the other links
+     (as the filesystem would, with a loop limit), any entry written through a
+     link, duplicate paths (case-folded), special files, setuid bits,
+     `__MACOSX` sidecars, and anything outside a single top-level
+     `<Name>.app/` directory. Relative links inside the bundle (framework
+     `Versions/Current`) are allowed;
+   - extracts with `ditto --norsrc --noextattr --noqtn --noacl`, so no
+     resource forks or attributes are applied, into a fresh private temporary
+     directory, apart
      from the keychain's and outside the checkout. It checks the result again:
      the `.app` must be a real directory and every link must resolve inside
      it. Extended attributes are cleared, and the directory is deleted

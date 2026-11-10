@@ -102,10 +102,16 @@ What changed:
   so `publish` signs the updater payload for, checksums, attests and uploads the
   signed packages. The app ZIP is the only thing that job unpacks. Before
   extraction, `sign-macos` reads the ZIP directory itself and compares it with
-  `zipinfo -1`. It refuses absolute paths, `..`, links that are absolute or leave
-  the bundle, entries written through any link, duplicates (case-folded),
-  special files, setuid bits, and anything outside one top-level
-  `<Name>.app/`. It extracts into a fresh `mkdtemp` directory, apart from the
+  `zipinfo -1`. Local headers and data descriptors must match the directory,
+  only store and deflate are accepted, entries may not overlap, and link targets
+  are bounded (4 KiB) and CRC-checked. It refuses absolute paths, `..`, links
+  that are absolute or leave the bundle when resolved through the other links
+  component by component, entries written through any link, duplicates
+  (case-folded), special files, setuid bits, every `__MACOSX` entry, and
+  anything outside one top-level `<Name>.app/`. The build now zips with
+  `ditto --norsrc --noextattr --noqtn --noacl`, which writes no sidecars;
+  `--sequesterRsrc` wrote one for nearly every entry. The signing job extracts
+  with the same flags into a fresh `mkdtemp` directory, apart from the
   keychain's own directory and the checkout, then checks that the `.app` is a
   real directory and that every link resolves inside it, and deletes the
   directory either way. Nothing is mounted. Apple ID and app-password notarization was removed rather than
@@ -138,13 +144,23 @@ What changed:
   small fixes to `deploy/README.md` and `docs/desktop-releases.md`, which
   described the old server flow.
 
-Validated here: all script tests (`node --test scripts/*.test.mjs`, 29 pass).
+Validated here: all script tests (`node --test scripts/*.test.mjs`, 31 pass).
+Also refused: a `__MACOSX` sidecar addressed through a framework link, a
+two-link chain that escapes although each link is inside on its own, a link
+loop, local/central mismatches in method, flags, CRC and sizes, a link using a
+data descriptor, an unsupported method, a file whose data descriptor disagrees,
+and deflated link targets over 4 KiB (declared or actual).
 They include crafted ZIPs, built by a small writer in the test, that are refused
 before anything is extracted: an absolute path, `../escape`, links to `/` and
 `$HOME` followed by a file written through them, a link leaving the bundle, and
 a top-level `.app` that is itself a link. They also include post-extraction
 checks (outside, dangling, symlinked app, stray files), and a real `ditto` ZIP
-with framework links that passes and matches `zipinfo -1`.
+with framework links (made with the build's flags, with an extended attribute
+set) that passes, has no `__MACOSX` entries and matches `zipinfo -1`.
+Not handled yet: nested code. `sign-macos` re-signs only the outer bundle,
+which is enough for the current app (one executable, no frameworks or
+sidecars). If frameworks or `externalBin` sidecars are added, they must be
+signed inside-out with the Developer ID first, or notarization fails.
 `sign-macos` ran for real on this Mac with an ad-hoc identity and a compiled
 app. The app came out signed with the hardened runtime and the audio-input
 entitlement, the DMG holds the app and an Applications link, and the
