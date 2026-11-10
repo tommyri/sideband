@@ -144,10 +144,22 @@ The `publish` job then, on a fresh runner:
    It runs `tauri signer sign --app-version X.Y.Z` per payload with an
    environment of just `PATH` and the key, then verifies each signature against
    `TAURI_UPDATER_PUBLIC_KEY`;
-3. **Verify and name release assets** checks every checksum, checks each
+3. **Verify and name release assets** checks every file against its
+   `build-info.json` checksum (corruption between jobs; see below), checks each
    signature against the public key and the release version again, and writes the
    per-platform `SHA256SUMS` and feeds;
 4. attests every asset with `actions/attest`, then uploads.
+
+**What the separate signing jobs do and do not protect.** They keep the keys
+away from code that runs during the build: build scripts, proc macros and
+dependency install scripts. They do not check what the build produced.
+`build-info.json` and its checksums are written by the same build job as the
+packages, so comparing against them catches corruption between jobs, not
+tampering, and the signing jobs sign whatever the build produced. The trust
+boundary is the build's inputs: a reviewed commit on `main`, the locked
+`Cargo.lock` and `pnpm-lock.yaml` dependency graph, and the pinned actions and
+toolchains. A compromised dependency can still ship code inside a signed
+release. It cannot take the signing keys with it.
 
 A private key that does not match the configured public key stops the run before
 anything is uploaded.
@@ -281,12 +293,27 @@ builds on a fresh macOS runner and runs nothing the build produced:
    `APPLE_SIGNING_IDENTITY`. This happens before any build output is
    downloaded; the `.p12` password is on `security import`'s command line, the
    one secret that still is, with nothing from the build on the runner yet;
-3. downloads the ad-hoc macOS packages and checks them against `build-info.json`;
+3. downloads the ad-hoc macOS packages into their own directory and checks
+   that each is a regular file matching `build-info.json` (corruption between
+   jobs only: the same build job wrote both);
 4. `build-test-desktop.mjs sign-macos`, calling only `/usr/bin` tools:
-   re-signs the app from the ZIP with the Developer ID, hardened runtime and
+   - before unpacking anything, reads the app ZIP's directory itself and
+     compares it with `zipinfo -1`. It refuses absolute paths, `..`, links
+     with an absolute target or one leaving the bundle, any entry written
+     through a link, duplicate paths (case-folded), special files, setuid
+     bits, and anything outside a single top-level `<Name>.app/` directory.
+     Relative links inside the bundle (framework `Versions/Current`) are
+     allowed;
+   - extracts with `ditto` into a fresh private temporary directory, apart
+     from the keychain's and outside the checkout. It checks the result again:
+     the `.app` must be a real directory and every link must resolve inside
+     it. Extended attributes are cleared, and the directory is deleted
+     afterwards, on failure too;
+   - re-signs the app with the Developer ID, hardened runtime and
    `apps/desktop/src-tauri/Entitlements.plist` from the checkout; rebuilds the
-   app ZIP, the updater archive and the DMG from that app; signs the DMG;
-   writes the API key to a `0600` file in a private temporary directory,
+   app ZIP, the updater archive and the DMG from that app (nothing from the
+   build is mounted; the build's DMG and updater archive are discarded); signs
+   the DMG; writes the API key to a `0600` file in another private directory,
    submits the DMG with `xcrun notarytool submit --key --key-id --issuer --wait`,
    deletes the key, and staples the DMG; rewrites `build-info.json` and
    `SHA256SUMS`;

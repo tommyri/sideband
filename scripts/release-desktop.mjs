@@ -88,6 +88,8 @@ export async function signUpdaters({ input, version, env, cli, run = runChecked 
       if (!artifact || path.basename(file) !== file) throw new Error('Updater payload is not a listed artifact')
       const payload = path.join(directory, file)
       const bytes = await readFile(payload)
+      // The build job wrote both the payload and build-info.json: this catches
+      // corruption between jobs, not tampering. Whatever the build produced is signed.
       if (bytes.length !== artifact.bytes || digest(bytes) !== artifact.sha256) throw new Error('Updater payload checksum mismatch')
       await run(process.execPath, [cli, 'signer', 'sign', '--app-version', version, payload], { env: signerEnv })
       verifyUpdaterSignature({ bytes, signature: await readFile(payload + '.sig', 'utf8'), publicKey: env.TAURI_UPDATER_PUBLIC_KEY, version })

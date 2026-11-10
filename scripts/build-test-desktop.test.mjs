@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  assertNoSigningSecrets, buildEnvironment, createUpdaterArchive, makeIdentity, notarizationKey, parseOptions,
-  parseUpdaterPublicKey, signMacos, updateConfiguration, updaterPayloads, writeManifest,
+  assertNoSigningSecrets, buildEnvironment, checkAppArchive, checkExtractedApp, createUpdaterArchive, listZip, makeIdentity,
+  notarizationKey, parseOptions, parseUpdaterPublicKey, signMacos, updateConfiguration, updaterPayloads, writeManifest,
 } from './build-test-desktop.mjs'
 
 // A real `tauri signer generate` public key (disposable; its private key was discarded).
@@ -113,6 +113,127 @@ test('macOS updater archive has the app as its only root, without AppleDouble fi
   assert(entries.includes('Sideband.app/Contents/link'))
 })
 
+// Minimal stored-entry ZIP writer, so crafted archives need no external tool.
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  return c >>> 0
+})
+const crc32 = (bytes) => { let c = 0xffffffff; for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
+
+// entries: [name, kind ('dir' | 'file' | 'link'), content or link target]
+function zip(entries) {
+  const locals = [], centrals = []
+  let offset = 0
+  for (const [name, kind, content = ''] of entries) {
+    const nameBytes = Buffer.from(name), data = Buffer.from(kind === 'dir' ? '' : content)
+    const mode = kind === 'dir' ? 0o40755 : kind === 'link' ? 0o120755 : 0o100644
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6)
+    local.writeUInt32LE(crc32(data), 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(nameBytes.length, 26)
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(0x0314, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x800, 8)
+    central.writeUInt32LE(crc32(data), 16); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24)
+    central.writeUInt16LE(nameBytes.length, 28); central.writeUInt32LE(((mode << 16) | (kind === 'dir' ? 0x10 : 0)) >>> 0, 38)
+    central.writeUInt32LE(offset, 42)
+    locals.push(local, nameBytes, data)
+    centrals.push(central, nameBytes)
+    offset += local.length + nameBytes.length + data.length
+  }
+  const directory = Buffer.concat(centrals), end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, directory, end])
+}
+
+const appBundle = [
+  ['Sideband.app/', 'dir'], ['Sideband.app/Contents/', 'dir'], ['Sideband.app/Contents/MacOS/', 'dir'],
+  ['Sideband.app/Contents/MacOS/sideband', 'file', 'binary'],
+  ['Sideband.app/Contents/Frameworks/', 'dir'], ['Sideband.app/Contents/Frameworks/Kit.framework/', 'dir'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/', 'dir'], ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/A/', 'dir'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/A/Kit', 'file', 'lib'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Versions/Current', 'link', 'A'],
+  ['Sideband.app/Contents/Frameworks/Kit.framework/Kit', 'link', 'Versions/Current/Kit'],
+  ['__MACOSX/Sideband.app/Contents/MacOS/._sideband', 'file', 'appledouble'],
+]
+
+test('the app ZIP is listed and accepted only as one .app with internal symlinks', () => {
+  const entries = listZip(zip(appBundle))
+  assert.deepEqual(entries.find((entry) => entry.name.endsWith('Versions/Current')), { name: 'Sideband.app/Contents/Frameworks/Kit.framework/Versions/Current', type: 'symlink', mode: 0o755, target: 'A' })
+  assert.equal(checkAppArchive(entries), 'Sideband.app')
+  const refuse = (extra, pattern) => assert.throws(() => checkAppArchive(listZip(zip([...appBundle, ...extra]))), pattern)
+  refuse([['/etc/passwd', 'file', 'x']], /absolute/)
+  refuse([['Sideband.app/../escape', 'file', 'x']], /\.\./)
+  refuse([['../escape', 'file', 'x']], /\.\./)
+  // A symlink to / or $HOME followed by a file written through it.
+  refuse([['Sideband.app/Contents/root', 'link', '/'], ['Sideband.app/Contents/root/tmp/owned', 'file', 'x']], /absolute/)
+  refuse([['Sideband.app/Contents/home', 'link', process.env.HOME ?? '/Users/runner'], ['Sideband.app/Contents/home/.zshrc', 'file', 'x']], /absolute/)
+  refuse([['Sideband.app/Contents/up', 'link', '../../..']], /outside the bundle/)
+  refuse([['Sideband.app/Contents/sibling', 'link', '../../Other.app']], /outside the bundle/)
+  // Even an internal link may not be written through.
+  refuse([['Sideband.app/Contents/Frameworks/Kit.framework/Versions/Current/extra', 'file', 'x']], /through a symlink/)
+  refuse([['Sideband.app/Contents/frameworks/Kit.framework/versions/current/extra', 'file', 'x']], /through a symlink/)
+  refuse([['Other.app/', 'dir']], /one top-level/)
+  refuse([['README', 'file', 'x']], /\.app/)
+  refuse([['Sideband.app/Contents/MacOS/sideband', 'file', 'again']], /twice/)
+  refuse([['Sideband.app/Contents/odd\nname', 'file', 'x']], /control/)
+  assert.throws(() => checkAppArchive(listZip(zip([['Sideband.app', 'link', '/Applications/Sideband.app'], ['Sideband.app/Contents/x', 'file', 'x']]))), /must be a directory/)
+  assert.throws(() => checkAppArchive(listZip(zip([['Sideband.app/Contents/', 'dir']]))), /top-level/)
+  assert.throws(() => listZip(Buffer.from('not a zip')), /ZIP/)
+})
+
+test('a crafted ZIP is refused before anything is extracted', async () => {
+  const directory = await macosArtifacts([['Sideband.app/Contents/root', 'link', '/'], ['Sideband.app/Contents/root/tmp/owned', 'file', 'x']])
+  const scratch = await mkdtemp(path.join(tmpdir(), 'sideband-scratch-test-'))
+  const calls = []
+  await assert.rejects(signMacos(directory, { APPLE_SIGNING_IDENTITY: 'X', APPLE_KEYCHAIN: '/tmp/k' }, { run: fakeTools(calls), entitlements: '/e', scratch }), /absolute/)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(await readdir(scratch), [])
+})
+
+test('the extracted app must be a real directory whose symlinks stay inside it', async () => {
+  const make = async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'sideband-extract-test-'))
+    const kit = path.join(root, 'Sideband.app', 'Contents', 'Frameworks', 'Kit.framework')
+    await mkdir(path.join(kit, 'Versions', 'A'), { recursive: true })
+    await writeFile(path.join(kit, 'Versions', 'A', 'Kit'), 'lib')
+    await symlink('A', path.join(kit, 'Versions', 'Current'))
+    await symlink('Versions/Current/Kit', path.join(kit, 'Kit'))
+    return root
+  }
+  const good = await make()
+  await checkExtractedApp(good, 'Sideband.app')
+  const outside = await make()
+  await symlink(tmpdir(), path.join(outside, 'Sideband.app', 'Contents', 'tmp'))
+  await assert.rejects(checkExtractedApp(outside, 'Sideband.app'), /outside the bundle/)
+  const dangling = await make()
+  await symlink('missing', path.join(dangling, 'Sideband.app', 'Contents', 'gone'))
+  await assert.rejects(checkExtractedApp(dangling, 'Sideband.app'), /does not resolve/)
+  const linked = await mkdtemp(path.join(tmpdir(), 'sideband-extract-test-'))
+  await symlink(good, path.join(linked, 'Sideband.app'))
+  await assert.rejects(checkExtractedApp(linked, 'Sideband.app'), /real directory/)
+  const extra = await make()
+  await writeFile(path.join(extra, 'stray'), 'x')
+  await assert.rejects(checkExtractedApp(extra, 'Sideband.app'), /only Sideband\.app/)
+})
+
+test('a real ditto ZIP of a bundle with framework symlinks passes', { skip: process.platform !== 'darwin' }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sideband-ditto-test-'))
+  const kit = path.join(root, 'Sideband.app', 'Contents', 'Frameworks', 'Kit.framework')
+  await mkdir(path.join(kit, 'Versions', 'A'), { recursive: true })
+  await writeFile(path.join(kit, 'Versions', 'A', 'Kit'), 'lib')
+  await symlink('A', path.join(kit, 'Versions', 'Current'))
+  await symlink('Versions/Current/Kit', path.join(kit, 'Kit'))
+  const archive = path.join(root, 'app.zip')
+  execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', path.join(root, 'Sideband.app'), archive])
+  const entries = listZip(await readFile(archive))
+  assert.equal(checkAppArchive(entries), 'Sideband.app')
+  const listed = execFileSync('/usr/bin/zipinfo', ['-1', archive], { encoding: 'utf8' }).trim().split('\n').sort()
+  assert.deepEqual(entries.map((entry) => entry.name).sort(), listed)
+  assert.equal(entries.find((entry) => entry.name.endsWith('Kit.framework/Kit')).target, 'Versions/Current/Kit')
+})
+
 const apiKey = {
   APPLE_API_KEY_ID: 'ABCDE12345', APPLE_API_ISSUER: '69a6de7e-0000-47e3-e053-5b8c7c11a4d1',
   APPLE_API_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nTUlHVEFnRUFNQk1HQnlxR1NNNDlBZ0VHQ0NxR1NNNDlBd0VIQkhrd2R3SUJBUVFn\n-----END PRIVATE KEY-----\n',
@@ -128,9 +249,10 @@ test('notarization uses an API key; partial or malformed credentials fail', () =
   assert.throws(() => notarizationKey({ APPLE_ID: 'a@example.com', APPLE_PASSWORD: 'pw', APPLE_TEAM_ID: 'T' }), /API key/)
 })
 
-async function macosArtifacts() {
+async function macosArtifacts(extra = []) {
   const directory = await mkdtemp(path.join(tmpdir(), 'sideband-macos-sign-test-'))
-  for (const [file, body] of [['Sideband.dmg', 'adhoc-dmg'], ['Sideband-test-0.1.0.app.zip', 'adhoc-zip'], ['Sideband-test-0.1.0.app.tar.gz', 'adhoc-tar'], ['INSTALL.md', 'install']]) {
+  const bundle = [...appBundle, ...extra]
+  for (const [file, body] of [['Sideband.dmg', 'adhoc-dmg'], ['Sideband-test-0.1.0.app.zip', zip(bundle)], ['Sideband-test-0.1.0.app.tar.gz', 'adhoc-tar'], ['INSTALL.md', 'install']]) {
     await writeFile(path.join(directory, file), body)
   }
   await writeManifest(directory, { version: '0.1.0', target: 'aarch64-apple-darwin' }, ['Sideband.dmg', 'Sideband-test-0.1.0.app.zip', 'Sideband-test-0.1.0.app.tar.gz'], ['Sideband-test-0.1.0.app.tar.gz'])
@@ -141,6 +263,7 @@ function fakeTools(calls, { status = 'Accepted' } = {}) {
   return async (command, args) => {
     calls.push([command, ...args])
     const tool = path.basename(command)
+    if (tool === 'zipinfo') return listZip(await readFile(args.at(-1))).map((entry) => entry.name).join('\n') + '\n'
     if (tool === 'ditto' && args[0] === '-x') await mkdir(path.join(args.at(-1), 'Sideband.app', 'Contents'), { recursive: true })
     else if (tool === 'ditto' && args[0] === '-c') await writeFile(args.at(-1), 'signed-zip')
     else if (tool === 'tar') await writeFile(args[args.indexOf('-czf') + 1], 'signed-tar')
@@ -186,8 +309,9 @@ test('macOS signing without notarization keys skips notarytool; a rejected submi
   await assert.rejects(signMacos(await macosArtifacts(), { ...env, ...apiKey }, { run: fakeTools(rejected, { status: 'Invalid' }), entitlements: '/repo/Entitlements.plist' }), /Invalid/)
   const submit = rejected.find(([, first]) => first === 'notarytool')
   await assert.rejects(access(submit[submit.indexOf('--key') + 1]))
-  const tampered = await macosArtifacts()
-  await writeFile(path.join(tampered, 'Sideband-test-0.1.0.app.zip'), 'changed in transit')
-  await assert.rejects(signMacos(tampered, env, { run: fakeTools([]), entitlements: '/repo/Entitlements.plist' }), /checksum/)
+  const corrupted = await macosArtifacts()
+  await writeFile(path.join(corrupted, 'Sideband-test-0.1.0.app.zip'), 'changed in transit')
+  // Catches corruption between jobs; the manifest comes from the same build job.
+  await assert.rejects(signMacos(corrupted, env, { run: fakeTools([]), entitlements: '/repo/Entitlements.plist' }), /does not match build-info/)
   await assert.rejects(signMacos(await macosArtifacts(), { ...env, APPLE_KEYCHAIN: '' }, { run: fakeTools([]), entitlements: '/repo/Entitlements.plist' }), /APPLE_KEYCHAIN/)
 })

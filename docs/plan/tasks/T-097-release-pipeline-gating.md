@@ -100,7 +100,15 @@ What changed:
   an App Store Connect API key from a `0600` file (`--key --key-id --issuer`),
   then staples it. It uses only `/usr/bin` tools and replaces the build artifact,
   so `publish` signs the updater payload for, checksums, attests and uploads the
-  signed packages. Apple ID and app-password notarization was removed rather than
+  signed packages. The app ZIP is the only thing that job unpacks. Before
+  extraction, `sign-macos` reads the ZIP directory itself and compares it with
+  `zipinfo -1`. It refuses absolute paths, `..`, links that are absolute or leave
+  the bundle, entries written through any link, duplicates (case-folded),
+  special files, setuid bits, and anything outside one top-level
+  `<Name>.app/`. It extracts into a fresh `mkdtemp` directory, apart from the
+  keychain's own directory and the checkout, then checks that the `.app` is a
+  real directory and that every link resolves inside it, and deletes the
+  directory either way. Nothing is mounted. Apple ID and app-password notarization was removed rather than
   kept as a fallback: notarytool takes that password only in argv.
 - `release-server.yml`: runs only on a `server-vX.Y.Z` tag whose commit is on
   `main` (compare API). The version comes from the tag and must equal the
@@ -114,6 +122,12 @@ What changed:
 - `ci.yml`: `workflow_call`. `deploy/Dockerfile*`: digests pinned;
   `Dockerfile.release` copies `ss-server-${TARGETARCH}`. `dependabot.yml`:
   `cargo` for `/fuzz`, `docker` for `/deploy`.
+- Trust boundary: `build-info.json` and its checksums are written by the
+  untrusted build job, so the checks against them in `sign`, `stage` and
+  `sign-macos` catch corruption between jobs, not tampering. The signing jobs
+  sign whatever the build produced. What they protect is the keys. The trust
+  boundary is the build's inputs: a reviewed commit and the locked dependency
+  graph.
 - Windows: the certificate import moved to before any dependency code in the
   Windows build job. Signing stays inside `tauri build`, because Tauri signs the
   app, the NSIS uninstaller and both installers while bundling. A build script
@@ -124,7 +138,13 @@ What changed:
   small fixes to `deploy/README.md` and `docs/desktop-releases.md`, which
   described the old server flow.
 
-Validated here: all script tests (`node --test scripts/*.test.mjs`, 25 pass).
+Validated here: all script tests (`node --test scripts/*.test.mjs`, 29 pass).
+They include crafted ZIPs, built by a small writer in the test, that are refused
+before anything is extracted: an absolute path, `../escape`, links to `/` and
+`$HOME` followed by a file written through them, a link leaving the bundle, and
+a top-level `.app` that is itself a link. They also include post-extraction
+checks (outside, dangling, symlinked app, stray files), and a real `ditto` ZIP
+with framework links that passes and matches `zipinfo -1`.
 `sign-macos` ran for real on this Mac with an ad-hoc identity and a compiled
 app. The app came out signed with the hardened runtime and the audio-input
 entitlement, the DMG holds the app and an Applications link, and the

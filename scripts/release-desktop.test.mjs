@@ -76,7 +76,7 @@ test('signing runs only the Tauri signer with the key, for checksummed payloads 
   await assert.rejects(signUpdaters({ input: root, version: '0.1.0', env: { ...env, TAURI_UPDATER_PUBLIC_KEY: signer().publicKey }, cli: '/cli/tauri.js', run }), /different key/)
   await assert.rejects(signUpdaters({ input: root, version: '0.1.1', env, cli: '/cli/tauri.js', run }), /version/)
   await assert.rejects(signUpdaters({ input: root, version: '0.1.0', env: { ...env, TAURI_SIGNING_PRIVATE_KEY: '' }, cli: '/cli/tauri.js', run }), /TAURI_SIGNING_PRIVATE_KEY/)
-  await writeFile(path.join(pkg, 'a.AppImage'), 'tampered')
+  await writeFile(path.join(pkg, 'a.AppImage'), 'corrupted')
   await assert.rejects(signUpdaters({ input: root, version: '0.1.0', env, cli: '/cli/tauri.js', run }), /checksum/)
 })
 test('selection schedules only requested operating systems and rejects empty selection', () => {

@@ -1,7 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { inflateRawSync } from 'node:zlib'
 import { createReadStream } from 'node:fs'
-import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -210,40 +211,177 @@ async function notarize(file, credentials, work, run) {
   }
 }
 
-// Build artifacts come from a job that ran dependency code: treat them as data.
-async function verifiedManifest(directory) {
+// build-info.json and its checksums come from the build job itself, so this check
+// catches corruption between jobs, not tampering: the signing job signs whatever the
+// build produced. The trust boundary is the build's inputs, a reviewed commit and a
+// locked dependency graph. Every file is also required to be a regular file.
+async function readBuildManifest(directory) {
   const info = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
   for (const artifact of info.artifacts) {
     if (path.basename(artifact.file) !== artifact.file) throw new Error('Invalid artifact path')
     const file = path.join(directory, artifact.file)
-    if ((await stat(file)).size !== artifact.bytes || await checksum(file) !== artifact.sha256) throw new Error(`Artifact checksum mismatch: ${artifact.file}`)
+    if (!(await lstat(file)).isFile()) throw new Error(`Artifact is not a regular file: ${artifact.file}`)
+    if ((await stat(file)).size !== artifact.bytes || await checksum(file) !== artifact.sha256) {
+      throw new Error(`Artifact does not match build-info.json: ${artifact.file}`)
+    }
   }
   return info
+}
+
+// Reads a ZIP's central directory without extracting anything. ZIP64, multi-disk,
+// encrypted entries and non-UTF-8 names are refused rather than interpreted.
+export function listZip(bytes) {
+  const minimum = Math.max(0, bytes.length - 0xffff - 22)
+  let end = -1
+  for (let i = bytes.length - 22; i >= minimum; i--) if (bytes.readUInt32LE(i) === 0x06054b50) { end = i; break }
+  if (end === -1) throw new Error('Not a ZIP archive')
+  const count = bytes.readUInt16LE(end + 10), size = bytes.readUInt32LE(end + 12), start = bytes.readUInt32LE(end + 16)
+  if (bytes.readUInt16LE(end + 4) || bytes.readUInt16LE(end + 6) || count === 0xffff || start === 0xffffffff || start + size > end) {
+    throw new Error('Unsupported ZIP layout (multi-disk or ZIP64)')
+  }
+  const entries = []
+  let offset = start
+  for (let n = 0; n < count; n++) {
+    if (offset + 46 > end || bytes.readUInt32LE(offset) !== 0x02014b50) throw new Error('Corrupt ZIP central directory')
+    const madeBy = bytes.readUInt16LE(offset + 4) >> 8, flags = bytes.readUInt16LE(offset + 8), method = bytes.readUInt16LE(offset + 10)
+    const compressed = bytes.readUInt32LE(offset + 20), nameLength = bytes.readUInt16LE(offset + 28)
+    const extraLength = bytes.readUInt16LE(offset + 30), commentLength = bytes.readUInt16LE(offset + 32)
+    const external = bytes.readUInt32LE(offset + 38), local = bytes.readUInt32LE(offset + 42)
+    const raw = bytes.subarray(offset + 46, offset + 46 + nameLength)
+    if (flags & 0x1) throw new Error('Encrypted ZIP entries are not allowed')
+    if (!(flags & 0x800) && raw.some((byte) => byte > 0x7f)) throw new Error('ZIP entry names must be UTF-8')
+    if (compressed === 0xffffffff || local === 0xffffffff || local + 30 > start) throw new Error('Unsupported ZIP layout (ZIP64)')
+    const name = raw.toString('utf8')
+    // Extractors may use the local header name; it must agree with the central one.
+    const localName = local + 30, localLength = bytes.readUInt16LE(local + 26)
+    if (bytes.readUInt32LE(local) !== 0x04034b50 || !bytes.subarray(localName, localName + localLength).equals(raw)) {
+      throw new Error(`ZIP local header does not match the directory for ${JSON.stringify(name)}`)
+    }
+    const unixMode = madeBy === 3 ? external >>> 16 : 0
+    const kind = unixMode & 0o170000
+    const type = kind === 0o120000 ? 'symlink'
+      : kind === 0o040000 || (!kind && name.endsWith('/')) ? 'dir'
+        : kind === 0o100000 || !kind ? 'file' : 'other'
+    const entry = { name, type, mode: unixMode & 0o7777 }
+    if (type === 'symlink') {
+      if (method !== 0 && method !== 8) throw new Error('Unsupported ZIP compression')
+      const dataStart = localName + localLength + bytes.readUInt16LE(local + 28)
+      const data = bytes.subarray(dataStart, dataStart + compressed)
+      entry.target = (method === 8 ? inflateRawSync(data) : data).toString('utf8')
+    }
+    entries.push(entry)
+    offset += 46 + nameLength + extraLength + commentLength
+  }
+  return entries
+}
+
+const archiveKey = (parts) => parts.join('/').normalize('NFD').toLowerCase()
+
+// Refuses anything an extractor could write outside one top-level <Name>.app: absolute
+// paths, `..`, links leaving the bundle, and entries written through any link (keys
+// are case- and normalization-folded, as on APFS). __MACOSX AppleDouble files from
+// `ditto --sequesterRsrc` are allowed as plain files. Returns the app's name.
+export function checkAppArchive(entries) {
+  const refuse = (entry, reason) => { throw new Error(`Refusing app ZIP entry ${JSON.stringify(entry.name)}: ${reason}`) }
+  let app
+  const seen = new Set(), links = new Set(), parsed = []
+  for (const entry of entries) {
+    if (!entry.name || /[\u0000-\u001f\u007f\\]/.test(entry.name)) refuse(entry, 'control character or backslash in the name')
+    if (entry.name.startsWith('/')) refuse(entry, 'absolute path')
+    const parts = entry.name.replace(/\/$/, '').split('/')
+    if (parts.some((part) => part === '' || part === '.' || part === '..')) refuse(entry, 'empty, . or .. path component')
+    if (entry.type === 'other') refuse(entry, 'not a file, directory or symlink')
+    if (entry.mode & 0o7000) refuse(entry, 'setuid, setgid or sticky bit')
+    const sidecar = parts[0] === '__MACOSX'
+    const inner = sidecar ? parts.slice(1) : parts
+    if (sidecar && (entry.type === 'symlink' || (entry.type === 'file' && !parts.at(-1).startsWith('._')))) refuse(entry, 'unexpected __MACOSX entry')
+    if (inner.length) {
+      if (!/^[^/]+\.app$/.test(inner[0])) refuse(entry, 'everything must be inside one <Name>.app/')
+      if (app && inner[0] !== app) refuse(entry, 'more than one top-level .app')
+      app ??= inner[0]
+      if (!sidecar && inner.length === 1 && entry.type !== 'dir') refuse(entry, 'the top-level .app must be a directory')
+    }
+    const key = archiveKey(parts)
+    if (seen.has(key)) refuse(entry, 'the same path appears twice')
+    seen.add(key)
+    if (entry.type === 'symlink') {
+      const target = entry.target ?? ''
+      if (!target || target.includes('\u0000')) refuse(entry, 'empty symlink target')
+      if (target.startsWith('/')) refuse(entry, `absolute symlink target ${JSON.stringify(target)}`)
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(parts.join('/')), target))
+      if (resolved !== app && !resolved.startsWith(app + '/')) refuse(entry, `symlink target ${JSON.stringify(target)} is outside the bundle`)
+      links.add(key)
+    }
+    parsed.push({ entry, parts })
+  }
+  for (const { entry, parts } of parsed) {
+    for (let i = 1; i < parts.length; i++) if (links.has(archiveKey(parts.slice(0, i)))) refuse(entry, 'written through a symlink')
+  }
+  if (!app || !parsed.some(({ entry, parts }) => parts.length === 1 && entry.type === 'dir')) {
+    throw new Error('The app ZIP needs a top-level <Name>.app/ directory entry')
+  }
+  return app
+}
+
+// After extraction: the extractor's view can differ from the listing, so check the
+// tree itself. The app must be a real directory and every link must resolve inside it.
+export async function checkExtractedApp(directory, appName) {
+  const top = (await readdir(directory)).filter((name) => name !== '__MACOSX')
+  if (top.length !== 1 || top[0] !== appName) throw new Error(`Extraction must produce only ${appName}`)
+  const app = path.join(directory, appName)
+  if (!(await lstat(app)).isDirectory()) throw new Error(`${appName} is not a real directory`)
+  const root = await realpath(app)
+  const walk = async (dir) => {
+    for (const name of await readdir(dir)) {
+      const file = path.join(dir, name), info = await lstat(file)
+      if (info.mode & 0o7000) throw new Error(`setuid, setgid or sticky bit on ${file}`)
+      if (info.isSymbolicLink()) {
+        let resolved
+        try { resolved = await realpath(file) } catch { throw new Error(`Symlink ${file} does not resolve`) }
+        if (resolved !== root && !resolved.startsWith(root + path.sep)) throw new Error(`Symlink ${file} points outside the bundle`)
+      } else if (info.isDirectory()) await walk(file)
+      else if (!info.isFile()) throw new Error(`Unexpected file type at ${file}`)
+    }
+  }
+  await walk(app)
+  return app
 }
 
 // Runs in its own job on a fresh macOS runner, after the ad-hoc build: re-signs the
 // app with the Developer ID, rebuilds the ZIP, updater archive and DMG from it, signs
 // the DMG, notarizes and staples it, and rewrites build-info.json and SHA256SUMS. Only
-// system tools by absolute path run here. The DMG is created anew rather than mounting
-// the build's image; it has the app and an Applications link but no window layout.
+// system tools by absolute path run here. It signs whatever the build produced; what it
+// prevents is the build's output reaching the keys or files outside its temporary
+// directories. The ZIP is the only thing unpacked: it is listed and checked before
+// extraction and the result is checked again. Nothing is mounted: the DMG is created
+// anew, with the app and an Applications link but no window layout.
 export async function signMacos(directory, env, { run = capture, entitlements, scratch = tmpdir() } = {}) {
   const identity = env.APPLE_SIGNING_IDENTITY, keychain = env.APPLE_KEYCHAIN
   if (!identity || !keychain || !entitlements) throw new Error('macOS signing needs APPLE_SIGNING_IDENTITY, APPLE_KEYCHAIN and the entitlements file')
   const credentials = notarizationKey(env)
-  const { artifacts, updater, ...info } = await verifiedManifest(directory)
+  const { artifacts, updater, ...info } = await readBuildManifest(directory)
   const only = (suffix, required = true) => {
     const matches = artifacts.filter((artifact) => artifact.file.endsWith(suffix))
     if (matches.length > 1 || (required && !matches.length)) throw new Error(`Expected exactly one ${suffix} artifact`)
     return matches[0] && path.join(directory, matches[0].file)
   }
   const zip = only('.app.zip'), dmg = only('.dmg'), archive = only('.app.tar.gz', false)
-  const work = await mkdtemp(path.join(scratch, 'sideband-macos-sign-'))
+  const entries = listZip(await readFile(zip))
+  const appName = checkAppArchive(entries)
+  // A second, independent listing: refuse if Info-ZIP sees different entries.
+  const listed = (await run(tool('zipinfo'), ['-1', zip])).split('\n').filter(Boolean).sort()
+  if (listed.join('\n') !== entries.map((entry) => entry.name).sort().join('\n')) {
+    throw new Error('zipinfo lists different entries than the ZIP directory')
+  }
+  // Separate private directories, none shared with the keychain or the checkout.
+  const unpacked = await mkdtemp(path.join(scratch, 'sideband-unpack-'))
+  const staging = await mkdtemp(path.join(scratch, 'sideband-dmg-'))
+  const secrets = await mkdtemp(path.join(scratch, 'sideband-notary-'))
   try {
-    const unpacked = path.join(work, 'unpacked')
     await run(tool('ditto'), ['-x', '-k', zip, unpacked])
-    const apps = (await readdir(unpacked)).filter((name) => name.endsWith('.app'))
-    if (apps.length !== 1) throw new Error('The app ZIP must contain exactly one .app')
-    const app = path.join(unpacked, apps[0])
+    const app = await checkExtractedApp(unpacked, appName)
+    // Tauri clears extended attributes before signing; do the same for the unpacked copy.
+    await run(tool('xattr'), ['-cr', app])
     const timestamp = identity === '-' ? [] : ['--timestamp']
     await run(tool('codesign'), ['--force', '--options', 'runtime', ...timestamp, '--entitlements', entitlements,
       '--keychain', keychain, '--sign', identity, app])
@@ -254,22 +392,22 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
       await rm(archive)
       await run(tool('tar'), archiveArgs(app, archive), { env: { PATH: '/usr/bin:/bin', COPYFILE_DISABLE: '1' } })
     }
-    const root = path.join(work, 'dmg')
+    const root = path.join(staging, 'root')
     await mkdir(root)
-    await run(tool('ditto'), [app, path.join(root, apps[0])])
+    await run(tool('ditto'), [app, path.join(root, appName)])
     await symlink('/Applications', path.join(root, 'Applications'))
     await rm(dmg)
-    await run(tool('hdiutil'), ['create', '-volname', apps[0].slice(0, -'.app'.length), '-srcfolder', root,
+    await run(tool('hdiutil'), ['create', '-volname', appName.slice(0, -'.app'.length), '-srcfolder', root,
       '-fs', 'HFS+', '-format', 'UDZO', '-ov', dmg])
     await run(tool('codesign'), ['--force', ...timestamp, '--keychain', keychain, '--sign', identity, dmg])
     if (credentials) {
       // The submission covers the app inside the DMG, so the ZIP and updater archive
       // are notarized too; only the DMG carries a stapled ticket.
-      await notarize(dmg, credentials, work, run)
+      await notarize(dmg, credentials, secrets, run)
       await run(tool('xcrun'), ['stapler', 'staple', dmg])
     }
   } finally {
-    await rm(work, { recursive: true, force: true })
+    for (const dir of [unpacked, staging, secrets]) await rm(dir, { recursive: true, force: true })
   }
   return writeManifest(directory, info, artifacts.map((artifact) => artifact.file), updater?.map((item) => item.file))
 }

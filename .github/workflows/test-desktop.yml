@@ -143,9 +143,12 @@ jobs:
           compression-level: 0
 
   # Developer ID signing and notarization on a fresh runner: nothing from the build
-  # job runs here, its packages are only data. System tools run by absolute path, the
+  # job runs here, its packages are only data. The app ZIP is checked before and after
+  # extraction (no absolute paths, `..` or links leaving the bundle) into its own
+  # temporary directory; nothing is mounted. System tools run by absolute path, the
   # notarization key is a 0600 file, and no secret is on a command line except the
-  # .p12 password for `security import`, before any build output is downloaded.
+  # .p12 password for `security import`, before any build output is downloaded. This
+  # job signs whatever the build produced: the trust boundary is the build's inputs.
   macos-signing:
     name: macOS signing and notarization
     needs: package
@@ -186,6 +189,7 @@ jobs:
             echo "No APPLE_CERTIFICATE; the macOS packages stay ad-hoc signed."
           fi
       - name: Import signing certificate
+        id: keychain
         if: steps.config.outputs.sign == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -193,16 +197,19 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           test -n "$APPLE_SIGNING_IDENTITY"
-          keychain="$RUNNER_TEMP/sideband.keychain-db"
+          # Its own private directory, apart from the downloaded and unpacked packages.
+          umask 077
+          keychain_dir=$(mktemp -d "$RUNNER_TEMP/keychain.XXXXXX")
+          keychain="$keychain_dir/sideband.keychain-db"
+          echo "path=$keychain" >> "$GITHUB_OUTPUT"
           keychain_password=$(openssl rand -hex 32)
           echo "::add-mask::$keychain_password"
-          umask 077
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-          trap 'rm -f "$RUNNER_TEMP/signing.p12"' EXIT
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$keychain_dir/signing.p12"
+          trap 'rm -f "$keychain_dir/signing.p12"' EXIT
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$keychain_dir/signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" login.keychain-db
           security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\""
@@ -215,14 +222,19 @@ jobs:
         if: steps.config.outputs.sign == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_KEYCHAIN: ${{ runner.temp }}/sideband.keychain-db
+          APPLE_KEYCHAIN: ${{ steps.keychain.outputs.path }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: node scripts/build-test-desktop.mjs sign-macos "$RUNNER_TEMP/macos-input"
       - name: Remove signing keychain
-        if: always() && steps.config.outputs.sign == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/sideband.keychain-db" || true
+        if: always() && steps.keychain.outputs.path != ''
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.path }}
+        run: |
+          security delete-keychain "$KEYCHAIN" || true
+          rm -rf "$(dirname "$KEYCHAIN")"
+
       # Replace the ad-hoc packages, so the release uploads, checksums and attests the
       # signed and stapled ones.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
