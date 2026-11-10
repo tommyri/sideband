@@ -58,6 +58,6 @@ pub use events::{ClientEvent, ConnectionState};
 pub use ss_proto::v1;
 pub use state::{State, StateStore};
 pub use voice::{
-    AudioConfig, AudioSource, Cue, SpeakerStats, TalkGate, VoiceDeviceState, VoiceSession,
-    VoiceStats,
+    AudioConfig, AudioSource, Cue, DeviceRoute, SpeakerStats, TalkGate, VoiceDeviceState,
+    VoiceSession, VoiceStats,
 };

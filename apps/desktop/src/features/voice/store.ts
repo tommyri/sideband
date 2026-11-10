@@ -16,6 +16,7 @@ interface VoiceStore {
   busy: boolean
   error: string
   deviceNotice: string
+  deviceRoute: string
   select: (server: string, channel: string) => void
 }
 export const useVoiceStore = create<VoiceStore>((set) => ({
@@ -27,6 +28,7 @@ export const useVoiceStore = create<VoiceStore>((set) => ({
   busy: false,
   error: '',
   deviceNotice: '',
+  deviceRoute: '',
   select: (server, channel) => set((s) => ({ selected: { ...s.selected, [server]: channel } })),
 }))
 

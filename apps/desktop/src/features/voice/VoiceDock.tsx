@@ -26,6 +26,7 @@ export function VoiceDock() {
   const busy = useVoiceStore((s) => s.busy)
   const error = useVoiceStore((s) => s.error)
   const notice = useVoiceStore((s) => s.deviceNotice)
+  const route = useVoiceStore((s) => s.deviceRoute)
   const stats = useVoiceStore((s) => (active ? s.stats[active.serverId] : undefined))
   const view = useVoiceStore((s) => (active ? s.views[active.serverId] : undefined))
   const servers = useAppStore((s) => s.servers)
@@ -194,6 +195,7 @@ export function VoiceDock() {
                   ? `${Math.round(stats.encoderBitrate / 1000)} kbps · ${stats.rttMs} ms network RTT`
                   : 'Measuring connection…'}
               </small>
+              {route && <small role="status">{route}</small>}
             </div>
           </div>
           <button

@@ -13,14 +13,10 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 use rtrb::{Consumer, Producer};
-#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-use ss_audio::device::{MutedSpeechActivity, VoiceProcessingConfig, VoiceProcessingStream};
 use ss_audio::{
-    device::{
-        self, CaptureStream, DeviceEvent, DeviceManager, Direction, GraphConfig, PlaybackStream,
-    },
+    device::{self, Attempt, DeviceEvent, Direction, GraphConfig, Recovery, Route},
     mixer::StereoFrame,
-    processing::{Chain, EchoPath},
+    processing::{Chain, EchoPath, MAX_RENDER_BATCH},
     vad::Vad,
 };
 use ss_core::{Id, VoiceProfile};
@@ -33,6 +29,7 @@ use crate::{
 use super::{
     AudioConfig, AudioSource, Cue, DeviceBackend, TalkGate, VoiceDeviceState,
     graph::{GraphSnapshot, TrackSpec, VoiceGraph},
+    host::{self, Duplex, DuplexConfig, Host, Hosts, Input, Output},
 };
 
 pub(super) enum Update {
@@ -178,6 +175,7 @@ pub(super) async fn start(
                 incoming_rx,
                 thread_shared,
                 thread_stop,
+                host::system(),
             );
             match result {
                 Ok(mut runtime) => {
@@ -206,70 +204,114 @@ pub(super) async fn start(
     }
 }
 
+/// Shared with setup jobs, which open streams while the worker keeps
+/// running. The worker only ever `try_lock`s it.
+type SharedHost = Arc<Mutex<Box<dyn Host>>>;
+
+/// An open, or one that failed, waiting to be applied on the worker.
+type Opened<S> = Option<Result<S, device::Error>>;
+
 struct Devices {
-    /// Shared with setup jobs, which open streams while the worker keeps
-    /// running. The worker only ever `try_lock`s it.
-    manager: Arc<Mutex<DeviceManager>>,
-    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    host: SharedHost,
     capture_config: GraphConfig,
-    capture: Option<(CaptureStream, Consumer<f32>)>,
-    playback: Option<(PlaybackStream, Producer<f32>)>,
-    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-    voice_processing: Option<VoiceProcessing>,
-    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+    capture: Option<Input>,
+    playback: Option<Output>,
+    voice_processing: Option<Duplex>,
+    /// What is wanted but not open, and when to try again.
+    recover: Recover,
+    /// A failure was already reported for the stream that is closed now:
+    /// capture (or Apple's unit), then playback. Retries stay quiet.
+    notified: [bool; 2],
+    /// The routes last sent to the UI.
+    reported: Option<(Route, Route)>,
     voice_muted: bool,
-    #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
     voice_mode: ss_audio::device::MicrophoneMode,
 }
 
-#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-type VoiceProcessing = (VoiceProcessingStream, Consumer<f32>, Producer<f32>);
+enum Recover {
+    Portable {
+        capture: Recovery,
+        playback: Recovery,
+    },
+    /// Apple's unit follows the system defaults: it is open, or reopening is
+    /// due at this time.
+    Duplex { due: Option<Instant> },
+}
 
 /// The part of [`Devices`] that may leave the worker thread. Apple's
 /// VoiceProcessingIO unit holds an Objective-C block and is not `Send`, so it
 /// is opened and closed on the worker.
 struct Portable {
-    manager: Arc<Mutex<DeviceManager>>,
-    capture: Option<(CaptureStream, Consumer<f32>)>,
-    playback: Option<(PlaybackStream, Producer<f32>)>,
+    host: SharedHost,
+    capture: Option<Input>,
+    playback: Option<Output>,
 }
 
 impl Devices {
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "macos-voiceio")),
-        allow(unused_variables)
-    )]
+    /// Portable streams for `config`. A direction that did not open is
+    /// retried.
     fn from_portable(
         portable: Portable,
         config: &AudioConfig,
         capture_config: GraphConfig,
     ) -> Self {
+        let now = Instant::now();
+        let mut capture = Recovery::new(Direction::Capture, config.input_device.clone(), now);
+        if let Some((stream, _)) = &portable.capture {
+            capture.opened(stream.device_id().clone(), now);
+        }
+        let mut playback = Recovery::new(Direction::Playback, config.output_device.clone(), now);
+        if let Some((stream, _)) = &portable.playback {
+            playback.opened(stream.device_id().clone(), now);
+        }
         Self {
-            manager: portable.manager,
-            #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+            host: portable.host,
             capture_config,
             capture: portable.capture,
             playback: portable.playback,
-            #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
             voice_processing: None,
-            #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+            recover: Recover::Portable { capture, playback },
+            notified: [false; 2],
+            reported: None,
             voice_muted: config.start_muted,
-            #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
             voice_mode: ss_audio::device::MicrophoneMode::Unknown,
+        }
+    }
+
+    /// Apple's unit, or `None` to retry opening it.
+    fn from_duplex(
+        host: SharedHost,
+        unit: Option<Duplex>,
+        config: &AudioConfig,
+        capture_config: GraphConfig,
+        voice_mode: ss_audio::device::MicrophoneMode,
+    ) -> Self {
+        Self {
+            host,
+            capture_config,
+            capture: None,
+            playback: None,
+            recover: Recover::Duplex {
+                due: unit.is_none().then(Instant::now),
+            },
+            voice_processing: unit,
+            notified: [false; 2],
+            reported: None,
+            voice_muted: config.start_muted,
+            voice_mode,
         }
     }
 
     /// Close Apple's unit here, on the worker, and keep what may move.
     fn into_portable(self) -> Portable {
         Portable {
-            manager: self.manager,
+            host: self.host,
             capture: self.capture,
             playback: self.playback,
         }
     }
 
     fn backend(&self) -> Option<&'static str> {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if self.voice_processing.is_some() {
             return Some("Apple VoiceProcessingIO");
         }
@@ -277,7 +319,6 @@ impl Devices {
     }
 
     fn capture_consumer_mut(&mut self) -> Option<&mut Consumer<f32>> {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if let Some((_, consumer, _)) = &mut self.voice_processing {
             return Some(consumer);
         }
@@ -285,7 +326,6 @@ impl Devices {
     }
 
     fn playback_producer_mut(&mut self) -> Option<&mut Producer<f32>> {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if let Some((_, _, producer)) = &mut self.voice_processing {
             return Some(producer);
         }
@@ -300,7 +340,6 @@ impl Devices {
     }
 
     fn delays(&self) -> (Duration, Duration) {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if self.voice_processing.is_some() {
             // Apple's AEC owns its timing model; the software chain is off.
             return (Duration::ZERO, Duration::ZERO);
@@ -308,201 +347,225 @@ impl Devices {
         let capture = self
             .capture
             .as_ref()
-            .and_then(|(stream, _)| stream.capture_delay())
+            .and_then(|(stream, _)| stream.delay())
             .unwrap_or_default();
         let playback = self
             .playback
             .as_ref()
-            .and_then(|(stream, _)| stream.playback_delay())
+            .and_then(|(stream, _)| stream.delay())
             .unwrap_or_default();
         (capture, playback)
     }
 
     fn counter_values(&self) -> (u64, u64) {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
         if let Some((stream, _, _)) = &self.voice_processing {
-            return (
-                stream.playback_counters().underruns(),
-                stream.capture_counters().overruns(),
-            );
+            return stream.counters();
         }
         let underruns = self
             .playback
             .as_ref()
-            .map_or(0, |(stream, _)| stream.counters().underruns());
+            .map_or(0, |(stream, _)| stream.underruns());
         let overruns = self
             .capture
             .as_ref()
-            .map_or(0, |(stream, _)| stream.counters().overruns());
+            .map_or(0, |(stream, _)| stream.overruns());
         (underruns, overruns)
     }
 
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "macos-voiceio")),
-        allow(clippy::unused_self)
-    )]
-    fn voice_processing_active(&self) -> bool {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-        {
-            self.voice_processing.is_some()
-        }
-        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
-        {
-            false
-        }
-    }
-
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "macos-voiceio")),
-        allow(clippy::unused_self)
-    )]
-    fn voice_processing_stopped(&self) -> bool {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-        {
-            self.voice_processing
-                .as_ref()
-                .is_some_and(|(stream, _, _)| stream.is_running().is_ok_and(|running| !running))
-        }
-        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
-        {
-            false
-        }
-    }
-
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "macos-voiceio")),
-        allow(clippy::unused_self)
-    )]
     fn sync_voice_processing(
         &mut self,
         muted: bool,
         events: &tokio::sync::broadcast::Sender<ClientEvent>,
     ) {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-        if let Some((stream, _, _)) = &mut self.voice_processing {
-            if muted != self.voice_muted {
-                match stream.set_muted(muted) {
-                    Ok(()) => self.voice_muted = muted,
-                    Err(error) => {
-                        let _ = events.send(ClientEvent::VoiceDevice(
-                            VoiceDeviceState::Unavailable(error.to_string()),
-                        ));
-                    }
+        let Some((stream, _, _)) = &mut self.voice_processing else {
+            return;
+        };
+        if muted != self.voice_muted {
+            match stream.set_muted(muted) {
+                Ok(()) => self.voice_muted = muted,
+                Err(error) => {
+                    let _ = events.send(ClientEvent::VoiceDevice(VoiceDeviceState::Unavailable(
+                        error,
+                    )));
                 }
             }
-            if let Some(activity) = stream.take_muted_speech_activity() {
-                let _ = events.send(ClientEvent::VoiceDevice(VoiceDeviceState::MutedSpeech {
-                    active: activity == MutedSpeechActivity::Started,
-                }));
-            }
-            let mode = device::microphone_mode_status().active;
-            if mode != self.voice_mode {
-                self.voice_mode = mode;
-                let _ = events.send(ClientEvent::VoiceDevice(
-                    VoiceDeviceState::AppleVoiceProcessing {
-                        microphone_mode: mode,
-                    },
-                ));
-            }
         }
-        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
-        let _ = (muted, events);
-    }
-
-    /// Reopen Apple's unit on the worker; see [`Portable`].
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "macos-voiceio")),
-        allow(clippy::unused_self)
-    )]
-    fn reopen_voice_processing(&mut self, config: &AudioConfig) -> Result<(), String> {
-        #[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
-        {
-            if !matches!(
-                config.device_backend,
-                DeviceBackend::AppleVoiceProcessing { .. }
-            ) {
-                return Ok(());
-            }
-            self.voice_processing = None;
-            let streams = open_voice_processing(
-                &self.manager.lock(),
-                config.device_backend,
-                self.capture_config,
-                self.voice_muted,
-            )?;
-            self.voice_processing = Some(streams);
-            self.voice_mode = ss_audio::device::MicrophoneMode::Unknown;
-            Ok(())
+        if let Some(active) = stream.take_muted_speech() {
+            let _ = events.send(ClientEvent::VoiceDevice(VoiceDeviceState::MutedSpeech {
+                active,
+            }));
         }
-        #[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
-        {
-            let _ = config;
-            Err("Apple VoiceProcessingIO is not enabled in this build".to_owned())
+        let mode = device::microphone_mode_status().active;
+        if mode != self.voice_mode {
+            self.voice_mode = mode;
+            let _ = events.send(ClientEvent::VoiceDevice(
+                VoiceDeviceState::AppleVoiceProcessing {
+                    microphone_mode: mode,
+                },
+            ));
         }
     }
-}
 
-/// A capture or playback reopen that runs on the setup thread.
-struct Reopen {
-    capture: bool,
-    playback: bool,
-}
+    /// Where each direction is: capture (or Apple's unit), then playback.
+    fn routes(&self) -> (Route, Route) {
+        match &self.recover {
+            Recover::Portable { capture, playback } => (capture.route(), playback.route()),
+            Recover::Duplex { .. } => {
+                let route = if self.voice_processing.is_some() {
+                    Route::Wanted
+                } else {
+                    Route::Missing
+                };
+                (route, route)
+            }
+        }
+    }
 
-impl Reopen {
-    /// Take the streams to replace out of `devices` and build the job that
-    /// drops them and opens new ones. The worker keeps the other stream.
-    fn job(
-        self,
-        devices: &mut Devices,
-        config: &AudioConfig,
-        channels: usize,
+    /// Tell the UI when a stream went missing, moved to the fallback, or
+    /// recovered.
+    fn report_routes(&mut self, events: &tokio::sync::broadcast::Sender<ClientEvent>) {
+        let routes = self.routes();
+        if self.reported == Some(routes) {
+            return;
+        }
+        self.reported = Some(routes);
+        let _ = events.send(ClientEvent::VoiceDevice(VoiceDeviceState::Routes {
+            capture: routes.0,
+            playback: routes.1,
+        }));
+    }
+
+    /// Report the first failure after a stream closed; retries stay quiet.
+    fn failed(
+        &mut self,
+        slot: usize,
+        error: &device::Error,
         events: &tokio::sync::broadcast::Sender<ClientEvent>,
-    ) -> impl FnOnce() -> Apply + Send + 'static {
-        let manager = Arc::clone(&devices.manager);
-        let old_capture = if self.capture {
-            devices.capture.take()
-        } else {
-            None
+    ) {
+        if !std::mem::replace(&mut self.notified[slot], true) {
+            send_device_error(events, error);
+        }
+    }
+
+    /// Take a device event into account. A lost stream is dropped off the
+    /// worker; Apple's unit is dropped here.
+    fn observe(&mut self, event: &DeviceEvent, now: Instant, setup: &Setup) {
+        match &mut self.recover {
+            Recover::Portable { capture, playback } => {
+                if capture.observe(event, now) {
+                    setup.dispose(self.capture.take());
+                }
+                if playback.observe(event, now) {
+                    setup.dispose(self.playback.take());
+                }
+            }
+            Recover::Duplex { due } => match event {
+                DeviceEvent::DefaultChanged { .. } => {
+                    self.voice_processing = None;
+                    *due = Some(now);
+                }
+                DeviceEvent::Added(_) if self.voice_processing.is_none() => *due = Some(now),
+                _ => {}
+            },
+        }
+    }
+
+    /// Settings Apply: try a missing or fallback stream again now.
+    fn retry_now(&mut self, now: Instant) {
+        match &mut self.recover {
+            Recover::Portable { capture, playback } => {
+                capture.retry_now(now);
+                playback.retry_now(now);
+            }
+            Recover::Duplex { due } => {
+                if self.voice_processing.is_none() {
+                    *due = Some(now);
+                }
+            }
+        }
+    }
+
+    /// Reopen Apple's unit on the worker when it stopped or is due; see
+    /// [`Portable`]. `true` when a new unit is in.
+    fn recover_voice_processing(
+        &mut self,
+        now: Instant,
+        config: &AudioConfig,
+        events: &tokio::sync::broadcast::Sender<ClientEvent>,
+    ) -> bool {
+        let Recover::Duplex { due } = &mut self.recover else {
+            return false;
         };
-        let old_playback = if self.playback {
-            devices.playback.take()
-        } else {
-            None
+        if self
+            .voice_processing
+            .as_ref()
+            .is_some_and(|(stream, _, _)| stream.stopped())
+        {
+            self.voice_processing = None;
+            *due = Some(now);
+        }
+        if self.voice_processing.is_some() || due.is_none_or(|due| due > now) {
+            return false;
+        }
+        let opened = open_voice_processing(
+            &**self.host.lock(),
+            config.device_backend,
+            self.capture_config,
+            self.voice_muted,
+        );
+        match opened {
+            Ok(unit) => {
+                self.voice_processing = Some(unit);
+                *due = None;
+                self.voice_mode = ss_audio::device::MicrophoneMode::Unknown;
+                self.notified[0] = false;
+                true
+            }
+            Err(error) => {
+                *due = Some(Instant::now() + device::RETRY_INTERVAL);
+                self.failed(0, &error, events);
+                false
+            }
+        }
+    }
+
+    /// The portable opens that are due, as a job for the setup thread. The
+    /// current streams keep running until their replacements are in.
+    fn reopen_job(&self, now: Instant) -> Option<impl FnOnce() -> Apply + Send + 'static> {
+        let Recover::Portable { capture, playback } = &self.recover else {
+            return None;
         };
-        let input = config.input_device.clone();
-        let output = config.output_device.clone();
-        let events = events.clone();
-        move || -> Apply {
-            drop((old_capture, old_playback));
-            let manager = manager.lock();
-            let capture = self.capture.then(|| {
-                manager
-                    .open_capture(input.as_ref(), graph_config(channels))
-                    .inspect_err(|error| send_device_error(&events, error))
-                    .ok()
+        let capture = capture.attempt(now);
+        let playback = playback.attempt(now);
+        if capture.is_none() && playback.is_none() {
+            return None;
+        }
+        let host = Arc::clone(&self.host);
+        let capture_config = self.capture_config;
+        Some(move || -> Apply {
+            let host = host.lock();
+            let capture = capture
+                .map(|attempt| open_with(&attempt, |id| host.open_capture(id, capture_config)));
+            let playback = playback.map(|attempt| {
+                open_with(&attempt, |id| host.open_playback(id, GraphConfig::STEREO))
             });
-            let playback = self.playback.then(|| {
-                manager
-                    .open_playback(output.as_ref(), GraphConfig::STEREO)
-                    .inspect_err(|error| send_device_error(&events, error))
-                    .ok()
-            });
-            drop(manager);
+            drop(host);
             Box::new(move |runtime: &mut Runtime| {
                 runtime.busy = false;
-                let Some(devices) = &mut runtime.devices else {
-                    runtime.setup.dispose((capture, playback));
-                    return;
-                };
-                if let Some(capture) = capture {
-                    devices.capture = capture;
-                }
-                if let Some(playback) = playback {
-                    devices.playback = playback;
-                    runtime.pacer.reset();
-                }
+                runtime.install_reopened(capture, playback);
             })
-        }
+        })
+    }
+}
+
+/// Open the device `attempt` asks for, then the default if it allows that.
+fn open_with<S>(
+    attempt: &Attempt,
+    open: impl Fn(Option<&device::DeviceId>) -> Result<S, device::Error>,
+) -> Result<S, device::Error> {
+    match open(attempt.device.as_ref()) {
+        Err(_) if attempt.fallback => open(None),
+        result => result,
     }
 }
 
@@ -511,7 +574,7 @@ enum Replacement {
     /// Portable streams for the new settings, or for the previous ones when
     /// the new ones failed (`result` holds that error).
     Opened {
-        portable: Option<Box<Portable>>,
+        portable: Box<Portable>,
         result: Result<(), String>,
     },
     /// Apple's unit is involved; the worker opens it. `failed` is the error
@@ -522,6 +585,7 @@ enum Replacement {
 impl Replacement {
     /// Runs on the setup thread.
     fn open(
+        hosts: &Hosts,
         config: &AudioConfig,
         previous: &AudioConfig,
         channels: usize,
@@ -531,10 +595,10 @@ impl Replacement {
         if config.device_backend != DeviceBackend::Portable {
             return Self::OnWorker { failed: None };
         }
-        let error = match open_portable(DeviceManager::new(), config, capture_config, events) {
+        let error = match open_portable(hosts(), config, capture_config, events) {
             Ok(portable) => {
                 return Self::Opened {
-                    portable: Some(Box::new(portable)),
+                    portable: Box::new(portable),
                     result: Ok(()),
                 };
             }
@@ -546,9 +610,7 @@ impl Replacement {
             };
         }
         Self::Opened {
-            portable: open_portable(DeviceManager::new(), previous, capture_config, events)
-                .ok()
-                .map(Box::new),
+            portable: Box::new(open_available(hosts(), previous, capture_config)),
             result: Err(error),
         }
     }
@@ -566,20 +628,20 @@ impl Replacement {
         match self {
             Self::Opened { portable, result } => {
                 let applied = if result.is_ok() { config } else { previous };
-                runtime.devices = portable
-                    .map(|portable| Devices::from_portable(*portable, applied, capture_config));
+                runtime.devices = Some(Devices::from_portable(*portable, applied, capture_config));
                 result
             }
             Self::OnWorker { failed } => {
                 let events = runtime.events.clone();
+                let hosts = Arc::clone(&runtime.hosts);
                 let result = match failed {
                     Some(error) => Err(error),
-                    None => open_devices(DeviceManager::new(), config, capture_config, &events)
+                    None => open_devices(hosts(), config, capture_config, &events)
                         .map(|devices| runtime.devices = Some(devices)),
                 };
                 if result.is_err() {
                     runtime.devices =
-                        open_devices(DeviceManager::new(), previous, capture_config, &events).ok();
+                        Some(open_previous(hosts(), previous, capture_config, &events));
                 }
                 result
             }
@@ -587,47 +649,44 @@ impl Replacement {
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
 fn open_voice_processing(
-    manager: &DeviceManager,
+    host: &dyn Host,
     backend: DeviceBackend,
     capture_config: GraphConfig,
     muted: bool,
-) -> Result<VoiceProcessing, String> {
+) -> Result<Duplex, device::Error> {
     let DeviceBackend::AppleVoiceProcessing {
         bypass,
         automatic_gain_control,
     } = backend
     else {
-        return Err("Apple VoiceProcessingIO is not the selected backend".to_owned());
+        return Err(device::Error::Unsupported);
     };
-    manager
-        .open_voice_processing(
-            capture_config,
-            GraphConfig::STEREO,
-            VoiceProcessingConfig {
-                bypass,
-                automatic_gain_control,
-                muted,
-            },
-        )
-        .map_err(|error| error.to_string())
+    host.open_duplex(
+        capture_config,
+        DuplexConfig {
+            bypass,
+            automatic_gain_control,
+            muted,
+        },
+    )
 }
 
+/// Open exactly the configured devices, or fail.
 fn open_portable(
-    manager: DeviceManager,
+    host: Box<dyn Host>,
     config: &AudioConfig,
     capture_config: GraphConfig,
     events: &tokio::sync::broadcast::Sender<ClientEvent>,
 ) -> Result<Portable, String> {
-    let capture = match manager.open_capture(config.input_device.as_ref(), capture_config) {
+    let capture = match host.open_capture(config.input_device.as_ref(), capture_config) {
         Ok(capture) => capture,
         Err(error) => {
             send_device_error(events, &error);
             return Err(error.to_string());
         }
     };
-    let playback = match manager.open_playback(config.output_device.as_ref(), GraphConfig::STEREO) {
+    let playback = match host.open_playback(config.output_device.as_ref(), GraphConfig::STEREO) {
         Ok(playback) => playback,
         Err(error) => {
             send_device_error(events, &error);
@@ -635,84 +694,128 @@ fn open_portable(
         }
     };
     Ok(Portable {
-        manager: Arc::new(Mutex::new(manager)),
+        host: Arc::new(Mutex::new(host)),
         capture: Some(capture),
         playback: Some(playback),
     })
 }
 
+/// Open what can be opened for settings that worked before: the default
+/// stands in for a missing selection, and a direction that does not open at
+/// all is retried later.
+fn open_available(
+    host: Box<dyn Host>,
+    config: &AudioConfig,
+    capture_config: GraphConfig,
+) -> Portable {
+    let fallback = |device: &Option<device::DeviceId>| Attempt {
+        device: device.clone(),
+        fallback: device.is_some(),
+    };
+    let capture = open_with(&fallback(&config.input_device), |id| {
+        host.open_capture(id, capture_config)
+    })
+    .ok();
+    let playback = open_with(&fallback(&config.output_device), |id| {
+        host.open_playback(id, GraphConfig::STEREO)
+    })
+    .ok();
+    Portable {
+        host: Arc::new(Mutex::new(host)),
+        capture,
+        playback,
+    }
+}
+
 fn open_devices(
-    manager: DeviceManager,
+    host: Box<dyn Host>,
     config: &AudioConfig,
     capture_config: GraphConfig,
     events: &tokio::sync::broadcast::Sender<ClientEvent>,
 ) -> Result<Devices, String> {
     match config.device_backend {
-        DeviceBackend::Portable => open_portable(manager, config, capture_config, events)
+        DeviceBackend::Portable => open_portable(host, config, capture_config, events)
             .map(|portable| Devices::from_portable(portable, config, capture_config)),
         DeviceBackend::AppleVoiceProcessing { .. } => {
-            open_voice_processing_devices(manager, config, capture_config, events)
+            open_voice_processing_devices(host, config, capture_config, events)
         }
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "macos-voiceio"))]
+/// Devices for settings that worked before. Whatever does not open now is
+/// retried.
+fn open_previous(
+    host: Box<dyn Host>,
+    previous: &AudioConfig,
+    capture_config: GraphConfig,
+    events: &tokio::sync::broadcast::Sender<ClientEvent>,
+) -> Devices {
+    match previous.device_backend {
+        DeviceBackend::Portable => Devices::from_portable(
+            open_available(host, previous, capture_config),
+            previous,
+            capture_config,
+        ),
+        DeviceBackend::AppleVoiceProcessing { .. } => {
+            let host = Arc::new(Mutex::new(host));
+            let unit = open_voice_processing(
+                &**host.lock(),
+                previous.device_backend,
+                capture_config,
+                previous.start_muted,
+            )
+            .inspect_err(|error| send_device_error(events, error))
+            .ok();
+            let missing = unit.is_none();
+            let mut devices = Devices::from_duplex(
+                host,
+                unit,
+                previous,
+                capture_config,
+                ss_audio::device::MicrophoneMode::Unknown,
+            );
+            // Its error was just sent; the retries stay quiet.
+            devices.notified[0] = missing;
+            devices
+        }
+    }
+}
+
 fn open_voice_processing_devices(
-    manager: DeviceManager,
+    host: Box<dyn Host>,
     config: &AudioConfig,
     capture_config: GraphConfig,
     events: &tokio::sync::broadcast::Sender<ClientEvent>,
 ) -> Result<Devices, String> {
+    if !host.duplex_supported() {
+        return Err("Apple VoiceProcessingIO is unavailable on this platform or build".to_owned());
+    }
     if config.input_device.is_some() || config.output_device.is_some() {
         return Err("Apple VoiceProcessingIO requires the system-default devices".to_owned());
     }
-    let DeviceBackend::AppleVoiceProcessing {
-        bypass,
-        automatic_gain_control,
-    } = config.device_backend
-    else {
-        unreachable!("called only for the Apple backend");
-    };
-    let streams = manager
-        .open_voice_processing(
-            capture_config,
-            GraphConfig::STEREO,
-            VoiceProcessingConfig {
-                bypass,
-                automatic_gain_control,
-                muted: config.start_muted,
-            },
-        )
-        .map_err(|error| {
-            send_device_error(events, &error);
-            error.to_string()
-        })?;
+    let unit = open_voice_processing(
+        &*host,
+        config.device_backend,
+        capture_config,
+        config.start_muted,
+    )
+    .map_err(|error| {
+        send_device_error(events, &error);
+        error.to_string()
+    })?;
     let voice_mode = device::microphone_mode_status().active;
     let _ = events.send(ClientEvent::VoiceDevice(
         VoiceDeviceState::AppleVoiceProcessing {
             microphone_mode: voice_mode,
         },
     ));
-    Ok(Devices {
-        manager: Arc::new(Mutex::new(manager)),
+    Ok(Devices::from_duplex(
+        Arc::new(Mutex::new(host)),
+        Some(unit),
+        config,
         capture_config,
-        capture: None,
-        playback: None,
-        voice_processing: Some(streams),
-        voice_muted: config.start_muted,
         voice_mode,
-    })
-}
-
-#[cfg(not(all(target_os = "macos", feature = "macos-voiceio")))]
-fn open_voice_processing_devices(
-    manager: DeviceManager,
-    config: &AudioConfig,
-    capture_config: GraphConfig,
-    events: &tokio::sync::broadcast::Sender<ClientEvent>,
-) -> Result<Devices, String> {
-    let _ = (manager, config, capture_config, events);
-    Err("Apple VoiceProcessingIO is unavailable on this platform or build".to_owned())
+    ))
 }
 
 /// Builds the processing chain and voice activation for `config`.
@@ -818,6 +921,7 @@ struct Runtime {
     incoming: Receiver<IncomingMedia>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
+    hosts: Hosts,
     devices: Option<Devices>,
     chain: Chain,
     vad: Option<Vad>,
@@ -847,14 +951,14 @@ impl Runtime {
         incoming: Receiver<IncomingMedia>,
         shared: Arc<Shared>,
         stop: Arc<AtomicBool>,
+        hosts: Hosts,
     ) -> Result<Self, String> {
         let mut graph = VoiceGraph::new(profile, bitrate).map_err(|error| error.to_string())?;
         graph.configure(&config);
         let (chain, vad) = build_processing(&config, graph.channels())?;
         let devices = if config.source == AudioSource::Device {
-            let manager = DeviceManager::new();
             let capture_config = graph_config(graph.channels());
-            Some(open_devices(manager, &config, capture_config, &events)?)
+            Some(open_devices(hosts(), &config, capture_config, &events)?)
         } else {
             None
         };
@@ -868,13 +972,14 @@ impl Runtime {
             incoming,
             shared,
             stop,
+            hosts,
             devices,
             chain,
             vad,
             epoch: Instant::now(),
             capture: vec![0.0; quantum],
             capture_queue: Duration::ZERO,
-            render_tap: Vec::with_capacity(8),
+            render_tap: Vec::with_capacity(MAX_RENDER_BATCH + 2),
             test_sample: 0,
             input_dbfs: -96.0,
             pacer: Pacer::default(),
@@ -1021,6 +1126,7 @@ impl Runtime {
         let channels = self.graph.channels();
         let previous = self.config.clone();
         let events = self.events.clone();
+        let hosts = Arc::clone(&self.hosts);
         self.spawn_setup(move || -> Apply {
             let built = build_processing(&config, channels);
             Box::new(move |runtime: &mut Runtime| {
@@ -1039,7 +1145,8 @@ impl Runtime {
                     let old = runtime.devices.take().map(Devices::into_portable);
                     runtime.spawn_setup(move || -> Apply {
                         drop(old);
-                        let replacement = Replacement::open(&config, &previous, channels, &events);
+                        let replacement =
+                            Replacement::open(&hosts, &config, &previous, channels, &events);
                         Box::new(move |runtime: &mut Runtime| {
                             runtime.busy = false;
                             let result = replacement.install(runtime, &config, &previous);
@@ -1048,7 +1155,9 @@ impl Runtime {
                     });
                     return;
                 }
-                runtime.finish_configure(config, chain, vad, Ok(()), reply);
+                runtime.retry_devices(Box::new(move |runtime: &mut Runtime| {
+                    runtime.finish_configure(config, chain, vad, Ok(()), reply);
+                }));
             })
         });
     }
@@ -1109,9 +1218,11 @@ impl Runtime {
                 }
                 let old = runtime.devices.take().map(Devices::into_portable);
                 let events = runtime.events.clone();
+                let hosts = Arc::clone(&runtime.hosts);
                 runtime.spawn_setup(move || -> Apply {
                     drop(old);
-                    let replacement = Replacement::open(&config, &previous, channels, &events);
+                    let replacement =
+                        Replacement::open(&hosts, &config, &previous, channels, &events);
                     Box::new(move |runtime: &mut Runtime| {
                         runtime.busy = false;
                         let result = replacement.install(runtime, &config, &previous);
@@ -1220,6 +1331,11 @@ impl Runtime {
                 );
             }
         }
+        // Only capture drains the tap. Keep the newest frames the echo
+        // canceller takes in one go, so a closed or stalled capture stream
+        // does not grow it.
+        let stale = self.render_tap.len().saturating_sub(MAX_RENDER_BATCH);
+        self.render_tap.drain(..stale);
         let now = Instant::now();
         let graph = self.graph.snapshot();
         *self.media.audio_clocks.lock() = graph
@@ -1313,6 +1429,8 @@ impl Runtime {
         devices.counter_values()
     }
 
+    /// Poll the host, follow lost and returning devices, and retry what is
+    /// wanted but not open.
     fn device_events(&mut self) {
         let Some(devices) = &mut self.devices else {
             return;
@@ -1321,69 +1439,125 @@ impl Runtime {
         if self.busy {
             return;
         }
-        // A setup job may hold the manager while it opens a stream.
-        let Some(manager) = devices.manager.try_lock() else {
+        // A setup job may hold the host while it opens a stream.
+        let Some(host) = devices.host.try_lock() else {
             return;
         };
-        let events = manager.poll();
-        drop(manager);
-        let mut reopen = Reopen {
-            capture: false,
-            playback: false,
-        };
-        let mut reopen_voice_processing = false;
-        for event in events {
-            if let DeviceEvent::SilentInput { access, .. } = &event {
-                let _ = self
-                    .events
-                    .send(ClientEvent::VoiceDevice(VoiceDeviceState::SilentInput {
-                        permission_denied: *access == device::MicrophoneAccess::Denied,
-                    }));
-            }
-            if let DeviceEvent::LowQualityInput { sample_rate, .. } = &event {
-                let _ = self.events.send(ClientEvent::VoiceDevice(
-                    VoiceDeviceState::LowQualityInput {
-                        sample_rate: *sample_rate,
-                    },
-                ));
-            }
-            if let Some((stream, _)) = &devices.capture {
-                reopen.capture |= event.requires_reopen(
-                    Direction::Capture,
-                    stream.device_id(),
-                    self.config.input_device.is_none(),
-                );
-            }
-            if let Some((stream, _)) = &devices.playback {
-                reopen.playback |= event.requires_reopen(
-                    Direction::Playback,
-                    stream.device_id(),
-                    self.config.output_device.is_none(),
-                );
-            }
-            if devices.voice_processing_active()
-                && matches!(event, DeviceEvent::DefaultChanged { .. })
-            {
-                reopen_voice_processing = true;
-            }
+        let events = host.poll();
+        drop(host);
+        let now = Instant::now();
+        for event in &events {
+            notify_device_event(&self.events, event);
+            devices.observe(event, now, &self.setup);
         }
-        reopen_voice_processing |= devices.voice_processing_stopped();
-        if reopen_voice_processing {
-            if let Err(error) = devices.reopen_voice_processing(&self.config) {
-                let _ = self
-                    .events
-                    .send(ClientEvent::VoiceDevice(VoiceDeviceState::Unavailable(
-                        error,
-                    )));
-            }
+        if devices.recover_voice_processing(now, &self.config, &self.events) {
             self.pacer.reset();
-            return;
         }
-        if reopen.capture || reopen.playback {
-            let job = reopen.job(devices, &self.config, self.graph.channels(), &self.events);
-            self.spawn_setup(job);
+        // A reopen reports the routes once it is in, so a stream that is
+        // replaced at once never shows as missing.
+        match devices.reopen_job(now) {
+            Some(job) => self.spawn_setup(job),
+            None => devices.report_routes(&self.events),
         }
     }
+
+    /// Swap in streams a reopen job opened, and schedule the next try for
+    /// those that did not open.
+    fn install_reopened(&mut self, capture: Opened<Input>, playback: Opened<Output>) {
+        let portable = self
+            .devices
+            .as_mut()
+            .filter(|devices| matches!(devices.recover, Recover::Portable { .. }));
+        let Some(devices) = portable else {
+            // The devices were replaced meanwhile; drop these off the worker.
+            self.setup
+                .dispose((capture.and_then(Result::ok), playback.and_then(Result::ok)));
+            return;
+        };
+        let Recover::Portable {
+            capture: capture_route,
+            playback: playback_route,
+        } = &mut devices.recover
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let mut errors = [None, None];
+        match capture {
+            Some(Ok(input)) => {
+                capture_route.opened(input.0.device_id().clone(), now);
+                self.setup.dispose(devices.capture.replace(input));
+                devices.notified[0] = false;
+                // Rendered audio from before the gap is not this stream's echo.
+                self.render_tap.clear();
+            }
+            Some(Err(error)) => {
+                capture_route.failed(now);
+                errors[0] = devices.capture.is_none().then_some(error);
+            }
+            None => {}
+        }
+        match playback {
+            Some(Ok(output)) => {
+                playback_route.opened(output.0.device_id().clone(), now);
+                self.setup.dispose(devices.playback.replace(output));
+                devices.notified[1] = false;
+                self.pacer.reset();
+            }
+            Some(Err(error)) => {
+                playback_route.failed(now);
+                errors[1] = devices.playback.is_none().then_some(error);
+            }
+            None => {}
+        }
+        for (slot, error) in errors.into_iter().enumerate() {
+            if let Some(error) = error {
+                devices.failed(slot, &error, &self.events);
+            }
+        }
+        devices.report_routes(&self.events);
+    }
+
+    /// Try missing or fallback streams again now, then run `then`. Settings
+    /// Apply goes through here, so applying the same settings reopens a
+    /// closed stream.
+    fn retry_devices(&mut self, then: Apply) {
+        let now = Instant::now();
+        let Some(devices) = &mut self.devices else {
+            then(self);
+            return;
+        };
+        devices.retry_now(now);
+        if devices.recover_voice_processing(now, &self.config, &self.events) {
+            self.pacer.reset();
+        }
+        let Some(job) = devices.reopen_job(now) else {
+            devices.report_routes(&self.events);
+            then(self);
+            return;
+        };
+        self.spawn_setup(move || -> Apply {
+            let reopened = job();
+            Box::new(move |runtime: &mut Runtime| {
+                reopened(runtime);
+                then(runtime);
+            })
+        });
+    }
+}
+
+/// Pass input conditions the UI explains on to it.
+fn notify_device_event(events: &tokio::sync::broadcast::Sender<ClientEvent>, event: &DeviceEvent) {
+    let state = match event {
+        DeviceEvent::SilentInput { access, .. } => VoiceDeviceState::SilentInput {
+            permission_denied: *access == device::MicrophoneAccess::Denied,
+        },
+        DeviceEvent::LowQualityInput { sample_rate, .. } => VoiceDeviceState::LowQualityInput {
+            sample_rate: *sample_rate,
+        },
+        _ => return,
+    };
+    let _ = events.send(ClientEvent::VoiceDevice(state));
 }
 
 fn send_device_error(events: &tokio::sync::broadcast::Sender<ClientEvent>, error: &device::Error) {
@@ -1674,6 +1848,16 @@ mod tests {
     const PRE_ROLL: usize = ss_audio::vad::PRE_ROLL_FRAMES;
 
     fn runtime(profile: VoiceProfile, gate: TalkGate) -> Runtime {
+        let config = AudioConfig {
+            source: AudioSource::Silent,
+            gate,
+            release_delay: Duration::ZERO,
+            ..AudioConfig::default()
+        };
+        build(profile, config, host::system()).unwrap()
+    }
+
+    fn build(profile: VoiceProfile, config: AudioConfig, hosts: Hosts) -> Result<Runtime, String> {
         let (_, update_rx) = mpsc::sync_channel(1);
         let (_, incoming_rx) = mpsc::sync_channel(1);
         let shared = Arc::new(Shared {
@@ -1687,26 +1871,20 @@ mod tests {
             cues_enabled: AtomicBool::new(true),
             controls_enabled: AtomicBool::new(true),
         });
-        let config = AudioConfig {
-            source: AudioSource::Silent,
-            gate,
-            release_delay: Duration::ZERO,
-            ..AudioConfig::default()
-        };
         let mut runtime = Runtime::new(
             profile,
             profile.encoder_params().default_bitrate_bps,
             config,
             MediaLink::new(),
-            tokio::sync::broadcast::channel(16).0,
+            tokio::sync::broadcast::channel(64).0,
             update_rx,
             incoming_rx,
             shared,
             Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
+            hosts,
+        )?;
         runtime.graph.set_track_id(1);
-        runtime
+        Ok(runtime)
     }
 
     fn voice_activation() -> TalkGate {
@@ -2093,6 +2271,379 @@ mod tests {
             );
             assert_eq!(stats.late, 0, "{profile:?} {stats:?}");
             assert_eq!(stats.lost, 0, "{profile:?} {stats:?}");
+        }
+    }
+
+    /// Unplug and replug devices under a running worker, through the mock host.
+    mod recovery {
+        use ss_audio::{
+            device::{DeviceId, Direction},
+            processing::MAX_RENDER_BATCH,
+        };
+
+        use super::{
+            super::host::mock::{self, Shared as World},
+            *,
+        };
+
+        const SECOND: Duration = Duration::from_secs(1);
+
+        fn device_runtime(world: &World, config: AudioConfig) -> Runtime {
+            let config = AudioConfig {
+                source: AudioSource::Device,
+                gate: TalkGate::OpenMic,
+                ..config
+            };
+            build(VoiceProfile::Voice, config, mock::hosts(world)).unwrap()
+        }
+
+        fn id(raw: &str) -> DeviceId {
+            DeviceId::new(raw)
+        }
+
+        /// The device a direction's stream is open on.
+        fn open_on(runtime: &Runtime, direction: Direction) -> Option<DeviceId> {
+            let devices = runtime.devices.as_ref()?;
+            match direction {
+                Direction::Capture => devices
+                    .capture
+                    .as_ref()
+                    .map(|(stream, _)| stream.device_id().clone()),
+                Direction::Playback => devices
+                    .playback
+                    .as_ref()
+                    .map(|(stream, _)| stream.device_id().clone()),
+            }
+        }
+
+        fn duplex_open(runtime: &Runtime) -> bool {
+            runtime
+                .devices
+                .as_ref()
+                .is_some_and(|devices| devices.voice_processing.is_some())
+        }
+
+        /// Run the worker's device loop for `limit`, or until `done`. Returns
+        /// the time taken and the largest render tap seen.
+        fn pump(
+            runtime: &mut Runtime,
+            world: &World,
+            limit: Duration,
+            done: impl Fn(&Runtime) -> bool,
+        ) -> (Duration, usize) {
+            let start = Instant::now();
+            let mut next = start;
+            let mut tap = 0;
+            while start.elapsed() < limit && !done(runtime) {
+                runtime.poll_setup();
+                runtime.device_events();
+                if Instant::now() >= next {
+                    runtime.render_once();
+                    next += QUANTUM;
+                }
+                world.lock().drain_output();
+                tap = tap.max(runtime.render_tap.len());
+                thread::sleep(Duration::from_millis(1));
+            }
+            (start.elapsed(), tap)
+        }
+
+        /// One unplug/replug script, run on its own thread: the worker is
+        /// not `Send`, so each case builds its runtime there.
+        fn in_parallel(cases: Vec<Box<dyn FnOnce() + Send>>) {
+            let handles: Vec<_> = cases.into_iter().map(thread::spawn).collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        }
+
+        /// Route changes and stream errors the worker reported, in order.
+        fn reported(
+            events: &mut tokio::sync::broadcast::Receiver<ClientEvent>,
+        ) -> (Vec<(Route, Route)>, usize) {
+            let mut routes = Vec::new();
+            let mut errors = 0;
+            while let Ok(event) = events.try_recv() {
+                match event {
+                    ClientEvent::VoiceDevice(VoiceDeviceState::Routes { capture, playback }) => {
+                        routes.push((capture, playback));
+                    }
+                    ClientEvent::VoiceDevice(VoiceDeviceState::Unavailable(_)) => errors += 1,
+                    _ => {}
+                }
+            }
+            (routes, errors)
+        }
+
+        /// `route` in `direction`, the other one fine.
+        fn only(direction: Direction, route: Route) -> (Route, Route) {
+            match direction {
+                Direction::Capture => (route, Route::Wanted),
+                Direction::Playback => (Route::Wanted, route),
+            }
+        }
+
+        fn selected(direction: Direction, id: Option<DeviceId>) -> AudioConfig {
+            match direction {
+                Direction::Capture => AudioConfig {
+                    input_device: id,
+                    ..AudioConfig::default()
+                },
+                Direction::Playback => AudioConfig {
+                    output_device: id,
+                    ..AudioConfig::default()
+                },
+            }
+        }
+
+        /// A headset that is the only device in `direction` disappears, the
+        /// reopen fails, and it comes back.
+        fn lost_and_returned(direction: Direction, select: bool, announce: bool) {
+            let label = format!("{direction:?} selected={select} announce={announce}");
+            let world = match direction {
+                Direction::Capture => mock::world(&["headset"], &["speakers"]),
+                Direction::Playback => mock::world(&["microphone"], &["headset"]),
+            };
+            let config = selected(direction, select.then(|| id("headset")));
+            let mut runtime = device_runtime(&world, config);
+            let mut events = runtime.events.subscribe();
+            assert_eq!(open_on(&runtime, direction), Some(id("headset")), "{label}");
+            pump(&mut runtime, &world, Duration::from_millis(50), |_| false);
+
+            world.lock().unplug(direction, "headset");
+            pump(&mut runtime, &world, Duration::from_millis(1_300), |_| {
+                false
+            });
+            assert_eq!(open_on(&runtime, direction), None, "{label}");
+            let wanted = select.then(|| id("headset"));
+            let attempts = world.lock().attempts(Some(direction), wanted.as_ref());
+            // The open at start, then a retry about every 500 ms.
+            assert!(
+                (3..=6).contains(&attempts),
+                "{label}: {attempts} opens while the device was gone"
+            );
+
+            world.lock().plug(direction, "headset", true, announce);
+            let (took, _) = pump(&mut runtime, &world, 2 * SECOND, |runtime| {
+                open_on(runtime, direction).is_some()
+            });
+            assert_eq!(
+                open_on(&runtime, direction),
+                Some(id("headset")),
+                "{label}: not reopened after {took:?}"
+            );
+            assert!(took < SECOND, "{label}: reopened after {took:?}");
+            pump(&mut runtime, &world, Duration::from_millis(20), |_| false);
+            let (routes, errors) = reported(&mut events);
+            assert_eq!(
+                routes,
+                [
+                    only(direction, Route::Wanted),
+                    only(direction, Route::Missing),
+                    only(direction, Route::Wanted),
+                ],
+                "{label}"
+            );
+            assert_eq!(errors, 1, "{label}: one notice, not one per retry");
+        }
+
+        #[test]
+        fn a_lost_device_reopens_within_a_second_of_returning() {
+            in_parallel(vec![
+                Box::new(|| lost_and_returned(Direction::Capture, true, true)),
+                Box::new(|| lost_and_returned(Direction::Capture, false, false)),
+                Box::new(|| lost_and_returned(Direction::Playback, true, false)),
+                Box::new(|| lost_and_returned(Direction::Playback, false, true)),
+            ]);
+        }
+
+        #[test]
+        fn a_closed_capture_keeps_the_render_tap_bounded() {
+            let world = mock::world(&["headset"], &["speakers"]);
+            let mut runtime =
+                device_runtime(&world, selected(Direction::Capture, Some(id("headset"))));
+            world.lock().unplug(Direction::Capture, "headset");
+            let (_, tap) = pump(&mut runtime, &world, SECOND, |_| false);
+            assert_eq!(open_on(&runtime, Direction::Capture), None);
+            assert!(
+                tap <= MAX_RENDER_BATCH,
+                "{tap} rendered frames held for a capture that is closed"
+            );
+        }
+
+        /// The selected device goes away while the default stays: the stream
+        /// moves to the default, then back when the selected one returns.
+        fn falls_back_and_returns(direction: Direction, announce: bool) {
+            let label = format!("{direction:?} announce={announce}");
+            let world = mock::world(&["builtin", "headset"], &["builtin", "headset"]);
+            let mut runtime = device_runtime(&world, selected(direction, Some(id("headset"))));
+            let mut events = runtime.events.subscribe();
+            assert_eq!(open_on(&runtime, direction), Some(id("headset")), "{label}");
+            pump(&mut runtime, &world, Duration::from_millis(50), |_| false);
+
+            world.lock().unplug(direction, "headset");
+            let (took, _) = pump(&mut runtime, &world, 2 * SECOND, |runtime| {
+                open_on(runtime, direction) == Some(id("builtin"))
+            });
+            assert_eq!(
+                open_on(&runtime, direction),
+                Some(id("builtin")),
+                "{label}: no fallback after {took:?}"
+            );
+            assert!(took < SECOND, "{label}: fell back after {took:?}");
+
+            world.lock().plug(direction, "headset", false, announce);
+            let (took, _) = pump(&mut runtime, &world, 2 * SECOND, |runtime| {
+                open_on(runtime, direction) == Some(id("headset"))
+            });
+            assert_eq!(
+                open_on(&runtime, direction),
+                Some(id("headset")),
+                "{label}: still on the fallback after {took:?}"
+            );
+            assert!(took < SECOND, "{label}: returned after {took:?}");
+            pump(&mut runtime, &world, Duration::from_millis(20), |_| false);
+            let (routes, errors) = reported(&mut events);
+            assert_eq!(
+                routes,
+                [
+                    only(direction, Route::Wanted),
+                    only(direction, Route::Fallback),
+                    only(direction, Route::Wanted),
+                ],
+                "{label}"
+            );
+            assert_eq!(errors, 0, "{label}");
+        }
+
+        #[test]
+        fn a_missing_selected_device_falls_back_to_the_default_and_returns() {
+            in_parallel(vec![
+                Box::new(|| falls_back_and_returns(Direction::Capture, true)),
+                Box::new(|| falls_back_and_returns(Direction::Capture, false)),
+                Box::new(|| falls_back_and_returns(Direction::Playback, true)),
+                Box::new(|| falls_back_and_returns(Direction::Playback, false)),
+            ]);
+        }
+
+        fn voice_processing_returns(announce: bool) {
+            let world = mock::world(&["headset"], &["headset"]);
+            let mut runtime = device_runtime(
+                &world,
+                AudioConfig {
+                    device_backend: DeviceBackend::AppleVoiceProcessing {
+                        bypass: false,
+                        automatic_gain_control: true,
+                    },
+                    ..AudioConfig::default()
+                },
+            );
+            let mut events = runtime.events.subscribe();
+            assert!(duplex_open(&runtime));
+            pump(&mut runtime, &world, Duration::from_millis(50), |_| false);
+
+            {
+                let mut world = world.lock();
+                world.unplug(Direction::Capture, "headset");
+                world.unplug(Direction::Playback, "headset");
+            }
+            let (_, tap) = pump(&mut runtime, &world, Duration::from_millis(1_300), |_| {
+                false
+            });
+            assert!(!duplex_open(&runtime), "announce={announce}");
+            assert!(tap <= MAX_RENDER_BATCH, "announce={announce}: tap {tap}");
+            let attempts = world.lock().attempts(None, None);
+            assert!(
+                (3..=6).contains(&attempts),
+                "announce={announce}: {attempts} opens while the devices were gone"
+            );
+
+            {
+                let mut world = world.lock();
+                world.plug(Direction::Capture, "headset", true, announce);
+                world.plug(Direction::Playback, "headset", true, announce);
+            }
+            let (took, _) = pump(&mut runtime, &world, 2 * SECOND, duplex_open);
+            assert!(
+                duplex_open(&runtime),
+                "announce={announce}: not reopened after {took:?}"
+            );
+            assert!(
+                took < SECOND,
+                "announce={announce}: reopened after {took:?}"
+            );
+            pump(&mut runtime, &world, Duration::from_millis(20), |_| false);
+            let (routes, errors) = reported(&mut events);
+            let (wanted, missing) = (Route::Wanted, Route::Missing);
+            assert_eq!(
+                routes,
+                [(wanted, wanted), (missing, missing), (wanted, wanted)],
+                "announce={announce}"
+            );
+            assert_eq!(errors, 1, "announce={announce}");
+        }
+
+        #[test]
+        fn voice_processing_reopens_within_a_second_of_its_devices_returning() {
+            in_parallel(vec![
+                Box::new(|| voice_processing_returns(true)),
+                Box::new(|| voice_processing_returns(false)),
+            ]);
+        }
+
+        #[test]
+        fn apply_reopens_a_closed_stream_with_the_same_settings() {
+            let world = mock::world(&["headset"], &["speakers"]);
+            let mut runtime =
+                device_runtime(&world, selected(Direction::Capture, Some(id("headset"))));
+            world.lock().unplug(Direction::Capture, "headset");
+            pump(&mut runtime, &world, Duration::from_millis(100), |_| false);
+            assert_eq!(open_on(&runtime, Direction::Capture), None);
+            // Back, but not announced, and before the next timed retry.
+            world
+                .lock()
+                .plug(Direction::Capture, "headset", true, false);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            runtime.update(Update::Configure {
+                config: runtime.config.clone(),
+                reply: tx,
+            });
+            assert_eq!(settle(&mut runtime, rx), Ok(()));
+            assert_eq!(
+                open_on(&runtime, Direction::Capture),
+                Some(id("headset")),
+                "Apply left the capture stream closed"
+            );
+        }
+
+        #[test]
+        fn a_failed_device_change_keeps_retrying_the_previous_devices() {
+            let world = mock::world(&["headset"], &["speakers"]);
+            let mut runtime =
+                device_runtime(&world, selected(Direction::Capture, Some(id("headset"))));
+            world.lock().unplug(Direction::Capture, "headset");
+            pump(&mut runtime, &world, Duration::from_millis(100), |_| false);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            runtime.update(Update::Configure {
+                config: AudioConfig {
+                    input_device: Some(id("elsewhere")),
+                    ..runtime.config.clone()
+                },
+                reply: tx,
+            });
+            assert!(settle(&mut runtime, rx).is_err());
+            assert_eq!(runtime.config.input_device, Some(id("headset")));
+            assert_eq!(open_on(&runtime, Direction::Playback), Some(id("speakers")));
+
+            world.lock().plug(Direction::Capture, "headset", true, true);
+            let (took, _) = pump(&mut runtime, &world, 2 * SECOND, |runtime| {
+                open_on(runtime, Direction::Capture).is_some()
+            });
+            assert_eq!(
+                open_on(&runtime, Direction::Capture),
+                Some(id("headset")),
+                "not reopened after {took:?}"
+            );
         }
     }
 }
