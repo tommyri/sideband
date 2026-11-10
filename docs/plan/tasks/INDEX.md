@@ -170,7 +170,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-083](T-083-playback-pacing-lag-recovery.md) | Bounded playback latency: ring-level pacing, jitter lag recovery | M | T-015, T-041, T-082 | in-progress |
 | [T-084](T-084-device-reopen-retry.md) | Retry failed device reopens during a call | S | T-010, T-041, T-054, T-083 | todo |
 | [T-085](T-085-mute-fail-closed-shortcuts.md) | Mute fails closed; global shortcuts are never dropped | M | T-041, T-058 | in-progress |
-| [T-086](T-086-connection-identity-track-reuse.md) | Own connection id in Welcome; receivers survive track id reuse | M | T-081, T-082 | todo |
+| [T-086](T-086-connection-identity-track-reuse.md) | Own connection id in Welcome; receivers survive track id reuse | M | T-081, T-082 | in-progress |
 | [T-087](T-087-input-stuck-key-reconcile.md) | PTT cannot stick: XI 2.1 and physical-state reconcile | S | T-049, T-050 | todo |
 | [T-088](T-088-capture-channel-voiceio-frames.md) | Capture channel selection and whole-frame ring transfers | S | T-010, T-054 | todo |
 | [T-089](T-089-reconnect-policy.md) | Reconnect policy: retryable errors, address fallback, backoff, stale cache | M | T-060, T-081, T-086 | todo |

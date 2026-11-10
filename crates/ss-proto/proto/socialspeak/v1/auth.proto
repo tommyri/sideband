@@ -94,6 +94,10 @@ message Welcome {
   string resume_token = 3;
   // Full channel tree, roles, members, voice, tracks, reads, and DMs.
   Snapshot snapshot = 4;
+  // 16-byte id of this connection: the `conn_id` on its own voice states and
+  // tracks. A resume that restores a leased voice seat keeps the old id.
+  // Empty from servers that predate it.
+  bytes conn_id = 5;
 }
 
 // Change the connecting user's display name or avatar.

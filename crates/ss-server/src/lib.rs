@@ -143,6 +143,7 @@ impl Server {
                 }),
                 resume_token: String::new(),
                 snapshot: Some(v1::Snapshot::default()),
+                conn_id: id_to_bytes(conn_id),
             })),
         };
         // Hello fits one frame, but its username appears twice in Welcome.

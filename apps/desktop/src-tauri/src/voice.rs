@@ -83,6 +83,10 @@ fn disconnected() -> ApiError {
 fn own_connection(client: &Client) -> Result<Id, ApiError> {
     let state = client.state();
     let state = state.read();
+    if let Some(conn) = state.own_conn {
+        return Ok(conn);
+    }
+    // Older servers do not name our connection.
     let user = state.own_user.as_ref().ok_or_else(disconnected)?;
     let track = state
         .tracks
@@ -431,9 +435,13 @@ async fn observe(app: &AppHandle, state: &AppState) -> (String, Vec<String>) {
         return (String::new(), Vec::new());
     };
     let client = state.client(&active.server);
+    // A reconnect that did not resume the seat has a new connection id.
     let (connected, retrying, channel) = client.as_ref().map_or((false, false, None), |client| {
         let store = client.state();
         let current = store.read();
+        if let Some(conn) = current.own_conn {
+            active.connection = conn;
+        }
         (
             current.connection == ConnectionState::Connected,
             matches!(current.connection, ConnectionState::Reconnecting { .. }),

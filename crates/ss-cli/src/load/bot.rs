@@ -157,7 +157,7 @@ async fn live(bot: &mut Bot, shared: &Shared, mut session: Session, track: u32) 
                 let Some(event) = event else {
                     break Exit::Lost(closed_reason(&session));
                 };
-                if let Some(id) = session::own_track(&event, &session.user_id) {
+                if let Some(id) = session.own_track(&event) {
                     track = id;
                 } else if let Some(server_envelope::Msg::TrackRemoved(removed)) = &event.msg {
                     sequences.remove(&removed.track_id);

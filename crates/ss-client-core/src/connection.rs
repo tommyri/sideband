@@ -493,8 +493,11 @@ impl Runner {
         self.store.connection(state.clone());
         let _ = self.events.send(ClientEvent::Connection(state));
     }
-    fn event(&self, event: v1::ServerEnvelope) -> Result<bool, Error> {
+    fn event(&mut self, event: v1::ServerEnvelope) -> Result<bool, Error> {
         let message = event.msg.ok_or(Error::Protocol("empty event"))?;
+        if let Event::VoiceStateUpdated(update) = &message {
+            self.follow_own_voice(update);
+        }
         let received = match &message {
             v1::server_envelope::Msg::MessageCreated(created) => created
                 .message
@@ -618,9 +621,10 @@ impl Runner {
         token: &mut String,
     ) -> Result<ss_net::pins::TrustPolicy, Error> {
         self.store.install(welcome, reconnecting)?;
+        let (storage, address) = (self.storage.clone(), self.address.clone());
         self.draining(
             &mut next.incoming,
-            persist(&self.storage, &self.address, &welcome.resume_token),
+            persist(&storage, &address, &welcome.resume_token),
         )
         .await?;
         token.clone_from(&welcome.resume_token);
@@ -800,7 +804,7 @@ impl Runner {
     }
     /// Run one command during reconnect setup, before the connection loop.
     /// Audio is unaffected because the media pump is its own task.
-    async fn execute(&self, live: &mut Live, message: Msg) -> Result<v1::Ack, Error> {
+    async fn execute(&mut self, live: &mut Live, message: Msg) -> Result<v1::Ack, Error> {
         let Live {
             control, incoming, ..
         } = live;
@@ -810,7 +814,7 @@ impl Runner {
     /// Await one reconnect-setup step while applying events, so a busy
     /// server cannot overflow the router before the connection loop runs.
     async fn draining<T>(
-        &self,
+        &mut self,
         incoming: &mut mpsc::Receiver<v1::ServerEnvelope>,
         step: impl Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
@@ -847,24 +851,29 @@ impl Runner {
         }
         Ok(())
     }
+    /// Rejoin voice after a reconnect, unless the server kept this
+    /// connection's seat (a resumed lease) or the account's seat is now on
+    /// another device. The server gives a user one seat, so joining again
+    /// would take it back from that device.
     async fn restore_voice(&mut self, live: &mut Live) -> Result<(), Error> {
         let Some(join) = self.desired_voice.clone() else {
             return Ok(());
         };
-        let already_joined = {
-            let state = self.store.read();
-            let own_user = state.own_user.as_ref().map(|user| &user.id);
-            state.voice_states.values().any(|voice| {
-                Some(&voice.user_id) == own_user
-                    && voice.channel_id.as_ref() == Some(&join.channel_id)
-            })
-        };
-        let result = if already_joined {
-            Ok(v1::Ack::default())
-        } else {
-            self.execute(live, Msg::JoinVoice(join)).await
-        };
-        match result {
+        match self.resumed_seat(&join) {
+            ResumedSeat::Kept(seat) => {
+                self.desired_voice = Some(seat);
+                return Ok(());
+            }
+            ResumedSeat::OtherDevice => {
+                self.desired_voice = None;
+                let _ = self.events.send(ClientEvent::Notice(
+                    "Voice continued on another device".to_owned(),
+                ));
+                return Ok(());
+            }
+            ResumedSeat::Gone => {}
+        }
+        match self.execute(live, Msg::JoinVoice(join)).await {
             Ok(_) => Ok(()),
             Err(Error::Server { message, .. }) => {
                 self.desired_voice = None;
@@ -875,6 +884,55 @@ impl Runner {
             }
             Err(error) => Err(error),
         }
+    }
+    /// Where the account's voice seat is in a freshly installed snapshot.
+    fn resumed_seat(&self, join: &v1::JoinVoice) -> ResumedSeat {
+        let state = self.store.read();
+        let Some(user) = state.own_user.as_ref().map(|user| &user.id) else {
+            return ResumedSeat::Gone;
+        };
+        let seated = |voice: &&v1::VoiceState| voice.user_id == *user && voice.channel_id.is_some();
+        let Some(conn) = state.own_conn else {
+            // Older servers do not say which connection is ours: match the
+            // user and channel only.
+            return if state
+                .voice_states
+                .values()
+                .filter(seated)
+                .any(|voice| voice.channel_id.as_ref() == Some(&join.channel_id))
+            {
+                ResumedSeat::Kept(join.clone())
+            } else {
+                ResumedSeat::Gone
+            };
+        };
+        if let Some(voice) = state.voice_states.get(&conn).filter(seated) {
+            // A moderator may have moved the leased seat while we were away.
+            return ResumedSeat::Kept(v1::JoinVoice {
+                channel_id: voice.channel_id.clone().unwrap_or_default(),
+                self_mute: voice.self_mute,
+                self_deaf: voice.self_deaf,
+            });
+        }
+        if state.voice_states.values().any(|voice| seated(&voice)) {
+            ResumedSeat::OtherDevice
+        } else {
+            ResumedSeat::Gone
+        }
+    }
+    /// Keep the channel to restore in step with what the server says about
+    /// this connection's seat: a moderator move changes it, and a removal
+    /// (another device took the seat, a kick, lost access) clears it.
+    fn follow_own_voice(&mut self, update: &v1::VoiceStateUpdated) {
+        let own = self.store.read().own_conn;
+        if own.is_none() || crate::state::id(&update.conn_id).ok() != own {
+            return;
+        }
+        self.desired_voice = update.channel_id.clone().map(|channel_id| v1::JoinVoice {
+            channel_id,
+            self_mute: update.self_mute,
+            self_deaf: update.self_deaf,
+        });
     }
     fn accepted(&mut self, message: &Msg) {
         match message {
@@ -893,6 +951,16 @@ impl Runner {
             _ => {}
         }
     }
+}
+
+/// The account's voice seat after a resume, from the new snapshot.
+enum ResumedSeat {
+    /// This connection still holds it; restore this channel from now on.
+    Kept(v1::JoinVoice),
+    /// Another device signed in to the account holds it.
+    OtherDevice,
+    /// No seat: join again.
+    Gone,
 }
 
 async fn while_reconnecting<T>(

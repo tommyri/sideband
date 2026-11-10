@@ -21,6 +21,10 @@ pub struct State {
     pub server: Option<v1::ServerInfo>,
     /// Authenticated profile.
     pub own_user: Option<v1::User>,
+    /// This client's connection, the key of its own entry in `voice_states`
+    /// and the `conn_id` of its own tracks. Other devices signed in to the
+    /// same account have other connections. `None` from older servers.
+    pub own_conn: Option<Id>,
     /// Guild channels keyed by id. Use `channel_tree` for display order.
     pub channels: BTreeMap<Id, v1::Channel>,
     /// Direct and group conversations.
@@ -183,9 +187,15 @@ impl StateStore {
             .as_ref()
             .ok_or(Error::Protocol("missing own user"))?;
         let _ = id(&user.id)?;
+        let own_conn = if welcome.conn_id.is_empty() {
+            None
+        } else {
+            Some(id(&welcome.conn_id)?)
+        };
         let mut next = State {
             server: welcome.server_info.clone(),
             own_user: Some(user.clone()),
+            own_conn,
             connection,
             ..State::default()
         };

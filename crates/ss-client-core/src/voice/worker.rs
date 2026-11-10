@@ -2067,6 +2067,7 @@ mod tests {
                 &[TrackSpec {
                     id: 1,
                     user: Id::generate(),
+                    conn: Id::generate(),
                     gain: 1.0,
                     muted: false,
                 }],
