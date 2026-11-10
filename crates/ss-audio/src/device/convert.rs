@@ -75,20 +75,14 @@ pub(crate) fn push_unframed<T>(
     counters.callbacks.fetch_add(1, Ordering::Relaxed);
     let mut converted = [0.0; 8];
     let mut index = 0;
-    let mut dropped = false;
     while index + device_channels <= input.len() {
         let count = graph_frame(
             &input[index..index + device_channels],
             graph_channels,
             &mut converted,
         );
-        for sample in &converted[..count] {
-            if output.push(*sample).is_err() {
-                dropped = true;
-                break;
-            }
-        }
-        if dropped {
+        // Half a stereo frame would swap left and right from here on.
+        if !push_whole(&converted[..count], output) {
             counters.overruns.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -126,6 +120,7 @@ pub(crate) fn push_capture<T>(
 
 /// Fill a device callback from the playback ring. A short ring writes silence
 /// for the rest of the callback and increments the underrun counter once.
+/// What is left in the ring afterwards is published as `queued`.
 pub(crate) fn pull_playback<T>(
     output: &mut [T],
     device_channels: usize,
@@ -158,6 +153,7 @@ pub(crate) fn pull_playback<T>(
     if starved {
         counters.underruns.fetch_add(1, Ordering::Relaxed);
     }
+    counters.queued.store(input.slots(), Ordering::Relaxed);
 }
 
 fn graph_frame<T>(frame: &[T], graph_channels: usize, out: &mut [f32; 8]) -> usize
@@ -211,12 +207,20 @@ where
 }
 
 fn flush_frame(frame: &[f32], output: &mut Producer<f32>, counters: &Counters) {
-    for sample in frame {
-        if output.push(*sample).is_err() {
-            counters.overruns.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+    // A partial frame would shift every later 10 ms frame and, in stereo,
+    // swap the channels. Drop the frame whole.
+    if !push_whole(frame, output) {
+        counters.overruns.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Push all of `samples` or none of them. Does not allocate.
+pub(crate) fn push_whole(samples: &[f32], output: &mut Producer<f32>) -> bool {
+    let Ok(chunk) = output.write_chunk_uninit(samples.len()) else {
+        return false;
+    };
+    chunk.fill_from_iter(samples.iter().copied());
+    true
 }
 
 #[cfg(test)]
@@ -225,7 +229,7 @@ mod tests {
 
     use rtrb::RingBuffer;
 
-    use super::{Framer, note_signal, pull_playback, push_capture};
+    use super::{Framer, note_signal, pull_playback, push_capture, push_unframed};
     use crate::device::Counters;
 
     #[test]
@@ -276,5 +280,42 @@ mod tests {
         assert_eq!(output[1], 0.0);
         assert_eq!(counters.underruns.load(Ordering::Relaxed), 1);
         assert_eq!(counters.callbacks.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_full_capture_ring_drops_whole_frames_and_keeps_stereo_aligned() {
+        // Room for one 2-sample stereo frame and a half: the half must stay empty.
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(3);
+        let mut framer = Framer::new(2);
+        let counters = Counters::default();
+        let input = [0.25f32, -0.25, 0.25, -0.25];
+        push_capture(&input, 2, 2, &mut producer, &mut framer, &counters);
+        assert_eq!(consumer.slots(), 2);
+        assert_eq!(counters.overruns.load(Ordering::Relaxed), 1);
+        assert_eq!(consumer.pop().unwrap(), 0.25);
+        assert_eq!(consumer.pop().unwrap(), -0.25);
+
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(3);
+        let counters = Counters::default();
+        push_unframed(&input, 2, 2, &mut producer, &counters);
+        assert_eq!(consumer.slots(), 2);
+        assert_eq!(counters.overruns.load(Ordering::Relaxed), 1);
+        // The next callback still starts on a left sample.
+        let _ = consumer.pop();
+        let _ = consumer.pop();
+        push_unframed(&[0.5f32, -0.5], 2, 2, &mut producer, &counters);
+        assert_eq!(consumer.pop().unwrap(), 0.5);
+    }
+
+    #[test]
+    fn playback_callback_publishes_what_it_left_in_the_ring() {
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(16);
+        for _ in 0..10 {
+            producer.push(0.1).unwrap();
+        }
+        let counters = Counters::default();
+        let mut output = [0.0f32; 6];
+        pull_playback(&mut output, 2, 2, &mut consumer, &counters);
+        assert_eq!(counters.queued.load(Ordering::Relaxed), 4);
     }
 }

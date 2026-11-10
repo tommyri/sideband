@@ -524,3 +524,43 @@ fn video_clock_follows_audio_quanta_across_timestamp_wrap() {
         assert_eq!(track.playout_timestamp(), Some(expected));
     }
 }
+
+#[test]
+fn lagging_playout_skips_the_backlog_once_and_keeps_decoder_history() {
+    let packet = packet();
+    let mut jitter = JitterBuffer::new(VoiceProfile::Voice);
+    for seq in 0..40 {
+        jitter
+            .push(header(seq), &packet, ms(u64::from(seq) * 20))
+            .unwrap();
+    }
+    // Released on time until 100 ms, then the worker stops for 100 ms.
+    for (seq, at) in [(0, 40), (1, 60), (2, 80), (3, 100)] {
+        assert_eq!(released(jitter.pop_for_playout(ms(at))), seq);
+    }
+    // Voiced audio: playout runs behind while it waits for silence.
+    assert_eq!(released(jitter.pop_for_playout(ms(220))), 4);
+    assert_eq!(released(jitter.pop_for_playout(ms(240))), 5);
+    assert_eq!(jitter.stats().caught_up, 0);
+    let mut at = 260;
+    let mut seq = 6;
+    while at < 720 {
+        assert_eq!(released(jitter.pop_for_playout(ms(at))), seq);
+        at += 20;
+        seq += 1;
+    }
+    // After 500 ms behind, one release skips the 100 ms backlog and decodes
+    // the last skipped packet without playing it.
+    match jitter.pop_for_playout(ms(at)) {
+        Playout::Packet { packet, discarded } => {
+            assert_eq!(packet.header.seq, seq + 5);
+            assert_eq!(discarded.unwrap().header.seq, seq + 4);
+        }
+        _ => panic!("expected packet"),
+    }
+    assert_eq!(jitter.stats().caught_up, 5);
+    // Back on schedule: the next frame is not due before its deadline.
+    assert!(matches!(jitter.pop_for_playout(ms(at + 10)), Playout::Wait));
+    assert_eq!(released(jitter.pop_for_playout(ms(at + 20))), seq + 6);
+    assert_eq!(jitter.stats().lost, 0);
+}

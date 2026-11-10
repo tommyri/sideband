@@ -22,7 +22,7 @@ mod watch;
 pub use macos_voiceio::{MutedSpeechActivity, VoiceProcessingConfig, VoiceProcessingStream};
 pub use manager::DeviceManager;
 pub use select::GraphConfig;
-pub use stream::{CaptureStream, Counters, PlaybackStream};
+pub use stream::{CaptureStream, Counters, PlaybackStream, promote_audio_thread};
 pub use watch::{DeviceEvent, DeviceId, DeviceInfo, Direction, MicrophoneAccess};
 
 pub use crate::{mixer::SAMPLES_PER_CHANNEL, resample::GRAPH_RATE};

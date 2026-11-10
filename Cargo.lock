@@ -7263,6 +7263,7 @@ name = "ss-audio"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "audio_thread_priority",
  "block2",
  "coreaudio-rs",
  "cpal",

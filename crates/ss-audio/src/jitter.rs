@@ -15,6 +15,9 @@ const INITIAL_DELAY: Duration = Duration::from_millis(40);
 const TIMEOUT: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_secs(2);
 const OBSERVATIONS: usize = 200;
+/// How long playout may run a frame or more behind its schedule while waiting
+/// for decoded silence to hide the catch-up in.
+const LAG_PATIENCE: Duration = Duration::from_millis(500);
 
 /// Audio timing metadata, mapped from the validated wire header by client-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +94,9 @@ pub struct Stats {
     pub contracted: u64,
     /// Playout worker missed its deadline by at least 200 ms.
     pub underruns: u64,
+    /// Slots skipped because the playout worker fell a frame or more behind
+    /// its schedule, for example after a stall.
+    pub caught_up: u64,
 }
 
 /// One scheduling decision. Packet storage is moved/copied without heap allocation.
@@ -144,6 +150,7 @@ pub struct JitterBuffer {
     target: Duration,
     applied: Duration,
     silent: bool,
+    behind_since: Option<Duration>,
     stats: Stats,
 }
 
@@ -173,6 +180,7 @@ impl JitterBuffer {
             target: INITIAL_DELAY,
             applied: INITIAL_DELAY,
             silent: false,
+            behind_since: None,
             stats: Stats::default(),
         }
     }
@@ -320,6 +328,7 @@ impl JitterBuffer {
         self.playing = true;
         self.started = false;
         self.silent = false;
+        self.behind_since = None;
     }
 
     fn observe(&mut self, header: PacketHeader, arrival: Duration) {
@@ -385,6 +394,52 @@ impl JitterBuffer {
         }
     }
 
+    /// A release a frame or more after its deadline means the worker stopped
+    /// for a while (`Worker::run` only replays 30 ms). Without this, every
+    /// later frame plays that much late until the burst ends, which a
+    /// continuous sender never does. Skip slots while the decoded audio is
+    /// silent; if it never is within [`LAG_PATIENCE`], skip the whole lag at
+    /// once, so there is one discontinuity rather than one per frame.
+    /// Returns the last skipped packet so the decoder keeps its prediction.
+    fn catch_up(&mut self, now: Duration) -> Option<Packet> {
+        if now.saturating_sub(self.deadline) < self.frame {
+            self.behind_since = None;
+            return None;
+        }
+        let since = *self.behind_since.get_or_insert(now);
+        let forced = now.saturating_sub(since) >= LAG_PATIENCE;
+        if !self.silent && !forced {
+            return None;
+        }
+        let mut discarded = None;
+        // Keep the next packet for this release, and never skip across a
+        // burst boundary: a new TALK_START reanchors playout on its own.
+        while now.saturating_sub(self.deadline) >= self.frame
+            && self.queue.len() >= 2
+            && !self.queue[1].header.talk_start
+            && let Some(expected) = self.expected
+        {
+            if self.queue[0].header.seq == expected {
+                if self.queue[0].header.talk_end {
+                    break;
+                }
+                discarded = Some(self.queue.remove(0));
+            }
+            self.advance();
+            self.deadline = self.deadline.saturating_add(self.frame);
+            self.stats.caught_up += 1;
+            if !forced {
+                // In silence one frame per release is inaudible and keeps
+                // the decoder fed with every packet.
+                break;
+            }
+        }
+        if now.saturating_sub(self.deadline) < self.frame {
+            self.behind_since = None;
+        }
+        discarded
+    }
+
     /// Release one frame at its deadline. Missing audio becomes a recovery
     /// decision, not an underrun. Call on the playback worker at 10 ms cadence.
     pub fn pop_for_playout(&mut self, now: Duration) -> Playout {
@@ -418,7 +473,8 @@ impl JitterBuffer {
             self.playing = false;
             return Playout::Wait;
         }
-        if self.silent && self.target > self.applied {
+        let mut discarded = self.catch_up(now);
+        if discarded.is_none() && self.silent && self.target > self.applied {
             self.applied += self.frame;
             self.deadline = self.deadline.saturating_add(self.frame);
             self.stats.expanded += 1;
@@ -428,8 +484,8 @@ impl JitterBuffer {
                 expanded: true,
             };
         }
-        let mut discarded = None;
-        if self.silent
+        if discarded.is_none()
+            && self.silent
             && self.target < self.applied
             && self.queue.len() >= 2
             && Some(self.queue[0].header.seq) == self.expected

@@ -92,6 +92,9 @@ notify = "8"
 # thread feature in ss-audio; those pull ALSA/PipeWire and must not build
 # on macOS or Windows.
 cpal = { version = "0.18", default-features = false }
+# Real-time class for audio worker threads: Mach time-constraint, MMCSS,
+# SCHED_FIFO. The same crate cpal's `realtime` feature uses; no D-Bus/rtkit.
+audio_thread_priority = { version = "0.35", default-features = false }
 # macOS microphone permission status (`AVAudioApplication.recordPermission`).
 # CoreAudio opens a denied microphone and delivers zeros, so ss-audio asks first.
 objc2 = { version = "0.6", default-features = false, features = ["std"] }

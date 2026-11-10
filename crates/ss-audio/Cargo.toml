@@ -19,6 +19,7 @@ macos-voiceio = ["dep:block2", "dep:coreaudio", "dep:objc2-audio-toolbox"]
 rnnoise = ["dep:nnnoiseless"]
 
 [dependencies]
+audio_thread_priority.workspace = true
 nnnoiseless = { workspace = true, optional = true }
 ss-core.workspace = true
 opusic-c.workspace = true
