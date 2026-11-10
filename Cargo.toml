@@ -134,7 +134,7 @@ sha2 = "0.11.1"
 socket2 = "0.6"
 # Optional WebRTC APM port (AEC3, noise suppression, AGC2). Pure Rust; no
 # examples feature, so no second cpal or CLI dependencies.
-sonora = { version = "=0.2.0", default-features = false }
+sonora = { version = "=0.3.0", default-features = false }
 # Online database snapshot plus the attachments tree.
 tar = "0.4"
 tempfile = "3"
