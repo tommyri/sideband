@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { deflateRawSync } from 'node:zlib'
-import { access, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  assertNoSigningSecrets, buildEnvironment, checkAppArchive, checkExtractedApp, createUpdaterArchive, listZip, makeIdentity,
-  notarizationKey, parseOptions, parseUpdaterPublicKey, signMacos, updateConfiguration, updaterPayloads, writeManifest,
+  assertNoSigningSecrets, buildEnvironment, checkAppArchive, checkExtractedApp, compareTree, createUpdaterArchive, listZip,
+  makeIdentity, notarizationKey, parseOptions, parseUpdaterPublicKey, signMacos, signUnpackedMacos, unpackMacos,
+  updateConfiguration, updaterPayloads, writeManifest,
 } from './build-test-desktop.mjs'
 
 // A real `tauri signer generate` public key (disposable; its private key was discarded).
@@ -311,7 +312,15 @@ function fakeTools(calls, { status = 'Accepted' } = {}) {
     calls.push([command, ...args])
     const tool = path.basename(command)
     if (tool === 'zipinfo') return listZip(await readFile(args.at(-1))).map((entry) => entry.name).join('\n') + '\n'
-    if (tool === 'ditto' && args[0] === '-x') await mkdir(path.join(args.at(-1), 'Sideband.app', 'Contents'), { recursive: true })
+    if (tool === 'ditto' && args[0] === '-x') {
+      // A faithful extractor for the listing, so the tree checks see real files.
+      for (const entry of listZip(await readFile(args.at(-2)))) {
+        const target = path.join(args.at(-1), entry.name)
+        await mkdir(entry.type === 'dir' ? target : path.dirname(target), { recursive: true })
+        if (entry.type === 'file') await writeFile(target, 'x')
+        if (entry.type === 'symlink') await symlink(entry.target, target)
+      }
+    }
     else if (tool === 'ditto' && args[0] === '-c') await writeFile(args.at(-1), 'signed-zip')
     else if (tool === 'tar') await writeFile(args[args.indexOf('-czf') + 1], 'signed-tar')
     else if (tool === 'hdiutil') await writeFile(args.at(-1), 'signed-dmg')
@@ -345,6 +354,64 @@ test('macOS signing re-signs the app, rebuilds every package and notarizes with 
   assert.equal(info.artifacts.find(a => a.file.endsWith('.app.tar.gz')).bytes, 'signed-tar'.length)
   assert.deepEqual(info.updater, [{ file: 'Sideband-test-0.1.0.app.tar.gz' }])
   assert.match(await readFile(path.join(directory, 'SHA256SUMS'), 'utf8'), /Sideband\.dmg/)
+})
+
+test('unpacking needs no secrets and runs no signing tool; the tree must equal the listing', async () => {
+  const directory = await macosArtifacts()
+  const scratch = await mkdtemp(path.join(tmpdir(), 'sideband-scratch-test-'))
+  const calls = []
+  const unpacked = await unpackMacos(directory, { run: fakeTools(calls), scratch })
+  assert.equal(unpacked.appName, 'Sideband.app')
+  assert.deepEqual(calls.map(([command]) => path.basename(command)), ['zipinfo', 'ditto'])
+  assert(unpacked.unpacked.startsWith(path.join(scratch, 'sideband-unpack-')))
+  const entries = listZip(await readFile(path.join(directory, 'Sideband-test-0.1.0.app.zip')))
+  await compareTree(unpacked.unpacked, entries)
+  // Anything the listing does not account for is refused before signing.
+  const app = path.join(unpacked.unpacked, 'Sideband.app')
+  await writeFile(path.join(app, 'Contents', 'planted'), 'x')
+  await assert.rejects(compareTree(unpacked.unpacked, entries), /not in the archive listing.*planted/i)
+  const env = { APPLE_SIGNING_IDENTITY: 'Developer ID Application: Example (TEAM)', APPLE_KEYCHAIN: '/tmp/k.keychain-db' }
+  await assert.rejects(signUnpackedMacos(directory, unpacked, env, { run: fakeTools([]), entitlements: '/e', scratch }), /planted/)
+})
+
+test('the on-disk tree must match the listing in names, types and link targets', async () => {
+  const entries = listZip(zip(appBundle))
+  const archive = path.join(await mkdtemp(path.join(tmpdir(), 'sideband-tree-zip-')), 'app.zip')
+  await writeFile(archive, zip(appBundle))
+  const extract = async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'sideband-tree-test-'))
+    await fakeTools([])('/usr/bin/ditto', ['-x', '-k', archive, root])
+    return root
+  }
+  await compareTree(await extract(), entries)
+  const missing = await extract()
+  await rm(path.join(missing, 'Sideband.app', 'Contents', 'MacOS', 'sideband'))
+  await assert.rejects(compareTree(missing, entries), /missing/)
+  const retyped = await extract()
+  await rm(path.join(retyped, 'Sideband.app', 'Contents', 'Frameworks', 'Kit.framework', 'Kit'))
+  await writeFile(path.join(retyped, 'Sideband.app', 'Contents', 'Frameworks', 'Kit.framework', 'Kit'), 'x')
+  await assert.rejects(compareTree(retyped, entries), /type differs/i)
+  const relinked = await extract()
+  const current = path.join(relinked, 'Sideband.app', 'Contents', 'Frameworks', 'Kit.framework', 'Versions', 'Current')
+  await rm(current)
+  await symlink('A/Resources', current)
+  await assert.rejects(compareTree(relinked, entries), /target/)
+})
+
+test('no step of the macOS signing job before the keychain import can see a secret', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/test-desktop.yml', import.meta.url), 'utf8')
+  const job = workflow.slice(workflow.indexOf('\n  macos-signing:\n'))
+  const steps = job.split('\n      - ').slice(1)
+  const at = (pattern) => steps.findIndex((step) => pattern.test(step))
+  const keychain = at(/name: Import signing certificate/)
+  assert(keychain > 0)
+  for (const step of steps.slice(0, keychain)) assert(!step.includes('secrets.'), step.split('\n')[0])
+  assert(steps[keychain].includes('secrets.APPLE_CERTIFICATE'))
+  const order = [/Refuse refs other than main/, /actions\/checkout@/, /release-gate\.mjs environment/, /actions\/download-artifact@/,
+    /unpack-macos/, /git status --porcelain/, /Import signing certificate/, /sign-macos/].map(at)
+  assert(order.every((index, i) => index >= 0 && (i === 0 || index > order[i - 1])), JSON.stringify(order))
+  // The job is the only one referencing the notarization key.
+  assert.equal(workflow.split('secrets.APPLE_API_PRIVATE_KEY').length - 1, job.split('secrets.APPLE_API_PRIVATE_KEY').length - 1)
 })
 
 test('macOS signing without notarization keys skips notarytool; a rejected submission fails and still removes the key', async () => {

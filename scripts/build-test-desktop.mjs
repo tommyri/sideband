@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { inflateRawSync } from 'node:zlib'
 import { createReadStream } from 'node:fs'
-import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -88,7 +88,7 @@ export const signingSecrets = [
 export function assertNoSigningSecrets(env) {
   const present = signingSecrets.filter((key) => env[key])
   if (present.length) {
-    throw new Error(`Refusing to build with ${present.join(', ')} in the environment; signing is a separate step (docs/release.md)`)
+    throw new Error(`Refusing to run with ${present.join(', ')} in the environment; signing secrets belong only to the signing steps (docs/release.md)`)
   }
 }
 
@@ -421,25 +421,46 @@ export async function checkExtractedApp(directory, appName) {
   return app
 }
 
-// Runs in its own job on a fresh macOS runner, after the ad-hoc build: re-signs the
-// app with the Developer ID, rebuilds the ZIP, updater archive and DMG from it, signs
-// the DMG, notarizes and staples it, and rewrites build-info.json and SHA256SUMS. Only
-// system tools by absolute path run here. It signs whatever the build produced; what it
-// prevents is the build's output reaching the keys or files outside its temporary
-// directories. The ZIP is the only thing unpacked: it is listed and checked before
-// extraction and the result is checked again. Nothing is mounted: the DMG is created
-// anew, with the app and an Applications link but no window layout.
-export async function signMacos(directory, env, { run = capture, entitlements, scratch = tmpdir() } = {}) {
-  const identity = env.APPLE_SIGNING_IDENTITY, keychain = env.APPLE_KEYCHAIN
-  if (!identity || !keychain || !entitlements) throw new Error('macOS signing needs APPLE_SIGNING_IDENTITY, APPLE_KEYCHAIN and the entitlements file')
-  const credentials = notarizationKey(env)
-  const { artifacts, updater, ...info } = await readBuildManifest(directory)
-  const only = (suffix, required = true) => {
-    const matches = artifacts.filter((artifact) => artifact.file.endsWith(suffix))
-    if (matches.length > 1 || (required && !matches.length)) throw new Error(`Expected exactly one ${suffix} artifact`)
-    return matches[0] && path.join(directory, matches[0].file)
+// The extracted tree must be exactly what was validated: every path on disk is a
+// listed entry (or a parent directory of one), with the same type and link target,
+// and every listed entry exists.
+export async function compareTree(root, entries) {
+  const expected = new Map(entries.map((entry) => [entry.name.replace(/\/$/, ''), entry]))
+  const parents = new Set()
+  for (const name of expected.keys()) {
+    const parts = name.split('/')
+    for (let i = 1; i < parts.length; i++) parents.add(parts.slice(0, i).join('/'))
   }
-  const zip = only('.app.zip'), dmg = only('.dmg'), archive = only('.app.tar.gz', false)
+  const seen = new Set()
+  const walk = async (relative) => {
+    for (const name of await readdir(path.join(root, relative))) {
+      const entryPath = relative ? `${relative}/${name}` : name, file = path.join(root, entryPath)
+      const info = await lstat(file)
+      const type = info.isSymbolicLink() ? 'symlink' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other'
+      const entry = expected.get(entryPath)
+      if (!entry && !(type === 'dir' && parents.has(entryPath))) throw new Error(`Not in the archive listing: ${entryPath}`)
+      if (entry && entry.type !== type) throw new Error(`Type differs for ${entryPath}: ${type} on disk, ${entry.type} in the archive`)
+      if (type === 'symlink' && await readlink(file) !== entry.target) throw new Error(`Link target differs from the archive: ${entryPath}`)
+      seen.add(entryPath)
+      if (type === 'dir') await walk(entryPath)
+    }
+  }
+  await walk('')
+  for (const name of expected.keys()) if (!seen.has(name)) throw new Error(`In the archive but missing on disk: ${name}`)
+}
+
+function onlyArtifact(directory, artifacts, suffix, required = true) {
+  const matches = artifacts.filter((artifact) => artifact.file.endsWith(suffix))
+  if (matches.length > 1 || (required && !matches.length)) throw new Error(`Expected exactly one ${suffix} artifact`)
+  return matches[0] && path.join(directory, matches[0].file)
+}
+
+// Phase 1 of the signing job, before any secret is on the runner: list and check the
+// app ZIP, compare with zipinfo, extract it into a fresh private directory, then check
+// the tree and compare it with the listing. Nothing here signs or needs a credential.
+export async function unpackMacos(directory, { run = capture, scratch = tmpdir() } = {}) {
+  const { artifacts } = await readBuildManifest(directory)
+  const zip = onlyArtifact(directory, artifacts, '.app.zip')
   const entries = listZip(await readFile(zip))
   const appName = checkAppArchive(entries)
   // A second, independent listing: refuse if Info-ZIP sees different entries.
@@ -447,13 +468,41 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
   if (listed.join('\n') !== entries.map((entry) => entry.name).sort().join('\n')) {
     throw new Error('zipinfo lists different entries than the ZIP directory')
   }
-  // Separate private directories, none shared with the keychain or the checkout.
   const unpacked = await mkdtemp(path.join(scratch, 'sideband-unpack-'))
+  try {
+    await run(tool('ditto'), ['-x', '-k', ...dittoPlain, zip, unpacked])
+    await checkExtractedApp(unpacked, appName)
+    await compareTree(unpacked, entries)
+  } catch (error) {
+    await rm(unpacked, { recursive: true, force: true })
+    throw error
+  }
+  return { directory, appName, unpacked }
+}
+
+// Phase 2, after the keychain import: re-check the artifacts and the unpacked tree, then
+// re-sign the app with the Developer ID, rebuild the ZIP, updater archive and DMG from
+// it, sign the DMG, notarize and staple it, and rewrite build-info.json and SHA256SUMS.
+// Only system tools by absolute path run here. It signs whatever the build produced;
+// what the job prevents is the build's output reaching the keys. Nothing is mounted:
+// the DMG is created anew, with the app and an Applications link but no window layout.
+export async function signUnpackedMacos(directory, unpacked, env, { run = capture, entitlements, scratch = tmpdir() } = {}) {
   const staging = await mkdtemp(path.join(scratch, 'sideband-dmg-'))
   const secrets = await mkdtemp(path.join(scratch, 'sideband-notary-'))
   try {
-    await run(tool('ditto'), ['-x', '-k', ...dittoPlain, zip, unpacked])
-    const app = await checkExtractedApp(unpacked, appName)
+    const identity = env.APPLE_SIGNING_IDENTITY, keychain = env.APPLE_KEYCHAIN
+    if (!identity || !keychain || !entitlements) throw new Error('macOS signing needs APPLE_SIGNING_IDENTITY, APPLE_KEYCHAIN and the entitlements file')
+    const credentials = notarizationKey(env)
+    if (path.dirname(unpacked.unpacked) !== path.resolve(scratch) || !path.basename(unpacked.unpacked).startsWith('sideband-unpack-')) {
+      throw new Error('Unexpected unpack directory')
+    }
+    const { artifacts, updater, ...info } = await readBuildManifest(directory)
+    const zip = onlyArtifact(directory, artifacts, '.app.zip'), dmg = onlyArtifact(directory, artifacts, '.dmg')
+    const archive = onlyArtifact(directory, artifacts, '.app.tar.gz', false)
+    const entries = listZip(await readFile(zip))
+    if (checkAppArchive(entries) !== unpacked.appName) throw new Error('The app ZIP changed after unpacking')
+    const app = await checkExtractedApp(unpacked.unpacked, unpacked.appName)
+    await compareTree(unpacked.unpacked, entries)
     // Tauri clears extended attributes before signing; do the same for the unpacked copy.
     await run(tool('xattr'), ['-cr', app])
     const timestamp = identity === '-' ? [] : ['--timestamp']
@@ -468,10 +517,10 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
     }
     const root = path.join(staging, 'root')
     await mkdir(root)
-    await run(tool('ditto'), [app, path.join(root, appName)])
+    await run(tool('ditto'), [app, path.join(root, unpacked.appName)])
     await symlink('/Applications', path.join(root, 'Applications'))
     await rm(dmg)
-    await run(tool('hdiutil'), ['create', '-volname', appName.slice(0, -'.app'.length), '-srcfolder', root,
+    await run(tool('hdiutil'), ['create', '-volname', unpacked.appName.slice(0, -'.app'.length), '-srcfolder', root,
       '-fs', 'HFS+', '-format', 'UDZO', '-ov', dmg])
     await run(tool('codesign'), ['--force', ...timestamp, '--keychain', keychain, '--sign', identity, dmg])
     if (credentials) {
@@ -480,26 +529,43 @@ export async function signMacos(directory, env, { run = capture, entitlements, s
       await notarize(dmg, credentials, secrets, run)
       await run(tool('xcrun'), ['stapler', 'staple', dmg])
     }
+    return await writeManifest(directory, info, artifacts.map((artifact) => artifact.file), updater?.map((item) => item.file))
   } finally {
-    for (const dir of [unpacked, staging, secrets]) await rm(dir, { recursive: true, force: true })
+    for (const dir of [unpacked.unpacked, staging, secrets]) await rm(dir, { recursive: true, force: true })
   }
-  return writeManifest(directory, info, artifacts.map((artifact) => artifact.file), updater?.map((item) => item.file))
+}
+
+// Both phases in one call, for local use and tests. The workflow runs them as separate
+// steps with the keychain import between them.
+export async function signMacos(directory, env, options = {}) {
+  return signUnpackedMacos(directory, await unpackMacos(directory, options), env, options)
 }
 
 async function main() {
-  if (process.argv[2] === 'sign-macos') {
-    // INPUT holds one downloaded artifact directory per macOS target.
-    const input = process.argv[3]
-    if (!input) throw new Error('Usage: node scripts/build-test-desktop.mjs sign-macos INPUT_DIRECTORY')
-    const entitlements = path.join(desktop, 'src-tauri', 'Entitlements.plist')
-    let signed = 0
+  const scratch = process.env.RUNNER_TEMP || tmpdir()
+  if (process.argv[2] === 'unpack-macos') {
+    // INPUT holds one downloaded artifact directory per macOS target; STATE records
+    // what was unpacked for the sign-macos step.
+    const [input, state] = process.argv.slice(3)
+    if (!input || !state) throw new Error('Usage: node scripts/build-test-desktop.mjs unpack-macos INPUT_DIRECTORY STATE_FILE')
+    assertNoSigningSecrets(process.env)
+    const unpacked = []
     for (const entry of await readdir(input, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      await signMacos(path.join(input, entry.name), process.env, { entitlements, scratch: process.env.RUNNER_TEMP || tmpdir() })
-      console.log('Signed ' + entry.name + (notarizationKey(process.env) ? ' and notarized its DMG' : ' (not notarized: no APPLE_API_* key)'))
-      signed++
+      if (entry.isDirectory()) unpacked.push(await unpackMacos(path.join(input, entry.name), { scratch }))
     }
-    if (!signed) throw new Error('No macOS artifacts to sign')
+    if (!unpacked.length) throw new Error('No macOS artifacts to unpack')
+    await writeFile(state, JSON.stringify(unpacked, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
+    for (const item of unpacked) console.log(`Checked and unpacked ${item.appName} from ${path.basename(item.directory)}`)
+    return
+  }
+  if (process.argv[2] === 'sign-macos') {
+    const state = process.argv[3]
+    if (!state) throw new Error('Usage: node scripts/build-test-desktop.mjs sign-macos STATE_FILE')
+    const entitlements = path.join(desktop, 'src-tauri', 'Entitlements.plist')
+    for (const item of JSON.parse(await readFile(state, 'utf8'))) {
+      await signUnpackedMacos(item.directory, item, process.env, { entitlements, scratch })
+      console.log('Signed ' + path.basename(item.directory) + (notarizationKey(process.env) ? ' and notarized its DMG' : ' (not notarized: no APPLE_API_* key)'))
+    }
     return
   }
   assertNoSigningSecrets(process.env)

@@ -93,15 +93,23 @@ What changed:
   are listed unsigned; the script writes the macOS `.app.tar.gz` in Tauri's
   layout. macOS is always built ad-hoc. A separate `macos-signing` job (fresh
   `macos-15` runner, `desktop-signing` environment, ref and environment checks)
-  is the only place the Apple certificate and notarization key appear. It
-  imports the `.p12` before downloading any build output, then
-  `build-test-desktop.mjs sign-macos` re-signs the app with the Developer ID,
+  is the only place the Apple certificate and notarization key appear. It works
+  in two phases. First, before any secret is on the runner, it downloads the
+  build output and runs `build-test-desktop.mjs unpack-macos`, which refuses to
+  start if a signing secret is present. That checks, extracts and walks the app,
+  and compares the tree on disk with the validated listing (paths, types, link
+  targets). It then records that the checkout is clean
+  (`git status --porcelain --ignored --untracked-files=all`) and the `node`
+  binary's path and SHA-256. Only then does it import the `.p12`. In the same
+  step that signs, it rechecks the checkout and the `node` hash, then runs
+  `sign-macos` with that `node`, which checks the tree again and re-signs the
+  app with the Developer ID,
   rebuilds the ZIP, updater archive and DMG, signs the DMG, and notarizes it with
   an App Store Connect API key from a `0600` file (`--key --key-id --issuer`),
   then staples it. It uses only `/usr/bin` tools and replaces the build artifact,
   so `publish` signs the updater payload for, checksums, attests and uploads the
   signed packages. The app ZIP is the only thing that job unpacks. Before
-  extraction, `sign-macos` reads the ZIP directory itself and compares it with
+  extraction, `unpack-macos` reads the ZIP directory itself and compares it with
   `zipinfo -1`. Local headers and data descriptors must match the directory,
   only store and deflate are accepted, entries may not overlap, and link targets
   are bounded (4 KiB) and CRC-checked. It refuses absolute paths, `..`, links
@@ -144,7 +152,13 @@ What changed:
   small fixes to `deploy/README.md` and `docs/desktop-releases.md`, which
   described the old server flow.
 
-Validated here: all script tests (`node --test scripts/*.test.mjs`, 31 pass).
+Validated here: all script tests (`node --test scripts/*.test.mjs`, 34 pass).
+A structural test reads `test-desktop.yml` and checks that no `macos-signing`
+step before the keychain import references a secret. It also checks the order:
+ref check, checkout, environment check, download, `unpack-macos`, checkout and
+`node` record, import, `sign-macos`. Other tests check that unpacking runs only
+`zipinfo` and `ditto`, and that a planted file, a missing file, a changed type
+or a changed link target fails the tree comparison, before signing too.
 Also refused: a `__MACOSX` sidecar addressed through a framework link, a
 two-link chain that escapes although each link is inside on its own, a link
 loop, local/central mismatches in method, flags, CRC and sizes, a link using a

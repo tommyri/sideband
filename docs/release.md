@@ -286,50 +286,61 @@ For Developer ID distribution configure these secrets:
 
 These are `desktop-signing` environment secrets. They are used only by the
 `macos-signing` job of the desktop build workflow, which runs after the platform
-builds on a fresh macOS runner and runs nothing the build produced:
+builds on a fresh macOS runner and runs nothing the build produced. The build
+output is downloaded, checked and unpacked before any secret is on that runner.
+No step before the keychain import references a secret, and
+`scripts/build-test-desktop.test.mjs` checks this and the step order:
 
 1. ref and environment checks, as in the other release jobs;
-2. imports the `.p12` into a temporary keychain and checks that it holds
-   `APPLE_SIGNING_IDENTITY`. This happens before any build output is
-   downloaded; the `.p12` password is on `security import`'s command line, the
-   one secret that still is, with nothing from the build on the runner yet;
-3. downloads the ad-hoc macOS packages into their own directory and checks
-   that each is a regular file matching `build-info.json` (corruption between
-   jobs only: the same build job wrote both);
-4. `build-test-desktop.mjs sign-macos`, calling only `/usr/bin` tools:
-   - before unpacking anything, reads the app ZIP's directory itself and
-     compares it with `zipinfo -1`. Each entry's local header, and data
-     descriptor if any, must agree with the directory (method, flags, CRC,
-     sizes); only store and deflate are accepted, and entries may not overlap.
-     Link targets are read with a 4 KiB bound and checked against their CRC.
-     It refuses absolute paths, `..`, absolute link targets, links that leave
-     the bundle when followed component by component through the other links
-     (as the filesystem would, with a loop limit), any entry written through a
-     link, duplicate paths (case-folded), special files, setuid bits,
-     `__MACOSX` sidecars, and anything outside a single top-level
-     `<Name>.app/` directory. Relative links inside the bundle (framework
-     `Versions/Current`) are allowed;
+2. downloads the ad-hoc macOS packages into their own directory;
+3. `build-test-desktop.mjs unpack-macos`, which refuses to start if a signing
+   secret is in its environment, calling only `/usr/bin` tools:
+   - checks that each package is a regular file matching `build-info.json`
+     (corruption between jobs only: the same build job wrote both);
+   - reads the app ZIP's directory itself and compares it with `zipinfo -1`.
+     Each entry's local header, and data descriptor if any, must agree with
+     the directory (method, flags, CRC, sizes); only store and deflate are
+     accepted, and entries may not overlap. Link targets are read with a
+     4 KiB bound and checked against their CRC. It refuses absolute paths,
+     `..`, absolute link targets, links that leave the bundle when followed
+     component by component through the other links (as the filesystem
+     would, with a loop limit), any entry written through a link, duplicate
+     paths (case-folded), special files, setuid bits, `__MACOSX` sidecars,
+     and anything outside a single top-level `<Name>.app/` directory.
+     Relative links inside the bundle (framework `Versions/Current`) are
+     allowed;
    - extracts with `ditto --norsrc --noextattr --noqtn --noacl`, so no
      resource forks or attributes are applied, into a fresh private temporary
-     directory, apart
-     from the keychain's and outside the checkout. It checks the result again:
-     the `.app` must be a real directory and every link must resolve inside
-     it. Extended attributes are cleared, and the directory is deleted
-     afterwards, on failure too;
-   - re-signs the app with the Developer ID, hardened runtime and
-   `apps/desktop/src-tauri/Entitlements.plist` from the checkout; rebuilds the
-   app ZIP, the updater archive and the DMG from that app (nothing from the
-   build is mounted; the build's DMG and updater archive are discarded); signs
-   the DMG; writes the API key to a `0600` file in another private directory,
-   submits the DMG with `xcrun notarytool submit --key --key-id --issuer --wait`,
-   deletes the key, and staples the DMG; rewrites `build-info.json` and
-   `SHA256SUMS`;
-5. deletes the keychain and replaces the platform's build artifact, so the
-   release signs the updater payload, checksums, attests and uploads the signed,
-   stapled packages.
+     directory outside the checkout. The result is checked again: the `.app`
+     must be a real directory and every link must resolve inside it. The tree
+     on disk must equal the validated listing, with the same paths, types and
+     link targets, and nothing extra;
+4. records the checkout and `node`: `git status --porcelain --ignored
+   --untracked-files=all` must be empty, and the job notes the path and
+   SHA-256 of the `node` binary;
+5. the first step with secrets: imports the `.p12` into a temporary keychain
+   in its own private directory and checks that it holds
+   `APPLE_SIGNING_IDENTITY`. Without `APPLE_CERTIFICATE` it stops here and the
+   ad-hoc packages are left as they are; an API key without a certificate fails
+   the run. The `.p12` password is on `security import`'s command line, the one
+   secret that still is, with no build output ever executed on this runner;
+6. rechecks the checkout and the `node` hash in the same step that then runs
+   `build-test-desktop.mjs sign-macos` with that `node`. The tree and
+   checksums are checked once more, then the app is re-signed with the
+   Developer ID, hardened runtime and `apps/desktop/src-tauri/Entitlements.plist`
+   from the checkout, after its extended attributes are cleared. The app ZIP,
+   the updater archive and the DMG are rebuilt from that app (nothing from the
+   build is mounted; the build's DMG and updater archive are discarded) and the
+   DMG is signed. The API key is written to a `0600` file in another private
+   directory, the DMG is submitted with
+   `xcrun notarytool submit --key --key-id --issuer --wait`, the key is
+   deleted, and the DMG is stapled. `build-info.json` and `SHA256SUMS` are
+   rewritten;
+7. always deletes the keychain and the unpacked app, then replaces the
+   platform's build artifact, so the release signs the updater payload,
+   checksums, attests and uploads the signed, stapled packages.
 
-Without `APPLE_CERTIFICATE` the job leaves the ad-hoc packages as they are; an
-API key without a certificate fails the run. The DMG is created by `hdiutil`
+The DMG is created by `hdiutil`
 with the app and an Applications link, without the window layout of Tauri's
 DMG. The app inside is notarized by the DMG submission, but the app ZIP and
 updater archive are not stapled, so their first launch needs Gatekeeper to reach
