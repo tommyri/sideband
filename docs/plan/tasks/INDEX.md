@@ -30,6 +30,18 @@ before collecting listening or PTT acceptance evidence, since the defects
 they fix would be scored as voice quality. T-018 now depends on T-081 to
 T-084, and T-074 on the backend decision in T-100.
 
+Work order from 2026-11-10, in waves of four. Start a wave once the one
+before it is merged:
+
+1. T-082, T-081, T-085, T-090
+2. T-083, T-086, T-091, T-093
+3. T-084, T-097, then T-089 and T-095 in the free slots
+
+T-097 edits only workflows and release docs. Move it earlier if a release
+will be published before wave 3. After these: T-088, T-092, T-094, T-098,
+T-101, with T-099 in any free slot. T-087 needs Linux and Windows machines
+and T-100 blocks only T-074.
+
 ## Phase 0 — Foundations
 
 | ID | Task | Size | Depends on | Status |
