@@ -1,8 +1,14 @@
 //! `CreateRole`, `UpdateRole`, `DeleteRole`, `SetUserRoles`, and `SetChannelOverride`.
 //!
 //! Role commands require `MANAGE_ROLES`. Channel overrides require
-//! `MANAGE_CHANNELS`. A non-admin can only touch a role positioned strictly
-//! below their highest role, and cannot grant `ADMINISTRATOR`.
+//! `MANAGE_CHANNELS` and `VIEW_CHANNEL` on the channel. A non-admin can only
+//! touch a role positioned strictly below their highest role. Nobody can grant
+//! a bit they do not hold: a role create, a role edit, or a role assignment may
+//! only add bits the actor holds on the server, and an override may only add
+//! `allow` bits the actor holds in that channel. Only an administrator holds
+//! `ADMINISTRATOR`, so only an administrator can grant it. The seeded Admin
+//! role cannot be deleted and keeps `ADMINISTRATOR`, so `user grant-admin`
+//! always has a role to grant.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -15,8 +21,8 @@ use ss_proto::{
 
 use crate::{
     db::{
-        self, EVERYONE_ROLE_ID, NewAuditEntry, NewRole, RoleUpdate, audit_log, channels, roles,
-        users,
+        self, ADMIN_ROLE_ID, EVERYONE_ROLE_ID, NewAuditEntry, NewRole, RoleUpdate, audit_log,
+        channels, roles, users,
     },
     perms::PermissionService,
 };
@@ -134,6 +140,7 @@ impl Roles {
         let position = i64::from(command.position);
         self.ensure_position(actor, position)?;
         self.ensure_admin_bits(actor, permissions)?;
+        self.ensure_grantable(actor, Permissions::empty(), permissions)?;
         let role = {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
@@ -199,6 +206,10 @@ impl Roles {
             self.ensure_can_edit(actor, &current)?;
             self.ensure_position(actor, position)?;
             self.ensure_admin_bits(actor, permissions)?;
+            self.ensure_grantable(actor, current.permissions, permissions)?;
+            if id == ADMIN_ROLE_ID && !permissions.contains(Permissions::ADMINISTRATOR) {
+                return Err(Error::Forbidden("the Admin role keeps administrator"));
+            }
             let role = roles::update(
                 &mut tx,
                 id,
@@ -313,6 +324,9 @@ impl Roles {
             if role.is_default || role.id == EVERYONE_ROLE_ID {
                 return Err(Error::Forbidden("cannot delete @everyone"));
             }
+            if role.id == ADMIN_ROLE_ID {
+                return Err(Error::Forbidden("cannot delete the Admin role"));
+            }
             self.ensure_can_edit(actor, &role)?;
             roles::clear_assignments(&mut tx, id).await?;
             channels::clear_role_overrides(&mut tx, id).await?;
@@ -370,6 +384,9 @@ impl Roles {
             }
             for role in &loaded {
                 self.ensure_can_edit(actor, role)?;
+                if desired_set.contains(&role.id) {
+                    self.ensure_grantable(actor, Permissions::empty(), role.permissions)?;
+                }
             }
             for id in current_ids.difference(&desired_set) {
                 roles::unassign(&mut tx, target, *id).await?;
@@ -406,7 +423,10 @@ impl Roles {
     /// Sets one role's allow and deny masks in one channel.
     ///
     /// This requires `MANAGE_CHANNELS`, the bit the data model assigns to
-    /// overrides, not `MANAGE_ROLES`.
+    /// overrides, not `MANAGE_ROLES`, plus `VIEW_CHANNEL` on the channel. A
+    /// channel the actor cannot see, or a direct conversation, is not found.
+    /// `allow` bits that were not already allowed must be held by the actor
+    /// in this channel.
     pub async fn set_channel_override(
         &self,
         actor: Id,
@@ -423,13 +443,32 @@ impl Roles {
             let channel = channels::get(&mut tx, channel_id)
                 .await?
                 .ok_or(Error::NotFound("channel not found"))?;
-            if channel.deleted_at.is_some() {
+            if channel.deleted_at.is_some() || channel.kind.is_direct() {
+                return Err(Error::NotFound("channel not found"));
+            }
+            if !self
+                .perms
+                .holds(actor, Some(channel_id), Permissions::VIEW_CHANNEL)
+            {
                 return Err(Error::NotFound("channel not found"));
             }
             let role = roles::get(&mut tx, role_id)
                 .await?
                 .ok_or(Error::NotFound("role not found"))?;
             self.ensure_can_edit(actor, &role)?;
+            let current = channels::overrides(&mut tx, channel_id)
+                .await?
+                .into_iter()
+                .find(|row| row.role_id == role_id)
+                .map_or(Permissions::empty(), |row| row.allow);
+            if !self
+                .perms
+                .holds(actor, Some(channel_id), allow.difference(current))
+            {
+                return Err(Error::Forbidden(
+                    "cannot allow a permission you do not hold in this channel",
+                ));
+            }
             channels::set_override(&mut tx, channel_id, role_id, allow, deny).await?;
             let deny_bits = deny.bits();
             audit(
@@ -482,6 +521,22 @@ impl Roles {
             Err(Error::Forbidden("cannot grant administrator"))
         } else {
             Ok(())
+        }
+    }
+
+    /// Bits in `next` that are not in `current` must be held server-wide.
+    fn ensure_grantable(
+        &self,
+        actor: Id,
+        current: Permissions,
+        next: Permissions,
+    ) -> Result<(), Error> {
+        if self.perms.holds(actor, None, next.difference(current)) {
+            Ok(())
+        } else {
+            Err(Error::Forbidden(
+                "cannot grant a permission you do not hold",
+            ))
         }
     }
 

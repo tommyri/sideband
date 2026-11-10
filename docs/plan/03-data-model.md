@@ -65,9 +65,9 @@ phase 4 task.
 
 | Bit | Name | Grants |
 |---|---|---|
-| 0 | `ADMINISTRATOR` | Everything; bypasses overrides. Only owner-created roles can carry it |
+| 0 | `ADMINISTRATOR` | Everything; bypasses overrides. Only an administrator can grant it |
 | 1 | `MANAGE_SERVER` | Server settings, invites, webhooks |
-| 2 | `MANAGE_CHANNELS` | Create/update/delete/move channels, overrides |
+| 2 | `MANAGE_CHANNELS` | Create/update/delete/move channels they can see, overrides on them |
 | 3 | `MANAGE_ROLES` | Create/update/delete roles below own highest role; assign them |
 | 4 | `MANAGE_MESSAGES` | Delete others' messages, pin |
 | 5 | `KICK_MEMBERS` | |
@@ -87,7 +87,9 @@ phase 4 task.
 
 Default `@everyone` role: `VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES |
 CONNECT | SPEAK | STREAM | CREATE_INVITES | CHANGE_NICKNAME`. Default `Admin`
-role: `ADMINISTRATOR`. The owner (first user) gets `Admin`.
+role: `ADMINISTRATOR`. The owner (first user) gets `Admin`. The seeded `Admin`
+role cannot be deleted and cannot lose `ADMINISTRATOR`, so `user grant-admin`
+always has a role to grant.
 
 Resolution for user `u` in channel `c`:
 
@@ -100,9 +102,35 @@ DM channels: VIEW_CHANNEL|SEND_MESSAGES|ATTACH_FILES iff u ∈ channel_members
 ```
 
 Hierarchy rule: an actor may kick/ban/mute/move/edit-roles-of a target only if
-`actor.highest_role.position > target.highest_role.position` (owner always
-wins). Roles can only be granted/edited if positioned below the actor's highest
-role.
+`actor.highest_role.position > target.highest_role.position`. An administrator
+may act on anyone, including another administrator, and a non-administrator may
+never act on an administrator, whatever the positions. Roles can only be
+granted/edited if positioned below the actor's highest role.
+
+There is no owner above the administrators. The first user is an administrator
+like any other, so give `ADMINISTRATOR` only to people trusted with the whole
+server: one administrator can ban or demote another. The operator's CLI
+(`user grant-admin`, `user unban`) is the recovery path. (T-090 chose this over
+adding an owner column; the earlier text here promised an owner who always wins,
+which the code never had.)
+
+Granting rule: nobody can grant a bit they do not hold. A role create, a role
+edit, and a role assignment may only add bits the actor holds on the server.
+An override may only add `allow` bits the actor holds in that channel. Bits a
+role or override already has may stay, and removing bits is not a grant.
+`deny` masks are not limited.
+
+Visibility rule: a command that names a channel needs `VIEW_CHANNEL` on it, and
+a channel the actor cannot see answers as not found. This covers overrides,
+channel update, move, and delete, a new parent category, and both channels of a
+`MoveUser`. A category delete that would remove a channel the actor cannot see
+is forbidden.
+
+Voice seats follow permissions. After every command that changes them, a
+seated member who lost `VIEW_CHANNEL`, or `CONNECT` on a seat they joined
+themselves, is removed and the leave is announced. A seat placed by `MoveUser`
+keeps bypassing `CONNECT` but not view. A resume rechecks the leased seat before
+restoring it. Banning a member revokes every open invite they created.
 
 Every command handler calls `perms.require(user, channel?, Permissions::X)`.
 A table-driven test in `ss-server/tests/permissions.rs` covers every command.

@@ -13,7 +13,7 @@ use ss_server::{
         self, ADMIN_ROLE_ID, EVERYONE_ROLE_ID, NewChannel, NewRole, NewUser, audit_log, channels,
         roles, users,
     },
-    handlers::{self, Roles},
+    handlers::{self, Channels, Roles},
     perms::{self, PermissionService},
 };
 use std::sync::Arc;
@@ -21,6 +21,13 @@ use std::sync::Arc;
 const ADMIN_BIT: u64 = Permissions::ADMINISTRATOR.bits();
 const SEND_BIT: u64 = Permissions::SEND_MESSAGES.bits();
 const UNKNOWN_BIT: u64 = 1 << 30;
+const BAN_BIT: u64 = Permissions::BAN_MEMBERS.bits();
+const VIEW_BIT: u64 = Permissions::VIEW_CHANNEL.bits();
+const AUDIT_BIT: u64 = Permissions::VIEW_AUDIT_LOG.bits();
+const CHANNELS_BIT: u64 = Permissions::MANAGE_CHANNELS.bits();
+const EVERYONE_PLUS_SERVER: u64 = Permissions::EVERYONE
+    .union(Permissions::MANAGE_SERVER)
+    .bits();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Who {
@@ -42,9 +49,14 @@ enum RoleRef {
 
 #[derive(Clone, Copy, Debug)]
 enum Scope {
+    /// No channel: a server-wide check, or the root as a parent.
     Server,
     Text,
     Hidden,
+    /// Visible, but the manager role is denied `SEND_MESSAGES` here.
+    Quiet,
+    /// A category `@everyone` cannot see.
+    HiddenCategory,
     Dm,
     Missing,
 }
@@ -79,7 +91,21 @@ enum Action {
     Override {
         channel: Scope,
         role: RoleRef,
+        allow: u64,
         deny: u64,
+    },
+    CreateChannel {
+        parent: Scope,
+    },
+    RenameChannel {
+        channel: Scope,
+    },
+    DeleteChannel {
+        channel: Scope,
+    },
+    MoveChannel {
+        channel: Scope,
+        parent: Scope,
     },
 }
 
@@ -278,6 +304,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Helper,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Denied,
@@ -288,6 +315,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Helper,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Allowed,
@@ -298,6 +326,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Manager,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Denied,
@@ -308,6 +337,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Admin,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Denied,
@@ -318,6 +348,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Senior,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Allowed,
@@ -328,6 +359,7 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Missing,
             role: RoleRef::Everyone,
+            allow: 0,
             deny: SEND_BIT,
         },
         expect: Outcome::Missing,
@@ -338,9 +370,240 @@ const COMMANDS: &[CommandCase] = &[
         action: Action::Override {
             channel: Scope::Text,
             role: RoleRef::Helper,
+            allow: 0,
             deny: UNKNOWN_BIT,
         },
         expect: Outcome::Invalid,
+    },
+    CommandCase {
+        name: "manager cannot override a channel they cannot see",
+        actor: Who::Manager,
+        action: Action::Override {
+            channel: Scope::Hidden,
+            role: RoleRef::Helper,
+            allow: 0,
+            deny: SEND_BIT,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "manager cannot reveal a hidden channel to @everyone",
+        actor: Who::Manager,
+        action: Action::Override {
+            channel: Scope::Hidden,
+            role: RoleRef::Everyone,
+            allow: VIEW_BIT,
+            deny: 0,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "manager cannot allow a bit they do not hold",
+        actor: Who::Manager,
+        action: Action::Override {
+            channel: Scope::Text,
+            role: RoleRef::Helper,
+            allow: BAN_BIT,
+            deny: 0,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "manager cannot allow a bit they are denied in that channel",
+        actor: Who::Manager,
+        action: Action::Override {
+            channel: Scope::Quiet,
+            role: RoleRef::Helper,
+            allow: SEND_BIT,
+            deny: 0,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "manager allows a bit they hold in that channel",
+        actor: Who::Manager,
+        action: Action::Override {
+            channel: Scope::Text,
+            role: RoleRef::Helper,
+            allow: SEND_BIT | CHANNELS_BIT,
+            deny: 0,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "administrator allows any bit",
+        actor: Who::Admin,
+        action: Action::Override {
+            channel: Scope::Hidden,
+            role: RoleRef::Senior,
+            allow: BAN_BIT | VIEW_BIT,
+            deny: 0,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot create a role with a bit they do not hold",
+        actor: Who::Manager,
+        action: Action::Create {
+            position: 2,
+            permissions: BAN_BIT,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "manager creates a role with bits they hold",
+        actor: Who::Manager,
+        action: Action::Create {
+            position: 2,
+            permissions: SEND_BIT | CHANNELS_BIT,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot add manage-server to @everyone",
+        actor: Who::Manager,
+        action: Action::Update {
+            role: RoleRef::Everyone,
+            name: None,
+            permissions: Some(EVERYONE_PLUS_SERVER),
+            position: None,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "manager cannot add view-audit-log to a lower role",
+        actor: Who::Manager,
+        action: Action::Update {
+            role: RoleRef::Helper,
+            name: None,
+            permissions: Some(AUDIT_BIT),
+            position: None,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "manager adds a bit they hold to a lower role",
+        actor: Who::Manager,
+        action: Action::Update {
+            role: RoleRef::Helper,
+            name: None,
+            permissions: Some(CHANNELS_BIT),
+            position: None,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "administrator cannot delete the seeded Admin role",
+        actor: Who::Admin,
+        action: Action::Delete {
+            role: RoleRef::Admin,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "administrator cannot strip administrator from the seeded Admin role",
+        actor: Who::Admin,
+        action: Action::Update {
+            role: RoleRef::Admin,
+            name: None,
+            permissions: Some(BAN_BIT),
+            position: None,
+        },
+        expect: Outcome::Denied,
+    },
+    CommandCase {
+        name: "administrator can rename the seeded Admin role",
+        actor: Who::Admin,
+        action: Action::Update {
+            role: RoleRef::Admin,
+            name: Some("Owners"),
+            permissions: None,
+            position: None,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager creates a channel at the root",
+        actor: Who::Manager,
+        action: Action::CreateChannel {
+            parent: Scope::Server,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot create a channel in a category they cannot see",
+        actor: Who::Manager,
+        action: Action::CreateChannel {
+            parent: Scope::HiddenCategory,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "administrator creates a channel in a hidden category",
+        actor: Who::Admin,
+        action: Action::CreateChannel {
+            parent: Scope::HiddenCategory,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager renames a channel they can see",
+        actor: Who::Manager,
+        action: Action::RenameChannel {
+            channel: Scope::Text,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot rename a channel they cannot see",
+        actor: Who::Manager,
+        action: Action::RenameChannel {
+            channel: Scope::Hidden,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "manager deletes a channel they can see",
+        actor: Who::Manager,
+        action: Action::DeleteChannel {
+            channel: Scope::Text,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot delete a channel they cannot see",
+        actor: Who::Manager,
+        action: Action::DeleteChannel {
+            channel: Scope::Hidden,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "manager moves a channel they can see",
+        actor: Who::Manager,
+        action: Action::MoveChannel {
+            channel: Scope::Text,
+            parent: Scope::Server,
+        },
+        expect: Outcome::Allowed,
+    },
+    CommandCase {
+        name: "manager cannot move a channel they cannot see",
+        actor: Who::Manager,
+        action: Action::MoveChannel {
+            channel: Scope::Hidden,
+            parent: Scope::Server,
+        },
+        expect: Outcome::Missing,
+    },
+    CommandCase {
+        name: "manager cannot move a channel into a category they cannot see",
+        actor: Who::Manager,
+        action: Action::MoveChannel {
+            channel: Scope::Text,
+            parent: Scope::HiddenCategory,
+        },
+        expect: Outcome::Missing,
     },
 ];
 
@@ -424,13 +687,16 @@ const ACTS: &[(Who, Who, bool)] = &[
     (Who::Manager, Who::Senior, false),
     (Who::Admin, Who::Senior, true),
     (Who::Manager, Who::Manager, false),
-    (Who::Senior, Who::Admin, true),
+    // A role placed above the seeded Admin role still does not outrank an
+    // administrator: only another administrator can act on one.
+    (Who::Senior, Who::Admin, false),
 ];
 
 struct World {
     pool: Arc<db::Pool>,
     perms: Arc<PermissionService>,
     roles_handler: Roles,
+    channels_handler: Channels,
     admin: Id,
     manager: Id,
     member: Id,
@@ -440,6 +706,8 @@ struct World {
     senior_role: Id,
     text: Id,
     hidden: Id,
+    quiet: Id,
+    hidden_category: Id,
     dm: Id,
     deleted: Id,
     _dir: tempfile::TempDir,
@@ -471,6 +739,8 @@ impl World {
             Scope::Server => None,
             Scope::Text => Some(self.text),
             Scope::Hidden => Some(self.hidden),
+            Scope::Quiet => Some(self.quiet),
+            Scope::HiddenCategory => Some(self.hidden_category),
             Scope::Dm => Some(self.dm),
             Scope::Missing => Some(Id::generate()),
         }
@@ -505,24 +775,19 @@ async fn world() -> World {
         let hidden = insert_channel(&mut conn, ChannelKind::Text, "hidden", admin).await;
         let dm = insert_channel(&mut conn, ChannelKind::Dm, "dm", admin).await;
         let deleted = insert_channel(&mut conn, ChannelKind::Text, "gone", admin).await;
-        channels::set_override(
-            &mut conn,
-            hidden,
-            EVERYONE_ROLE_ID,
-            Permissions::empty(),
-            Permissions::VIEW_CHANNEL,
-        )
-        .await
-        .unwrap();
-        channels::set_override(
-            &mut conn,
-            dm,
-            EVERYONE_ROLE_ID,
-            Permissions::empty(),
-            Permissions::SEND_MESSAGES,
-        )
-        .await
-        .unwrap();
+        let quiet = insert_channel(&mut conn, ChannelKind::Text, "quiet", admin).await;
+        let hidden_category =
+            insert_channel(&mut conn, ChannelKind::Category, "staff", admin).await;
+        for (channel, role, deny) in [
+            (hidden, EVERYONE_ROLE_ID, Permissions::VIEW_CHANNEL),
+            (hidden_category, EVERYONE_ROLE_ID, Permissions::VIEW_CHANNEL),
+            (quiet, manager_role, Permissions::SEND_MESSAGES),
+            (dm, EVERYONE_ROLE_ID, Permissions::SEND_MESSAGES),
+        ] {
+            channels::set_override(&mut conn, channel, role, Permissions::empty(), deny)
+                .await
+                .unwrap();
+        }
         channels::add_member(&mut conn, dm, member).await.unwrap();
         channels::soft_delete(&mut conn, deleted, Timestamp::now())
             .await
@@ -539,14 +804,18 @@ async fn world() -> World {
             hidden,
             dm,
             deleted,
+            quiet,
+            hidden_category,
         )
     };
     let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await.unwrap());
     let roles_handler = Roles::new(Arc::clone(&perms));
+    let channels_handler = Channels::new(Arc::clone(&perms));
     World {
         pool,
         perms,
         roles_handler,
+        channels_handler,
         admin: ids.0,
         manager: ids.1,
         member: ids.2,
@@ -558,6 +827,8 @@ async fn world() -> World {
         hidden: ids.8,
         dm: ids.9,
         deleted: ids.10,
+        quiet: ids.11,
+        hidden_category: ids.12,
         _dir: dir,
     }
 }
@@ -630,10 +901,18 @@ async fn insert_channel(
 
 #[tokio::test]
 async fn command_matrix() {
+    let mut mismatches = Vec::new();
     for case in COMMANDS {
         let world = world().await;
         let result = apply(&world, case.actor, case.action).await;
-        assert_eq!(classify(result), case.expect, "{}", case.name);
+        let outcome = classify(result);
+        if outcome != case.expect {
+            mismatches.push(format!(
+                "{}: expected {:?}, got {outcome:?}",
+                case.name, case.expect
+            ));
+            continue;
+        }
         let audited = audit_rows(&world).await;
         if case.expect == Outcome::Allowed {
             assert_eq!(audited.len(), 1, "{}", case.name);
@@ -643,6 +922,11 @@ async fn command_matrix() {
             assert!(audited.is_empty(), "{}", case.name);
         }
     }
+    assert!(
+        mismatches.is_empty(),
+        "command matrix:\n  {}",
+        mismatches.join("\n  ")
+    );
 }
 
 #[tokio::test]
@@ -842,6 +1126,168 @@ async fn create_role_keeps_the_requested_position_and_color() {
     assert_eq!(position(&mut conn, world.manager_role).await, 3);
 }
 
+#[tokio::test]
+async fn granting_a_role_cannot_hand_out_bits_the_actor_lacks() {
+    let world = world().await;
+    world
+        .roles_handler
+        .update(
+            world.admin,
+            &v1::UpdateRole {
+                role_id: id_to_bytes(world.helper),
+                permissions: Some(BAN_BIT),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let granted = world
+        .roles_handler
+        .set_user_roles(
+            world.manager,
+            &v1::SetUserRoles {
+                user_id: id_to_bytes(world.member),
+                role_ids: vec![id_to_bytes(world.helper)],
+            },
+        )
+        .await;
+    assert!(
+        matches!(granted, Err(handlers::Error::Forbidden(_))),
+        "{granted:?}"
+    );
+    assert!(
+        world
+            .perms
+            .check(world.member, None, Permissions::BAN_MEMBERS)
+            .is_err()
+    );
+    // Bits the manager does not touch stay where an administrator put them.
+    world
+        .roles_handler
+        .update(
+            world.manager,
+            &v1::UpdateRole {
+                role_id: id_to_bytes(world.helper),
+                name: Some("wardens".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // Taking a bit away is not a grant.
+    world
+        .roles_handler
+        .update(
+            world.manager,
+            &v1::UpdateRole {
+                role_id: id_to_bytes(world.helper),
+                permissions: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    world
+        .roles_handler
+        .set_user_roles(
+            world.manager,
+            &v1::SetUserRoles {
+                user_id: id_to_bytes(world.member),
+                role_ids: vec![id_to_bytes(world.helper)],
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn override_edits_keep_bits_the_actor_did_not_add() {
+    let world = world().await;
+    world
+        .roles_handler
+        .set_channel_override(
+            world.admin,
+            &v1::SetChannelOverride {
+                channel_id: id_to_bytes(world.text),
+                role_id: id_to_bytes(world.helper),
+                allow: BAN_BIT,
+                deny: 0,
+            },
+        )
+        .await
+        .unwrap();
+    world
+        .roles_handler
+        .set_channel_override(
+            world.manager,
+            &v1::SetChannelOverride {
+                channel_id: id_to_bytes(world.text),
+                role_id: id_to_bytes(world.helper),
+                allow: BAN_BIT,
+                deny: SEND_BIT,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn deleting_a_category_requires_seeing_every_channel_in_it() {
+    let world = world().await;
+    let created = world
+        .channels_handler
+        .create(
+            world.admin,
+            &v1::CreateChannel {
+                kind: i32::from(v1::ChannelKind::Category),
+                name: "lobby".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let ack::Result::ChannelId(lobby) = created.ack else {
+        panic!("expected a channel id");
+    };
+    world
+        .channels_handler
+        .relocate(
+            world.admin,
+            &v1::MoveChannel {
+                channel_id: id_to_bytes(world.hidden),
+                parent_id: Some(lobby.clone()),
+                position: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let deleted = world
+        .channels_handler
+        .delete(
+            world.manager,
+            &v1::DeleteChannel {
+                channel_id: lobby.clone(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(deleted, Err(handlers::Error::Forbidden(_))),
+        "{deleted:?}"
+    );
+    let mut conn = world.pool.write().await;
+    let hidden = channels::get(&mut conn, world.hidden)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(hidden.deleted_at.is_none());
+    drop(conn);
+    world
+        .channels_handler
+        .delete(world.admin, &v1::DeleteChannel { channel_id: lobby })
+        .await
+        .unwrap();
+}
+
 async fn apply(
     world: &World,
     actor: Who,
@@ -919,6 +1365,7 @@ async fn apply(
         Action::Override {
             channel,
             role,
+            allow,
             deny,
         } => {
             let channel_id = world.channel(channel).unwrap_or_else(Id::generate);
@@ -929,12 +1376,77 @@ async fn apply(
                     &v1::SetChannelOverride {
                         channel_id: id_to_bytes(channel_id),
                         role_id: id_to_bytes(world.role(role)),
-                        allow: 0,
+                        allow,
                         deny,
                     },
                 )
                 .await
         }
+        Action::CreateChannel { .. }
+        | Action::RenameChannel { .. }
+        | Action::DeleteChannel { .. }
+        | Action::MoveChannel { .. } => apply_channel(world, actor, action).await,
+    }
+}
+
+async fn apply_channel(
+    world: &World,
+    actor: Id,
+    action: Action,
+) -> Result<handlers::CommandReply, handlers::Error> {
+    match action {
+        Action::CreateChannel { parent } => {
+            world
+                .channels_handler
+                .create(
+                    actor,
+                    &v1::CreateChannel {
+                        kind: i32::from(v1::ChannelKind::Text),
+                        name: "created".into(),
+                        parent_id: world.channel(parent).map(id_to_bytes),
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+        Action::RenameChannel { channel } => {
+            world
+                .channels_handler
+                .update(
+                    actor,
+                    &v1::UpdateChannel {
+                        channel_id: id_to_bytes(world.channel(channel).unwrap()),
+                        name: Some("renamed".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+        Action::DeleteChannel { channel } => {
+            world
+                .channels_handler
+                .delete(
+                    actor,
+                    &v1::DeleteChannel {
+                        channel_id: id_to_bytes(world.channel(channel).unwrap()),
+                    },
+                )
+                .await
+        }
+        Action::MoveChannel { channel, parent } => {
+            world
+                .channels_handler
+                .relocate(
+                    actor,
+                    &v1::MoveChannel {
+                        channel_id: id_to_bytes(world.channel(channel).unwrap()),
+                        parent_id: world.channel(parent).map(id_to_bytes),
+                        position: 0,
+                    },
+                )
+                .await
+        }
+        _ => unreachable!("not a channel action"),
     }
 }
 
@@ -963,6 +1475,10 @@ fn action_name(action: Action) -> &'static str {
         Action::Delete { .. } => "role.delete",
         Action::SetRoles { .. } => "member.roles.set",
         Action::Override { .. } => "channel.override.set",
+        Action::CreateChannel { .. } => "channel.create",
+        Action::RenameChannel { .. } => "channel.update",
+        Action::DeleteChannel { .. } => "channel.delete",
+        Action::MoveChannel { .. } => "channel.move",
     }
 }
 

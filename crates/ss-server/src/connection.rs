@@ -311,9 +311,7 @@ impl Server {
         let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
         let (kicks, kick_rx) = mpsc::channel(1);
         let quic = connection.quic().clone();
-        conn_id = self
-            .voice
-            .connect(conn_id, &authed.resume_token, authed.user.id, quic.clone());
+        conn_id = self.attach_voice(conn_id, &authed, &quic);
         let event = self.registry.register(Registration {
             conn_id,
             user_id: authed.user.id,
@@ -374,6 +372,18 @@ impl Server {
         drop(unregister);
         drop(voice_guard);
         result
+    }
+
+    /// Registers the connection with voice, resuming a leased seat when the
+    /// member may still hold it. A dropped lease's leave is published.
+    fn attach_voice(&self, conn: Id, authed: &auth::Authenticated, quic: &quinn::Connection) -> Id {
+        let (conn, dropped) =
+            self.voice
+                .connect(conn, &authed.resume_token, authed.user.id, quic.clone());
+        for event in dropped {
+            self.bus.publish(None, event);
+        }
+        conn
     }
 
     /// Spends the per-address Hello quota, checks the credentials, and wipes
@@ -581,6 +591,13 @@ async fn read_inbound(
                 known_channels.insert(id, channel.clone());
             }
         }
+        server.registry.seed_voice(
+            context.conn_id,
+            snapshot
+                .voice_states
+                .iter()
+                .filter_map(|state| id_from_bytes(&state.conn_id).ok()),
+        );
     }
     outbound
         .send(welcome)
@@ -618,6 +635,7 @@ async fn read_inbound(
                 let refresh = answer.events.iter().any(refreshes_channels);
                 for frame in answer.frames {
                     if frame.msg.as_ref().is_some_and(channel_event) { continue; }
+                    if !reply_visible(server, context, &frame) { continue; }
                     outbound
                         .send(frame)
                         .await
@@ -728,6 +746,28 @@ async fn sync_channels(
     }
     *known = current;
     Ok(())
+}
+
+/// Whether an event frame on the actor's own reply may be sent. The ack and
+/// error frames always go. Events pass the same checks as fan-out, so a
+/// moderator's reply never names a hidden channel, except that the actor
+/// always sees events about invites they created.
+fn reply_visible(server: &Server, context: &AuthedContext, frame: &v1::ServerEnvelope) -> bool {
+    if frame.request_id != 0 {
+        return true;
+    }
+    let Some(msg) = &frame.msg else {
+        return true;
+    };
+    let own_invite = match msg {
+        server_envelope::Msg::InviteCreated(v1::InviteCreated { invite })
+        | server_envelope::Msg::InviteRevoked(v1::InviteRevoked { invite }) => invite
+            .as_ref()
+            .is_some_and(|invite| invite.created_by == id_to_bytes(context.user_id)),
+        _ => false,
+    };
+    (own_invite || snapshot::delivers(&server.perms, context.user_id, msg))
+        && server.registry.admit_voice(context.conn_id, frame)
 }
 
 fn deliver(server: &Server, context: &AuthedContext, event: &ServerEvent) {
@@ -859,7 +899,7 @@ async fn replies(
     match result {
         Ok(reply) => {
             let mut events = reply.events;
-            events.extend(server.voice.refresh_speak());
+            events.extend(server.voice.refresh_seats());
             let removed = deleted_channels(&events);
             for channel in removed {
                 events.extend(server.voice.evacuate(channel));

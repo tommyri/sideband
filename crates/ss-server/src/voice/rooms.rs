@@ -29,7 +29,7 @@ pub(crate) struct Seat {
     pub max_bitrate_bps: u32,
 }
 
-/// Mute, deaf, and speak bits stored on a seat. Four separate `bool` fields
+/// Mute, deaf, speak, and moved bits stored on a seat. Separate `bool` fields
 /// trip the pedantic struct lint without making the hot path clearer.
 #[derive(Clone, Copy)]
 pub(crate) struct Flags(u8);
@@ -39,6 +39,8 @@ impl Flags {
     const SELF_DEAF: u8 = 1 << 1;
     const SERVER_MUTE: u8 = 1 << 2;
     const CAN_SPEAK: u8 = 1 << 3;
+    /// Placed by `MoveUser`, which bypasses `CONNECT`.
+    const MOVED: u8 = 1 << 4;
 
     pub(crate) fn arriving(self_mute: bool, self_deaf: bool, can_speak: bool) -> Self {
         Self(u8::from(self_mute) | (u8::from(self_deaf) << 1) | (u8::from(can_speak) << 3))
@@ -60,6 +62,10 @@ impl Flags {
         self.0 & Self::CAN_SPEAK != 0
     }
 
+    pub(crate) const fn moved(self) -> bool {
+        self.0 & Self::MOVED != 0
+    }
+
     fn with(self, bit: u8, enabled: bool) -> Self {
         if enabled {
             Self(self.0 | bit)
@@ -79,6 +85,10 @@ impl Flags {
 
     fn with_speak(self, allowed: bool) -> Self {
         self.with(Self::CAN_SPEAK, allowed)
+    }
+
+    fn placed_by(self, placement: Placement) -> Self {
+        self.with(Self::MOVED, placement == Placement::Moved)
     }
 }
 
@@ -207,6 +217,7 @@ impl Rooms {
             codec_channels,
             max_bitrate_bps,
             can_speak,
+            placement,
             limit,
         } = plan;
         let Some(user) = self.peers.get(&conn).map(|peer| peer.user) else {
@@ -238,7 +249,9 @@ impl Rooms {
         let seat = Seat {
             channel,
             track,
-            flags: Flags::arriving(self_mute, self_deaf, can_speak).with_server_mute(server_mute),
+            flags: Flags::arriving(self_mute, self_deaf, can_speak)
+                .with_server_mute(server_mute)
+                .placed_by(placement),
             codec_channels,
             max_bitrate_bps,
         };
@@ -316,22 +329,36 @@ impl Rooms {
         ))
     }
 
-    pub(crate) fn refresh_speak(&mut self, speak: impl Fn(Id, Id) -> bool) {
-        let plan: Vec<(Id, Id, Id)> = self
+    /// Rechecks every seat, including seats held for a resume.
+    ///
+    /// `access(user, channel, moved)` is `None` when the seat may no longer be
+    /// held, or `Some(can_speak)`. Evicted seats leave like a `LeaveVoice`, and
+    /// their events are returned.
+    pub(crate) fn refresh(
+        &mut self,
+        access: impl Fn(Id, Id, bool) -> Option<bool>,
+    ) -> Vec<v1::server_envelope::Msg> {
+        let plan: Vec<(Id, Id, Seat)> = self
             .peers
             .iter()
-            .filter_map(|(conn, peer)| peer.seat.map(|seat| (*conn, peer.user, seat.channel)))
+            .filter_map(|(conn, peer)| peer.seat.map(|seat| (*conn, peer.user, seat)))
             .collect();
-        for (conn, user, channel) in plan {
-            let allowed = speak(user, channel);
-            if let Some(seat) = self
-                .peers
-                .get_mut(&conn)
-                .and_then(|peer| peer.seat.as_mut())
-            {
-                seat.flags = seat.flags.with_speak(allowed);
+        let mut events = Vec::new();
+        for (conn, user, seat) in plan {
+            match access(user, seat.channel, seat.flags.moved()) {
+                Some(allowed) => {
+                    if let Some(seat) = self
+                        .peers
+                        .get_mut(&conn)
+                        .and_then(|peer| peer.seat.as_mut())
+                    {
+                        seat.flags = seat.flags.with_speak(allowed);
+                    }
+                }
+                None => events.extend(self.leave(conn)),
             }
         }
+        events
     }
 
     pub(crate) fn channel_conns(&self, channel: Id) -> Vec<Id> {
@@ -409,10 +436,20 @@ pub(crate) struct JoinPlan {
     pub self_mute: bool,
     pub self_deaf: bool,
     pub can_speak: bool,
+    pub placement: Placement,
     pub codec_channels: u8,
     pub max_bitrate_bps: u32,
     /// `None` or `Some(0)` means no cap. Callers that may move members pass `None`.
     pub limit: Option<i64>,
+}
+
+/// Who put a member in their seat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// `JoinVoice`, which required `CONNECT`.
+    Joined,
+    /// `MoveUser`, which bypassed `CONNECT`: losing it later does not evict.
+    Moved,
 }
 
 pub(crate) struct JoinEvents {
