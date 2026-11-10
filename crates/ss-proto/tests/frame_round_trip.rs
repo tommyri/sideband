@@ -655,6 +655,7 @@ fn snapshot(sample: &Sample) -> Snapshot {
             Vec::new()
         },
         direct_messages: channels,
+        direct_messages_next: sample.flag.then(|| sample.blob2.clone()),
     }
 }
 

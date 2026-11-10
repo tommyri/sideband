@@ -46,6 +46,31 @@ resource_commands! {
     create_webhook: CreateWebhook => Webhook, v1::Webhook,
 }
 impl Client {
+    /// Load the next page of older conversations into the state, from
+    /// `State::direct_messages_next`. Returns `false` once every
+    /// conversation is loaded.
+    pub async fn list_dms(&self) -> Result<bool, Error> {
+        let (generation, cursor) = {
+            let state = self.store.read();
+            (state.generation, state.direct_messages_next.clone())
+        };
+        let Some(cursor) = cursor else {
+            return Ok(false);
+        };
+        let reply = self
+            .command(Msg::ListDms(v1::ListDms {
+                cursor: Some(cursor),
+                limit: 0,
+            }))
+            .await?;
+        let Some(ack::Result::DmPage(page)) = reply.result else {
+            return Err(Error::Protocol("expected a DM page"));
+        };
+        self.store.direct_page(generation, &page)?;
+        let _ = self.events.send(crate::ClientEvent::ChannelsChanged);
+        Ok(page.next.is_some())
+    }
+
     /// Start publishing a video/screen stream and return its server track id.
     pub async fn start_stream(&self, command: v1::StartStream) -> Result<u32, Error> {
         match self.command(Msg::StartStream(command)).await?.result {

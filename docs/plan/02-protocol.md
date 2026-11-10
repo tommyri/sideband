@@ -64,6 +64,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `CreateDm` | `user_ids[]` | One other user reuses that pair's DM. Two to nine others open a new group DM |
 | `LeaveDm` | `channel_id` | Leave a group DM |
 | `AddDmMembers` | `channel_id`, `user_ids[]` | Group-DM creator adds members, up to nine others in total |
+| `ListDms` | `cursor?`, `limit` | Older conversations than `Welcome` carried (tag 45). Acked with `DmPage` |
 | `CreateWebhook` | `channel_id`, `name` | Token is returned once on the ack |
 | `DeleteWebhook` | `webhook_id` | Later posts with that token are rejected |
 | `CreateChannel` | `kind`, `name`, `parent_id`, `position`, `topic`, `VoiceSettings` | |
@@ -92,8 +93,8 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, DM list with each conversation's last message id |
-| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId }` | `Webhook.token` is only on `CreateWebhook` |
+| `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token`, `Snapshot` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, the most recently active DMs with each conversation's last message id, and `direct_messages_next?` when there are more |
+| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId, DmPage }` | `Webhook.token` is only on `CreateWebhook`. `DmPage{channels[], read_states[], next?}` answers `ListDms` (tag 13) |
 | `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
@@ -127,6 +128,32 @@ named channel; `TrackRemoved` carries only the opaque track id. A
 told that connection was in a channel. The actor's own command reply is
 filtered the same way. A member who loses `VIEW_CHANNEL` or `CONNECT` is removed
 from voice with the usual leave events.
+
+### Direct messages and the Welcome size
+
+`Snapshot.direct_messages` holds at most the 100 most recently active
+conversations (by newest message, else creation). When there are more,
+`Snapshot.direct_messages_next` (tag 8) is an opaque cursor; `ListDms` with it
+returns the next page of at most 100, newest first, with the caller's read
+states for those conversations, and `DmPage.next` while more remain.
+`Snapshot.read_states` covers guild channels and the DMs included. If a
+`Welcome` would still exceed one frame, the server halves the DM list until it
+fits; a login is never refused for its DMs. A conversation the session was
+not sent is announced with `ChannelCreated` before the first event in it.
+
+DM channel events reach only that conversation's members: a member sees
+`ChannelCreated` the first time and `ChannelUpdated` after; a session that
+knew the conversation and is no longer in it sees `ChannelDeleted`. The diff
+after role, grant, override and guild channel changes covers guild channels
+only and runs at most once per 100 ms per session for a burst.
+
+### Delivery
+
+Each session's control frames are delivered in order or not at all. A
+session that cannot keep up (its queue full, the event bus 1024 events ahead
+of it, or one write stalled for 10 s) gets `ServerNotice` and the connection
+closes with code 2; the client reconnects and resyncs from `Welcome`. A
+command that waits on the database does not stop delivery of events.
 
 ### Limits
 

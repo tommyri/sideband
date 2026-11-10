@@ -28,6 +28,8 @@ const MAX_PASSWORD_BYTES: usize = 128;
 
 /// Ninety days, in milliseconds. Presenting the token pushes expiry forward.
 const SESSION_TTL_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+/// A token used again within this long is not re-stamped.
+const SEEN_EVERY_MS: i64 = 60 * 1000;
 
 /// A failure a `Hello` handler can turn into a control-stream error.
 #[derive(Debug, thiserror::Error)]
@@ -167,7 +169,8 @@ impl Auth {
         }
     }
 
-    /// Resolves a bearer session token and slides its expiry.
+    /// Resolves a bearer session token and slides its expiry, at most once a
+    /// minute.
     pub async fn authenticate_bearer(&self, token: &str) -> Result<Authenticated, Error> {
         self.resume(token).await
     }
@@ -265,6 +268,22 @@ impl Auth {
         let now = Timestamp::now();
         if session.expires_at.is_some_and(|expires| expires <= now) {
             return Err(Error::Unauthenticated);
+        }
+        // A token seen in the last minute keeps its stamp and expiry, so
+        // HTTP requests and reconnects do not queue on the single writer.
+        if now
+            .as_millis()
+            .saturating_sub(session.last_seen_at.as_millis())
+            < SEEN_EVERY_MS
+        {
+            let mut conn = self.pool.read().await?;
+            let user = load_active(&mut conn, session.user_id).await?;
+            let permissions = permissions_for(&mut conn, user.id).await?;
+            return Ok(Authenticated {
+                user,
+                resume_token: token.to_owned(),
+                permissions,
+            });
         }
         let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, session.user_id).await?;

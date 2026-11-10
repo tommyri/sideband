@@ -66,6 +66,7 @@ message ClientEnvelope {
     StartStream start_stream = 39;
     StopStream stop_stream = 40;
     MoveRole move_role = 41;
+    ListDms list_dms = 45;
   }
 }
 
@@ -132,6 +133,8 @@ message Ack {
     Webhook webhook = 9;
     // StartStream assigned this video/screen track.
     uint32 track_id = 10;
+    // `ListDms` returned this page.
+    DmPage dm_page = 13;
   }
 }
 

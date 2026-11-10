@@ -2,8 +2,12 @@
 //!
 //! [`PermissionService`] keeps an [`ArcSwap`] snapshot of roles, grants, and
 //! channel overrides. Handlers call [`PermissionService::reload`] after a
-//! committed mutation so the next check sees it. `Hello` still records the
-//! role OR on the connection; command checks do not read that copy.
+//! committed mutation so the next check sees it. DM handlers call
+//! [`PermissionService::set_direct`] instead: roles and overrides never apply
+//! to a DM, so its member list is all that changes, and a full reload would
+//! read every role, channel and membership on the server. `Hello` still
+//! records the role OR on the connection; command checks do not read that
+//! copy.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -44,10 +48,14 @@ struct ChannelView {
     overrides: HashMap<Id, PermissionOverride>,
 }
 
+/// Roles and grants are shared, and each channel is its own allocation, so
+/// [`PermissionService::set_direct`] copies pointers rather than the whole
+/// snapshot.
+#[derive(Clone)]
 struct Snapshot {
-    roles: HashMap<Id, RoleView>,
-    grants: HashMap<Id, Vec<Id>>,
-    channels: HashMap<Id, ChannelView>,
+    roles: Arc<HashMap<Id, RoleView>>,
+    grants: Arc<HashMap<Id, Vec<Id>>>,
+    channels: HashMap<Id, Arc<ChannelView>>,
 }
 
 impl PermissionService {
@@ -70,6 +78,35 @@ impl PermissionService {
         let snapshot = load(&self.pool).await?;
         self.cache.store(Arc::new(snapshot));
         Ok(())
+    }
+
+    /// Records the current members of DM `channel` without reloading. Call
+    /// it after committing a DM create, add, or leave.
+    pub fn set_direct(&self, channel: Id, kind: ChannelKind, members: &[Id]) {
+        let view = Arc::new(ChannelView {
+            kind,
+            members: members.iter().copied().collect(),
+            overrides: HashMap::new(),
+        });
+        self.cache.rcu(|current| {
+            let mut next = Snapshot::clone(current);
+            next.channels.insert(channel, Arc::clone(&view));
+            next
+        });
+    }
+
+    /// Members of a live DM, ordered by id. `None` for a guild channel or a
+    /// missing one.
+    #[must_use]
+    pub fn direct_members(&self, channel: Id) -> Option<Vec<Id>> {
+        let snapshot = self.cache.load();
+        let view = snapshot.channels.get(&channel)?;
+        if !view.kind.is_direct() {
+            return None;
+        }
+        let mut members: Vec<Id> = view.members.iter().copied().collect();
+        members.sort_unstable();
+        Some(members)
     }
 
     /// Whether `user` holds `permission` on the server, or in `channel`.
@@ -262,8 +299,11 @@ async fn load(pool: &db::Pool) -> Result<Snapshot, db::Error> {
         }
     }
     Ok(Snapshot {
-        roles: role_views,
-        grants,
-        channels: channel_views,
+        roles: Arc::new(role_views),
+        grants: Arc::new(grants),
+        channels: channel_views
+            .into_iter()
+            .map(|(id, view)| (id, Arc::new(view)))
+            .collect(),
     })
 }

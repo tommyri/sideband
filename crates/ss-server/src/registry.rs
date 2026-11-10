@@ -5,6 +5,14 @@
 //! Explicit idle and do-not-disturb survive a reconnect until the process
 //! restarts.
 //!
+//! Every connection has two bounded queues of [`OUTBOUND_CAPACITY`] frames.
+//! Its own session loop fills the first with replies and bus events and waits
+//! for room, so a reader that falls behind lags on the bus and is closed.
+//! The second carries frames other tasks address to it with
+//! [`ConnectionRegistry::enqueue`]; when that one is full the connection is
+//! closed at once. A frame is never dropped while the connection stays open:
+//! the client resyncs from `Welcome` instead.
+//!
 //! Each connection also remembers which voice connections it was told are in
 //! a channel. A `VoiceStateUpdated` without a channel (a leave) names no
 //! channel to check visibility against, so it is only sent to connections
@@ -12,7 +20,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use parking_lot::Mutex;
@@ -31,10 +39,11 @@ pub const CLOSE_KICKED: u32 = 3;
 pub const CLOSE_BANNED: u32 = 4;
 /// Repeated media bitrate violations.
 pub const CLOSE_RATE_LIMITED: u32 = 5;
-/// How long a full outbound queue, or one stalled write, is tolerated.
+/// How long one stalled write to the control stream is tolerated.
 pub const SLOW_CONSUMER_AFTER: Duration = Duration::from_secs(10);
-/// Per-connection outbound control queue. Command replies wait for space.
-/// Fan-out uses `try_send` and starts the slow-consumer timer when it is full.
+/// Size of each per-connection control queue. The session's own queue waits
+/// for space; the one [`ConnectionRegistry::enqueue`] fills closes the
+/// connection when full.
 pub const OUTBOUND_CAPACITY: usize = 32;
 
 const SLOW_REASON: &[u8] = b"control consumer too slow";
@@ -61,8 +70,11 @@ pub(crate) struct Registration {
     pub user_id: Id,
     /// Used to close a slow or shutting-down peer.
     pub connection: quinn::Connection,
-    /// Bounded control queue. The session writer owns the receiver.
+    /// The session loop's own bounded queue, kept for diagnostics.
     pub outbound: mpsc::Sender<v1::ServerEnvelope>,
+    /// Bounded queue for frames other tasks address to this connection. The
+    /// session writer owns the receiver.
+    pub direct: mpsc::Sender<v1::ServerEnvelope>,
     /// One-slot signal: send `ServerNotice`, then close.
     pub kicks: mpsc::Sender<Kick>,
     /// Client product strings.
@@ -156,10 +168,10 @@ impl PresenceBook {
 struct Peer {
     connection: quinn::Connection,
     outbound: mpsc::Sender<v1::ServerEnvelope>,
+    direct: mpsc::Sender<v1::ServerEnvelope>,
     kicks: mpsc::Sender<Kick>,
     client: ClientInfo,
     rtt: Option<Duration>,
-    blocked_since: Option<Instant>,
     /// Voice connections this peer was told are in a channel.
     voice_seen: HashSet<Id>,
 }
@@ -184,7 +196,8 @@ impl ConnectionRegistry {
             serde_json::json!({"connectionId":id.to_string(),"rttMs":peer.connection.rtt().as_secs_f64()*1000.0,
                 "lostPackets":path.lost_packets,"sentPackets":path.sent_packets,
                 "congestionWindowBytes":path.cwnd,"pathMtuBytes":path.current_mtu,
-                "queuedControlMessages":peer.outbound.max_capacity()-peer.outbound.capacity()})
+                "queuedControlMessages":peer.outbound.max_capacity()-peer.outbound.capacity()
+                    +peer.direct.max_capacity()-peer.direct.capacity()})
         }).collect();
         rows.sort_by(|a, b| a["connectionId"].as_str().cmp(&b["connectionId"].as_str()));
         rows
@@ -213,10 +226,10 @@ impl ConnectionRegistry {
             Peer {
                 connection: registration.connection,
                 outbound: registration.outbound,
+                direct: registration.direct,
                 kicks: registration.kicks,
                 client: registration.client,
                 rtt: None,
-                blocked_since: None,
                 voice_seen: HashSet::new(),
             },
         );
@@ -301,8 +314,8 @@ impl ConnectionRegistry {
         peer.rtt = Some(peer.connection.rtt());
     }
 
-    /// Grace period before a wedged consumer is closed. The server uses
-    /// [`SLOW_CONSUMER_AFTER`]; tests shorten it.
+    /// How long one control-stream write may stall before the connection is
+    /// closed. The server uses [`SLOW_CONSUMER_AFTER`]; tests change it.
     pub fn set_slow_after(&self, slow_after: Duration) {
         self.inner.lock().slow_after = slow_after;
     }
@@ -312,32 +325,21 @@ impl ConnectionRegistry {
         self.inner.lock().slow_after
     }
 
-    /// Queues a fan-out frame. A queue that stays full for [`Self::slow_after`]
-    /// disconnects that connection with a [`v1::ServerNotice`].
+    /// Queues a frame for `conn` from outside its session loop. A full queue
+    /// closes that connection with a [`v1::ServerNotice`] instead of dropping
+    /// the frame, so the client resyncs from `Welcome`.
     pub fn enqueue(&self, conn: Id, frame: v1::ServerEnvelope) {
         let kick = {
             let mut inner = self.inner.lock();
-            let slow_after = inner.slow_after;
             let Some(peer) = inner.peers.get_mut(&conn) else {
                 return;
             };
             if !admit(&mut peer.voice_seen, &frame) {
                 return;
             }
-            match peer.outbound.try_send(frame) {
-                Ok(()) => {
-                    peer.blocked_since = None;
-                    None
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let start = peer.blocked_since.unwrap_or_else(|| {
-                        let now = Instant::now();
-                        peer.blocked_since = Some(now);
-                        now
-                    });
-                    (start.elapsed() >= slow_after).then(|| peer.kick_pair())
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => None,
+            match peer.direct.try_send(frame) {
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => None,
+                Err(mpsc::error::TrySendError::Full(_)) => Some(peer.kick_pair()),
             }
         };
         if let Some((kicks, connection)) = kick {
