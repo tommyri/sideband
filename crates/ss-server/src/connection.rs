@@ -330,16 +330,8 @@ impl Server {
         let Some(Msg::Hello(mut hello)) = envelope.msg else {
             return reject(&connection, &mut stream, &hello_failure(request_id)).await;
         };
-        if request_id == 0 {
-            return reject(&connection, &mut stream, &hello_failure(request_id)).await;
-        }
-        if !ss_proto::is_supported_version(hello.protocol_version) {
-            return reject(
-                &connection,
-                &mut stream,
-                &ss_proto::unsupported_version(request_id),
-            )
-            .await;
+        if let Some(refusal) = hello_refusal(request_id, &hello) {
+            return reject(&connection, &mut stream, &refusal).await;
         }
         let authed = match self.authenticate(&mut hello, peer, request_id).await {
             Ok(authed) => authed,
@@ -1422,6 +1414,17 @@ fn scrub(hello: &mut v1::Hello) {
 
 fn unsupported(request_id: u32) -> v1::ServerEnvelope {
     v1::ServerEnvelope::error(request_id, v1::ErrorCode::Invalid, "unsupported command")
+}
+
+/// Why a `Hello` is refused before authentication, if it is.
+fn hello_refusal(request_id: u32, hello: &v1::Hello) -> Option<v1::ServerEnvelope> {
+    if request_id == 0 {
+        return Some(hello_failure(request_id));
+    }
+    if !ss_proto::is_supported_version(hello.protocol_version) {
+        return Some(ss_proto::unsupported_version(request_id));
+    }
+    None
 }
 
 fn hello_failure(request_id: u32) -> v1::ServerEnvelope {
