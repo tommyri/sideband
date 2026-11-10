@@ -150,11 +150,10 @@ pub async fn channel_admin_snapshot(
     server_id: String,
 ) -> Result<ChannelAdminSnapshot, ApiError> {
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
-    authorize(client, &state, &server)?;
+    authorize(&client, &state, &server)?;
     let channels = client
         .state()
         .read()
@@ -226,11 +225,10 @@ async fn perform(
     action: ChannelAdminAction,
 ) -> Result<(), ApiError> {
     let server = parse_server_id(server)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
-    authorize(client, state, &server)?;
+    authorize(&client, state, &server)?;
     match action {
         ChannelAdminAction::Create {
             channel_kind,
@@ -260,7 +258,7 @@ async fn perform(
             channel,
             fields: input,
         } => {
-            let current = guild(client, &channel)?;
+            let current = guild(&client, &channel)?;
             let (name, topic, voice) = fields(input, current.kind)?;
             client
                 .update_channel(v1::UpdateChannel {
@@ -278,7 +276,7 @@ async fn perform(
             parent_id,
             position,
         } => {
-            let current = guild(client, &channel)?;
+            let current = guild(&client, &channel)?;
             if position < 0 {
                 return Err(invalid("Position cannot be negative"));
             }
@@ -292,7 +290,7 @@ async fn perform(
                 .map_err(api_error)?;
         }
         ChannelAdminAction::Delete { channel } => {
-            let current = guild(client, &channel)?;
+            let current = guild(&client, &channel)?;
             client
                 .delete_channel(v1::DeleteChannel {
                     channel_id: current.id,

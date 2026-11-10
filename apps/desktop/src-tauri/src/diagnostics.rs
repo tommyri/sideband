@@ -6,19 +6,19 @@ pub async fn diagnostics_snapshot(
     state: State<'_, AppState>,
     server_id: Option<String>,
 ) -> Result<serde_json::Value, ApiError> {
-    let clients = state.clients.lock().await;
     let voice = state.voice.lock().await;
     let selected = voice
         .as_ref()
         .map(|v| v.server.as_str())
         .or(server_id.as_deref());
     let client = selected.and_then(|id| {
-        clients
+        state
+            .clients()
             .iter()
             .find(|(key, _)| key.as_str() == id)
-            .map(|(_, c)| c)
+            .map(|(_, c)| std::sync::Arc::clone(c))
     });
-    let transport = client.and_then(ss_client_core::Client::diagnostics);
+    let transport = client.and_then(|client| client.diagnostics());
     let stats = voice
         .as_ref()
         .map(|v| crate::commands::voice_stats(v.session.stats()));

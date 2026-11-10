@@ -212,9 +212,8 @@ pub async fn role_admin_snapshot(
     server_id: String,
 ) -> Result<RoleSnapshot, ApiError> {
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
     snapshot(&client.state().read())
 }
@@ -225,9 +224,8 @@ pub async fn role_overrides(
     channel: String,
 ) -> Result<Vec<ss_client_core::role_admin::ChannelOverride>, ApiError> {
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
     client
         .channel_overrides(parse(&channel)?)
@@ -244,9 +242,8 @@ pub async fn role_admin_action(
 }
 async fn perform(state: &AppState, server: &str, action: RoleAction) -> Result<(), ApiError> {
     let server = parse_server_id(server)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
     let policy = snapshot(&client.state().read())?;
     match action {

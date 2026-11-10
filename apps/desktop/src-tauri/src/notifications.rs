@@ -96,11 +96,9 @@ pub fn init(app: &AppHandle) {
             let Ok(channel) = target.channel.parse::<Id>() else {
                 return;
             };
-            let clients = state.clients.lock().await;
-            let Some(client) = clients.get(&server) else {
+            let Some(store) = state.client(&server).map(|client| client.state()) else {
                 return;
             };
-            let store = client.state();
             if !accessible(&store, channel) {
                 return;
             }
@@ -159,7 +157,12 @@ pub async fn save_notification_preferences(
             .clear();
     }
     {
-        for (_, client) in state.clients.lock().await.iter() {
+        let clients: Vec<_> = state
+            .clients()
+            .iter()
+            .map(|(_, client)| std::sync::Arc::clone(client))
+            .collect();
+        for client in clients {
             if client.state().read().connection == ConnectionState::Connected {
                 client
                     .set_presence(presence(&client.state(), preferences.dnd))
@@ -227,7 +230,7 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
     if matches!(event, ClientEvent::Resynced)
         && prefs.dnd
         && let Ok(id) = parse_server_id(server)
-        && let Some(client) = state.clients.lock().await.get(&id)
+        && let Some(client) = state.client(&id)
     {
         let _ = client
             .set_presence(v1::SetPresence {

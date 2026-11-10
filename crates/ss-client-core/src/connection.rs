@@ -292,6 +292,12 @@ impl Client {
         self.worker.abort();
         let _ = (&mut self.worker).await;
     }
+    /// Stop the worker without waiting, for hosts that share the client while
+    /// commands await it. Pending commands fail with [`Error::Disconnected`]
+    /// and no reconnect follows. Dropping the last owner finishes cleanup.
+    pub fn abort(&self) {
+        self.worker.abort();
+    }
 
     /// Low-level command escape hatch. Hello/Ping are owned by the connection
     /// manager; application commands use correlated Ack/Error replies. Message

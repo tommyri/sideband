@@ -75,9 +75,8 @@ pub async fn open_stream_viewer(
 ) -> Result<String, ApiError> {
     let server = parse_server_id(&server_id)?;
     let subscription = {
-        let clients = state.clients.lock().await;
-        let client = clients
-            .get(&server)
+        let client = state
+            .client(&server)
             .ok_or_else(|| error("Server disconnected"))?;
         client.prepare_video(track_id).map_err(error)?
     };

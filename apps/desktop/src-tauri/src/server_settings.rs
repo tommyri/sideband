@@ -111,9 +111,8 @@ async fn load(
         .map_err(|e| ApiError::new("pin", e.to_string()))?
         .map_or_else(String::new, |p| p.to_string());
     let (session, version) = {
-        let clients = state.clients.lock().await;
-        let client = clients
-            .get(&server)
+        let client = state
+            .client(&server)
             .ok_or_else(|| ApiError::new("disconnected", "Server is disconnected"))?;
         let version = client
             .state()
@@ -161,11 +160,9 @@ pub async fn upload_server_icon(
         .decode(data)
         .map_err(|_| ApiError::new("icon", "Invalid image data"))?;
     let server = parse_server_id(&server_id)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "Server is disconnected"))?;
     let session = client.attachment_session().await.map_err(api_error)?;
-    drop(clients);
     session.upload_server_icon(bytes).await.map_err(api_error)
 }

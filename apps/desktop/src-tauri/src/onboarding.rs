@@ -156,7 +156,7 @@ pub async fn use_public_certificate(
     let _operation = state.operations.lock().await;
     let id =
         ServerId::new(&input.host, input.port).map_err(|e| super::commands::api_error(e.into()))?;
-    if state.clients.lock().await.get(&id).is_some() {
+    if state.clients().get(&id).is_some() {
         return Err(ApiError::new(
             "connected",
             "Disconnect this server before changing its trust mode.",
@@ -182,8 +182,9 @@ pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Res
         .ok_or_else(|| ApiError::new("invalid_server", "Unknown server."))?;
     let id = ServerId::new(&saved.host, saved.port)
         .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
-    if let Some(client) = state.clients.lock().await.remove(&id) {
-        client.close().await;
+    let removed = state.clients().remove(&id);
+    if let Some(client) = removed {
+        crate::state::close(client).await;
     }
     // Keep the certificate pin: removing a server must not erase protection
     // against an unexpected certificate when it is added again.

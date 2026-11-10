@@ -8,8 +8,15 @@ export const getServerView = (serverId: string) =>
 export const joinVoice = (serverId: string, channelId: string) =>
   invokeBridge<void>('join_voice', { serverId, channelId })
 export const leaveVoice = () => invokeBridge<void>('leave_voice')
+// Each invoke runs as its own native task, so a fast tap could apply release
+// before press and leave the gate open. Send each PTT change only after the
+// previous one settled.
+let pttQueue: Promise<unknown> = Promise.resolve()
 export const voiceControl = (action: 'mute' | 'deafen' | 'ptt', enabled: boolean) => {
   record('local-voice-control', { action, enabled })
-  return invokeBridge<void>('voice_control', { action, enabled })
+  if (action !== 'ptt') return invokeBridge<void>('voice_control', { action, enabled })
+  const next = pttQueue.then(() => invokeBridge<void>('voice_control', { action, enabled }))
+  pttQueue = next.catch(() => {})
+  return next
 }
 export const memberAction = (input: MemberAction) => invokeBridge<void>('member_action', { input })

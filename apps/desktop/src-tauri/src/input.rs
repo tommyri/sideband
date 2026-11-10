@@ -285,52 +285,154 @@ pub fn init(app: &tauri::AppHandle) {
         drive(target, rx).await;
     });
 }
+/// Global push-to-talk arming. A press opens the gate only once the current
+/// call is armed: a call the periodic check has seen, or a key released since
+/// the call changed or since a press was refused while disconnected.
+#[derive(Default)]
+pub(crate) struct PttArming {
+    session: Option<usize>,
+    armed: bool,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PttAction {
+    /// Close the gate now, skipping the release tail.
+    Release,
+    /// Set the global half of the combined PTT gate.
+    Set(bool),
+}
+impl PttArming {
+    /// A key event for the call identified by `session`.
+    pub(crate) fn key(&mut self, session: usize, connected: bool, pressed: bool) -> PttAction {
+        if pressed && !connected {
+            self.armed = false;
+            return PttAction::Release;
+        }
+        if self.session != Some(session) {
+            self.session = Some(session);
+            self.armed = false;
+        }
+        if !pressed {
+            self.armed = true;
+        }
+        PttAction::Set(pressed && self.armed)
+    }
+    /// The periodic check. A call it has not seen before is armed.
+    pub(crate) fn tick(&mut self, session: Option<usize>) {
+        if session != self.session {
+            self.session = session;
+            self.armed = true;
+        }
+    }
+    /// After a listener failure, require a fresh press.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+pub(crate) fn session_identity(voice: &crate::voice::ActiveVoice) -> usize {
+    Arc::as_ptr(&voice.session) as usize
+}
+/// Apply one global PTT key event. Waits only for the voice lock, which no
+/// command holds across the network; connection state is read from the
+/// call's own store, never through the client map.
+pub(crate) async fn apply_ptt(
+    state: &AppState,
+    arming: &mut PttArming,
+    pressed: bool,
+    allowed: impl FnOnce() -> bool,
+) {
+    let mut voice = state.voice.lock().await;
+    let Some(active) = voice.as_mut() else {
+        return;
+    };
+    if !allowed() {
+        return;
+    }
+    match arming.key(session_identity(active), active.connected(), pressed) {
+        PttAction::Release => active.release_ptt(),
+        PttAction::Set(open) => active.set_global_ptt(open),
+    }
+}
 async fn drive(app: tauri::AppHandle, mut rx: tokio::sync::mpsc::Receiver<(u64, PttEvent)>) {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
-    let mut identity = None;
-    let mut armed = false;
+    let mut arming = PttArming::default();
     let mut tray_state = None;
     loop {
         tokio::select! {
-            incoming=rx.recv()=>{
-                let Some((generation,event))=incoming else {break};
-                let allowed={let manager=app.state::<InputManager>();let mut rt=manager.lock();
-                    let allowed=!manager.inhibited.load(Ordering::Acquire)&&rt.generation==generation&&rt.handle.is_some()&&!rt.password&&!rt.capturing;
-                    if allowed {record(&mut rt,event.to_string());} allowed};
-                if !allowed {continue;}
+            incoming = rx.recv() => {
+                let Some((generation, event)) = incoming else { break };
+                if !accept(&app, generation, event) {
+                    continue;
+                }
                 let _ = app.emit("ss://test-shortcut", event.to_string());
                 match event {
-                    PttEvent::Pressed|PttEvent::Released=>{
-                        let state=app.state::<AppState>();
-                        let clients=if event==PttEvent::Pressed {state.clients.try_lock().ok()} else {None};
-                        let mut voice=state.voice.lock().await;
-                        if let Some(v)=voice.as_mut(){
-                            if app.state::<InputManager>().inhibited.load(Ordering::Acquire) {continue;}
-                            if event==PttEvent::Pressed && !clients.as_ref().and_then(|clients|clients.get(&v.server)).is_some_and(|c|c.state().read().connection==ss_client_core::ConnectionState::Connected){v.release_ptt();armed=false;continue;}
-                            let current=Arc::as_ptr(&v.session) as usize;
-                            if identity!=Some(current){identity=Some(current);armed=false;}
-                            if event==PttEvent::Released {armed=true;v.global_ptt=false;}
-                            else if armed {v.global_ptt=true;}
-                            v.set_global_ptt(v.global_ptt);
-                        }
-                    },
-                    PttEvent::ToggleMute=>toggle_guarded(&app,false,Some(generation)), PttEvent::ToggleDeafen=>toggle_guarded(&app,true,Some(generation)),
+                    PttEvent::Pressed | PttEvent::Released => {
+                        let state = app.state::<AppState>();
+                        let inhibited = || app.state::<InputManager>().inhibited.load(Ordering::Acquire);
+                        apply_ptt(&state, &mut arming, event == PttEvent::Pressed, || !inhibited()).await;
+                    }
+                    PttEvent::ToggleMute => toggle_guarded(&app, false, Some(generation)),
+                    PttEvent::ToggleDeafen => toggle_guarded(&app, true, Some(generation)),
                 }
-            },
-            _=tick.tick()=>{
-                let failure={let manager=app.state::<InputManager>();let mut rt=manager.lock();
-                    let failure=manager.overflow.swap(false,Ordering::AcqRel).then(||"Input queue overflow; shortcuts stopped".to_owned()).or_else(||rt.handle.as_ref().and_then(|h|h.status().err()).map(|e|e.to_string()));
-                    if let Some(e)=&failure{manager.inhibited.store(true,Ordering::Release);stop(&mut rt);rt.error=e.clone();record(&mut rt,"Listener stopped after backend error");} failure};
-                if failure.is_some(){release(&app).await;armed=false;}
-                let state=app.state::<AppState>();let voice=state.voice.lock().await;
-                let current=voice.as_ref().map(|v|Arc::as_ptr(&v.session) as usize);
-                if current!=identity {identity=current;armed=true;}
-                let (enabled,muted,deaf)=voice.as_ref().map_or((false,false,false),|v|(true,v.muted,v.deafened));
-                if tray_state!=Some((enabled,muted,deaf)){tray_state=Some((enabled,muted,deaf));
-                if let Some(menu)=app.try_state::<TrayControls>() {let _=menu.mute.set_enabled(enabled);let _=menu.deafen.set_enabled(enabled);let _=menu.mute.set_checked(muted);let _=menu.deafen.set_checked(deaf);}}
+            }
+            _ = tick.tick() => {
+                if listener_failed(&app) {
+                    release(&app).await;
+                    arming.disarm();
+                }
+                let state = app.state::<AppState>();
+                let voice = state.voice.lock().await;
+                arming.tick(voice.as_ref().map(session_identity));
+                let current = voice.as_ref().map_or((false, false, false), |v| (true, v.muted, v.deafened));
+                drop(voice);
+                if tray_state != Some(current) {
+                    tray_state = Some(current);
+                    let (enabled, muted, deaf) = current;
+                    if let Some(menu) = app.try_state::<TrayControls>() {
+                        let _ = menu.mute.set_enabled(enabled);
+                        let _ = menu.deafen.set_enabled(enabled);
+                        let _ = menu.mute.set_checked(muted);
+                        let _ = menu.deafen.set_checked(deaf);
+                    }
+                }
             }
         }
     }
+}
+/// Whether a queued event still belongs to the running, unsuspended listener.
+fn accept(app: &tauri::AppHandle, generation: u64, event: PttEvent) -> bool {
+    let manager = app.state::<InputManager>();
+    let mut rt = manager.lock();
+    let allowed = !manager.inhibited.load(Ordering::Acquire)
+        && rt.generation == generation
+        && rt.handle.is_some()
+        && !rt.password
+        && !rt.capturing;
+    if allowed {
+        record(&mut rt, event.to_string());
+    }
+    allowed
+}
+/// Stop the listener after a queue overflow or backend error.
+fn listener_failed(app: &tauri::AppHandle) -> bool {
+    let manager = app.state::<InputManager>();
+    let mut rt = manager.lock();
+    let failure = manager
+        .overflow
+        .swap(false, Ordering::AcqRel)
+        .then(|| "Input queue overflow; shortcuts stopped".to_owned())
+        .or_else(|| {
+            rt.handle
+                .as_ref()
+                .and_then(|h| h.status().err())
+                .map(|e| e.to_string())
+        });
+    if let Some(e) = &failure {
+        manager.inhibited.store(true, Ordering::Release);
+        stop(&mut rt);
+        rt.error.clone_from(e);
+        record(&mut rt, "Listener stopped after backend error");
+    }
+    failure.is_some()
 }
 pub struct TrayControls {
     pub mute: tauri::menu::CheckMenuItem<tauri::Wry>,
@@ -339,18 +441,11 @@ pub struct TrayControls {
 pub fn toggle(app: &tauri::AppHandle, deafen: bool) {
     toggle_guarded(app, deafen, None);
 }
+/// Toggle mute or deafen from a global shortcut or the tray. It never waits
+/// for `operations`, so a connect or join in flight cannot drop the toggle.
 fn toggle_guarded(app: &tauri::AppHandle, deafen: bool, generation: Option<u64>) {
     let target = app.clone();
     tauri::async_runtime::spawn(async move {
-        let state = target.state::<AppState>();
-        let Ok(_op) = state.operations.try_lock() else {
-            let manager = target.state::<InputManager>();
-            record(
-                &mut manager.lock(),
-                "Toggle skipped while a voice operation was pending",
-            );
-            return;
-        };
         if let Some(generation) = generation {
             let manager = target.state::<InputManager>();
             let rt = manager.lock();
@@ -358,34 +453,14 @@ fn toggle_guarded(app: &tauri::AppHandle, deafen: bool, generation: Option<u64>)
                 return;
             }
         }
-        let Some((session, next)) = state.voice.lock().await.as_ref().map(|v| {
-            (
-                Arc::clone(&v.session),
-                if deafen { !v.deafened } else { !v.muted },
-            )
-        }) else {
+        let state = target.state::<AppState>();
+        if state.voice.lock().await.is_none() {
             return;
-        };
-        let result = if deafen {
-            session.set_self_deaf(next).await
-        } else {
-            session.set_self_mute(next).await
-        };
-        if result.is_ok() {
-            if let Some(v) = state.voice.lock().await.as_mut()
-                && Arc::ptr_eq(&session, &v.session)
-            {
-                if deafen {
-                    v.deafened = next
-                } else {
-                    v.muted = next
-                }
-            }
-            let _ = target.emit("ss://voice-session", ());
-        } else if let Err(e) = result {
-            let manager = target.state::<InputManager>();
-            manager.lock().error = e.to_string();
         }
+        if let Err(e) = crate::voice::set_self_state(&state, deafen, None).await {
+            target.state::<InputManager>().lock().error = e.message;
+        }
+        let _ = target.emit("ss://voice-session", ());
     });
 }
 #[tauri::command]
@@ -616,6 +691,44 @@ mod tests {
         p.mute = Some(Binding::key(ss_input::Code::KeyM));
         assert!(p.validate().is_ok());
         assert_eq!(p.bindings()[1].action, ShortcutAction::ToggleMute);
+    }
+    #[test]
+    fn ptt_opens_only_for_presses_after_the_call_is_armed() {
+        let mut ptt = PttArming::default();
+        // A press for a call the periodic check has not seen yet stays closed
+        // until the key is released.
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
+        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
+        // A new call seen by the tick is armed for the next press.
+        ptt.tick(Some(2));
+        assert_eq!(ptt.key(2, true, true), PttAction::Set(true));
+        // A key already down when the call changes must be released first.
+        assert_eq!(ptt.key(3, true, true), PttAction::Set(false));
+        assert_eq!(ptt.key(3, true, false), PttAction::Set(false));
+        assert_eq!(ptt.key(3, true, true), PttAction::Set(true));
+        ptt.tick(Some(3));
+        assert_eq!(ptt.key(3, true, true), PttAction::Set(true));
+    }
+    #[test]
+    fn ptt_refused_while_disconnected_or_after_failure_needs_a_fresh_press() {
+        let mut ptt = PttArming::default();
+        ptt.tick(Some(1));
+        assert_eq!(ptt.key(1, false, true), PttAction::Release);
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
+        // Releases always close, even while disconnected.
+        assert_eq!(ptt.key(1, false, false), PttAction::Set(false));
+        ptt.disarm();
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, false), PttAction::Set(false));
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
+        // Leaving the call and joining again re-arms through the tick.
+        ptt.tick(None);
+        ptt.tick(Some(1));
+        assert_eq!(ptt.key(1, true, true), PttAction::Set(true));
     }
     #[test]
     fn diagnostics_keep_only_ten_semantic_events() {

@@ -153,9 +153,7 @@ pub async fn screen_snapshot(
 ) -> Result<Snapshot, ApiError> {
     let server = parse_server_id(&server_id)?;
     let store = state
-        .clients
-        .lock()
-        .await
+        .clients()
         .get(&server)
         .ok_or_else(|| error("Server disconnected"))?
         .state();
@@ -220,9 +218,8 @@ pub async fn start_screen_share(
             .ok_or_else(|| error("Join this voice channel before sharing."))?
     };
     let (handle, store) = {
-        let clients = state.clients.lock().await;
-        let client = clients
-            .get(&server)
+        let client = state
+            .client(&server)
             .ok_or_else(|| error("Server disconnected"))?;
         if !can_publish(&client.state().read(), channel, connection) {
             return Err(error(

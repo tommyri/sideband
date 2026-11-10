@@ -68,9 +68,8 @@ pub async fn invite_page(
     let before = before
         .map(|s| s.parse::<Id>().map_err(|_| error("Invalid page cursor")))
         .transpose()?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| error("Server is disconnected"))?;
     client
         .list_invites(before)
@@ -105,9 +104,8 @@ pub async fn create_server_invite(
 ) -> Result<CreatedInvite, ApiError> {
     let server = parse_server_id(&input.server_id)?;
     let command = create_command(&input)?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| error("Server is disconnected"))?;
     let invite = client.create_invite(command).await.map_err(api_error)?;
     Ok(CreatedInvite {
@@ -125,9 +123,8 @@ pub async fn revoke_server_invite(
     let invite = invite_id
         .parse::<Id>()
         .map_err(|_| error("Invalid invite identifier"))?;
-    let clients = state.clients.lock().await;
-    let client = clients
-        .get(&server)
+    let client = state
+        .client(&server)
         .ok_or_else(|| error("Server is disconnected"))?;
     client
         .revoke_invite(v1::RevokeInvite {
