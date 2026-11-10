@@ -617,7 +617,8 @@ impl VoiceSession {
             .map(|(track, s)| {
                 serde_json::json!({
                     "track":track,"jitterDelayMs":s.delay.as_secs_f64()*1000.0,
-                    "lost":s.stats.jitter.lost,"late":s.stats.jitter.late,"plc":s.stats.plc
+                    "lost":s.stats.jitter.lost,"late":s.stats.jitter.late,"plc":s.stats.plc,
+                    "caughtUp":s.stats.jitter.caught_up
                 })
             })
             .collect();
@@ -625,6 +626,10 @@ impl VoiceSession {
         Some(
             serde_json::json!({"speakers":speakers,"processingStages":stages,
                 "inputRateHz":stats.input_rate,"outputRateHz":stats.output_rate,"backend":stats.backend,
+                "playback":{"queueMs":stats.playback.queue.as_secs_f64()*1000.0,
+                    "overflow":stats.playback.overflow,"trimmed":stats.playback.trimmed,
+                    "padded":stats.playback.padded,"forced":stats.playback.forced},
+                "workerRealtime":stats.realtime,
                 "encoderFec":channel_profile(&self.store,self.channel).ok().map(|(p,_)|p.encoder_params().inband_fec)
             }),
         )

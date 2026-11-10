@@ -4,7 +4,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -18,10 +18,40 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::{
     DeviceId, Error, SAMPLES_PER_CHANNEL,
-    convert::{Framer, note_signal, pull_playback, push_capture, push_unframed},
+    convert::{Framer, note_signal, pull_playback, push_capture, push_unframed, push_whole},
     select::{GraphConfig, choose_format},
 };
 use crate::resample::{GRAPH_RATE, RateConverter};
+
+/// Most audio a stream queues between the graph and the device. A playback
+/// stream that resamples splits it between its two rings.
+const RING: Duration = Duration::from_millis(250);
+/// The 48 kHz side of a resampled playback stream. The resampler drains it
+/// within a millisecond and leaves it alone while the device ring is full, so
+/// it only has to absorb the worker's catch-up after a short stall.
+const RESAMPLED_PLAYBACK_GRAPH_RING: Duration = Duration::from_millis(50);
+
+/// Raise the calling thread to the operating system's real-time audio class
+/// with `audio_thread_priority`, the crate behind `cpal`'s `realtime`
+/// feature: a Mach time-constraint policy on macOS and MMCSS ("Pro Audio")
+/// on Windows. Call it once from a thread that services audio every
+/// `period`. The promotion lasts for the thread's life.
+///
+/// # Errors
+///
+/// The operating system's refusal, as text; the thread keeps its priority.
+/// On Linux the crate needs D-Bus (rtkit), which this build leaves out, and
+/// would silently do nothing, so this reports an error instead.
+pub fn promote_audio_thread(period: Duration) -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        return Err("real-time promotion on Linux needs rtkit over D-Bus".to_owned());
+    }
+    let frames =
+        u32::try_from(u128::from(GRAPH_RATE) * period.as_micros() / 1_000_000).unwrap_or(u32::MAX);
+    audio_thread_priority::promote_current_thread_to_real_time(frames, GRAPH_RATE)
+        .map(|_handle| ())
+        .map_err(|error| error.to_string())
+}
 
 /// Underruns, overruns, callback count, and whether resampling is on.
 #[derive(Debug, Default)]
@@ -31,6 +61,12 @@ pub struct Counters {
     pub(crate) callbacks: AtomicU64,
     pub(crate) resampler_active: AtomicBool,
     pub(crate) signal: AtomicBool,
+    /// Playback only: samples left in the callback's ring after the last
+    /// callback took its share.
+    pub(crate) queued: AtomicUsize,
+    /// Resampled playback only: converted samples the resampler holds
+    /// because the device-rate ring has no room.
+    pub(crate) staged: AtomicUsize,
 }
 
 impl Counters {
@@ -111,6 +147,7 @@ pub struct PlaybackStream {
     clock: Arc<Clock>,
     device_id: DeviceId,
     device_rate: u32,
+    resampled_channels: Option<usize>,
 }
 
 impl CaptureStream {
@@ -123,7 +160,7 @@ impl CaptureStream {
         let direct = chosen.sample_rate == GRAPH_RATE;
         let graph_channels = usize::from(config.channels);
         let device_channels = usize::from(chosen.channels);
-        let (graph_tx, graph_rx) = RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels));
+        let (graph_tx, graph_rx) = RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels, RING));
         let counters = Arc::new(Counters::default());
         counters.resampler_active.store(!direct, Ordering::Relaxed);
         let lost = Arc::new(AtomicBool::new(false));
@@ -147,7 +184,7 @@ impl CaptureStream {
             (stream, None)
         } else {
             let (device_tx, device_rx) =
-                RingBuffer::new(ring_samples(chosen.sample_rate, graph_channels));
+                RingBuffer::new(ring_samples(chosen.sample_rate, graph_channels, RING));
             let stream = build_capture(CaptureBuild {
                 device,
                 chosen: &chosen,
@@ -166,7 +203,7 @@ impl CaptureStream {
                 graph_tx,
                 converter,
                 Arc::clone(&counters),
-                true,
+                Resampled::Capture,
             )?;
             (stream, Some(worker))
         };
@@ -256,7 +293,15 @@ impl PlaybackStream {
         let direct = chosen.sample_rate == GRAPH_RATE;
         let graph_channels = usize::from(config.channels);
         let device_channels = usize::from(chosen.channels);
-        let (graph_tx, graph_rx) = RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels));
+        // Bound the combined queue: with a resampler the device-rate ring
+        // takes most of the budget and the 48 kHz ring stays short.
+        let graph_ring = if direct {
+            RING
+        } else {
+            RESAMPLED_PLAYBACK_GRAPH_RING
+        };
+        let (graph_tx, graph_rx) =
+            RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels, graph_ring));
         let counters = Arc::new(Counters::default());
         counters.resampler_active.store(!direct, Ordering::Relaxed);
         let lost = Arc::new(AtomicBool::new(false));
@@ -278,8 +323,11 @@ impl PlaybackStream {
             })?;
             (stream, None)
         } else {
-            let (device_tx, device_rx) =
-                RingBuffer::new(ring_samples(chosen.sample_rate, graph_channels));
+            let (device_tx, device_rx) = RingBuffer::new(ring_samples(
+                chosen.sample_rate,
+                graph_channels,
+                RING.saturating_sub(graph_ring),
+            ));
             let stream = build_playback(PlaybackBuild {
                 device,
                 chosen: &chosen,
@@ -297,7 +345,7 @@ impl PlaybackStream {
                 device_tx,
                 converter,
                 Arc::clone(&counters),
-                false,
+                Resampled::Playback,
             )?;
             (stream, Some(worker))
         };
@@ -319,6 +367,7 @@ impl PlaybackStream {
                 clock,
                 device_id,
                 device_rate: chosen.sample_rate,
+                resampled_channels: (!direct).then_some(graph_channels),
             },
             graph_tx,
         ))
@@ -342,6 +391,22 @@ impl PlaybackStream {
     #[must_use]
     pub fn playback_delay(&self) -> Option<Duration> {
         Some(self.last_playback()?.saturating_duration_since(self.now()))
+    }
+
+    /// Audio that has left the 48 kHz ring the producer writes but has not
+    /// reached the device: resampled output waiting in the device-rate ring
+    /// after the last callback, plus output the resampler is holding back
+    /// because that ring is full. Zero when no resampler runs, since the
+    /// producer's own ring is then the whole queue. The resampler's input
+    /// chunk (under 10 ms) and filter delay are not included.
+    #[must_use]
+    pub fn downstream_queue(&self) -> Duration {
+        let Some(channels) = self.resampled_channels else {
+            return Duration::ZERO;
+        };
+        let samples = self.counters.queued.load(Ordering::Relaxed)
+            + self.counters.staged.load(Ordering::Relaxed);
+        samples_duration(samples, channels, self.device_rate)
     }
 
     /// Shared counters. Loading them does not allocate.
@@ -626,6 +691,17 @@ fn on_stream_error(error: &cpal::Error, lost: &AtomicBool, counters: &Counters, 
     }
 }
 
+/// Which side of a device a resampling worker serves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resampled {
+    /// Device rate to 48 kHz, in whole 10 ms frames. A full graph ring drops
+    /// the newest frame, as the direct path does.
+    Capture,
+    /// 48 kHz to device rate. A full device ring stops the worker reading the
+    /// graph ring, so the producer sees the whole queue and its own push fails.
+    Playback,
+}
+
 fn spawn_resample_worker(
     name: &str,
     stop: Arc<AtomicBool>,
@@ -633,16 +709,40 @@ fn spawn_resample_worker(
     mut output: Producer<f32>,
     mut converter: RateConverter,
     counters: Arc<Counters>,
-    frame_output: bool,
+    side: Resampled,
 ) -> Result<JoinHandle<()>, Error> {
     let frame_samples = converter.frame_samples();
+    let channels = frame_samples / SAMPLES_PER_CHANNEL;
+    let thread_name = name.to_owned();
     thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
+            if let Err(error) = promote_audio_thread(Duration::from_millis(10)) {
+                tracing::debug!(%error, thread = thread_name, "resampler keeps normal priority");
+            }
             let mut batch = Vec::with_capacity(2_048);
             let mut frame = vec![0.0; frame_samples];
             let mut pulled = vec![0.0; 4_096];
             while !stop.load(Ordering::Acquire) {
+                if side == Resampled::Playback {
+                    // Whole frames only, and only what fits.
+                    let room = output.slots() / channels * channels;
+                    let limit = room.min(pulled.len() / channels * channels);
+                    let count = converter.pull(&mut pulled[..limit]);
+                    push_whole(&pulled[..count], &mut output);
+                    counters
+                        .staged
+                        .store(converter.available(), Ordering::Relaxed);
+                    if converter.available() > 0 {
+                        if output.is_abandoned() {
+                            break;
+                        }
+                        if output.slots() < channels {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        continue;
+                    }
+                }
                 batch.clear();
                 while batch.len() < batch.capacity() {
                     match input.pop() {
@@ -658,16 +758,15 @@ fn spawn_resample_worker(
                     continue;
                 }
                 if converter.push(&batch).is_err() {
-                    tracing::debug!("resampler rejected a capture block");
+                    tracing::debug!("resampler rejected a block");
                     break;
                 }
-                if frame_output {
+                if side == Resampled::Capture {
                     while converter.pull_frame(&mut frame) {
-                        push_all(&frame, &mut output, &counters);
+                        if !push_whole(&frame, &mut output) {
+                            counters.overruns.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                } else {
-                    let count = converter.pull(&mut pulled);
-                    push_all(&pulled[..count], &mut output, &counters);
                 }
                 if output.is_abandoned() {
                     break;
@@ -677,16 +776,42 @@ fn spawn_resample_worker(
         .map_err(|_| Error::Worker)
 }
 
-fn push_all(samples: &[f32], output: &mut Producer<f32>, counters: &Counters) {
-    for sample in samples {
-        if output.push(*sample).is_err() {
-            counters.overruns.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    }
+fn ring_samples(rate: u32, channels: usize, length: Duration) -> usize {
+    let frames = u128::from(rate) * length.as_millis() / 1_000;
+    usize::try_from((frames * channels as u128).max(1)).unwrap_or(usize::MAX)
 }
 
-fn ring_samples(rate: u32, channels: usize) -> usize {
-    let quarter_second = u64::from(rate) / 4 * channels as u64;
-    usize::try_from(quarter_second.max(1)).unwrap_or(usize::MAX)
+fn samples_duration(samples: usize, channels: usize, rate: u32) -> Duration {
+    let frames = u64::try_from(samples / channels.max(1)).unwrap_or(u64::MAX);
+    Duration::from_micros(frames.saturating_mul(1_000_000) / u64::from(rate.max(1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{ring_samples, samples_duration};
+
+    #[test]
+    fn ring_budget_is_shared_when_playback_resamples() {
+        assert_eq!(ring_samples(48_000, 2, Duration::from_millis(250)), 24_000);
+        let graph = ring_samples(48_000, 2, Duration::from_millis(50));
+        let device = ring_samples(44_100, 2, Duration::from_millis(200));
+        let total = samples_duration(graph, 2, 48_000) + samples_duration(device, 2, 44_100);
+        assert_eq!(total, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn this_platform_accepts_a_real_time_audio_thread() {
+        // Recorded per OS in docs/design/voice.md.
+        let result = std::thread::spawn(|| super::promote_audio_thread(Duration::from_millis(10)))
+            .join()
+            .unwrap();
+        eprintln!("real-time promotion on this OS: {result:?}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(result, Ok(()));
+        } else if cfg!(target_os = "linux") {
+            assert!(result.is_err());
+        }
+    }
 }

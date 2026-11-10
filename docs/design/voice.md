@@ -168,6 +168,48 @@ screen share up with a voice both use that clock.
 A device that disappears, or a new default device, reopens the stream
 without leaving the voice channel.
 
+## Playback queue
+
+The audio worker renders one 10 ms quantum every 10 ms of the monotonic
+clock, which is also the jitter buffers' clock. The device takes audio on its
+own clock, so the ring between them drifts by the clock difference (100 ppm
+is 360 ms an hour). Each underrun that the worker later replays would also
+stay queued. A pacer in the worker keeps the queue bounded:
+
+- It measures the lowest queue ahead of a new quantum over half a second.
+  That is what the device leaves when it has just taken its share, so it does
+  not depend on the device period. The queue includes a resampler's
+  device-rate ring when the output is not 48 kHz.
+- Target band: 2.5–20 ms. Above 20 ms it drops quanta until about 10 ms is
+  left. Below 2.5 ms, or when the device ran dry and the queue is still empty
+  a quantum later, it inserts one silent quantum.
+- It drops or pads next to a quantum below −60 dBFS, waiting up to 3 s for
+  one. Music and open microphones may never have one; then it cuts with
+  2.5 ms fades on both sides.
+- The ring holds at most 250 ms. A quantum that does not fit is dropped and
+  counted. With a resampler, 50 ms of that is at 48 kHz and 200 ms at the
+  device rate. The resampler stops reading the 48 kHz ring while the device
+  ring is full, so overflow shows up, and is counted, at the worker.
+- The echo canceller's delay hint uses the measured queue on both sides
+  instead of a fixed 10 ms.
+
+Overflow, trim, pad and forced-cut counts, the current queue, and whether
+the worker thread got real-time priority are in the voice diagnostics
+snapshot (`details.playback`, `details.workerRealtime`).
+
+The worker thread and the resampler threads ask for the operating system's
+real-time audio class through `audio_thread_priority`, the crate behind
+`cpal`'s `realtime` feature. macOS: a Mach time-constraint policy, accepted
+without privileges (a unit test checks it). Windows: MMCSS, expected to work
+for normal users, not yet run. Linux: the crate only promotes through rtkit
+over D-Bus, which neither this build nor `cpal`'s `realtime` feature enables,
+so it would do nothing; the worker reports normal priority there. The device
+callbacks themselves run on the host's own real-time threads (CoreAudio,
+WASAPI, PipeWire). A refusal leaves normal priority and is logged. Settings changes, device
+reopens and device teardown run on a separate setup thread so the worker
+does not stall, except Apple's VoiceProcessingIO unit, which is not `Send`
+and stays on the worker.
+
 ## Jitter buffer
 
 One buffer per track. Packets are ordered by the datagram sequence number.
@@ -188,7 +230,13 @@ T-015 bounds each track to 64 queued packets and estimates the 95th percentile
 from up to 200 forward inter-arrival deviations in a rolling two-second window.
 The estimate adds a 20 ms margin and rounds up to the profile frame duration.
 A new burst reanchors playout; a whole-frame capture-clock gap can identify a
-boundary when flags are lost. After a long pause with no recent observations,
+boundary when flags are lost. When the worker stalls (30–200 ms; a longer
+stall drops the queue as an underrun), releases run a frame or more behind
+their deadlines. The buffer then skips one queued frame per release while the
+decoded audio is below −60 dBFS. If it has not caught up after 500 ms, it
+skips the whole lag at once and decodes the last skipped packet to keep the
+decoder's prediction. Output delay is back within one frame of the applied
+delay within 0.5 s, for a sender that never ends its burst. After a long pause with no recent observations,
 the estimate restarts at 40 ms. Inside a burst, only decoded PCM below
 −60 dBFS permits delay expansion/contraction. Contraction decodes the discarded
 packet to preserve codec prediction state. Sequence and sample timestamps wrap.
