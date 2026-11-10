@@ -555,10 +555,17 @@ async fn one_accounts_devices_share_its_voice_seat_across_reconnects() {
     let laptop = second_device(&world).await;
     let own = own_id(&phone);
     let general = named(&phone.state().read(), "General", v1::ChannelKind::Voice);
+    let mut listener_events = listener.subscribe();
     let other = voice_channel(&phone, "Other").await;
     let mut phone_events = phone.subscribe();
     let mut laptop_events = laptop.subscribe();
     until(&laptop, &mut laptop_events, |s| {
+        s.channels.contains_key(&other)
+    })
+    .await;
+    // Guild channel diffs are debounced per session, so each client learns of
+    // the new channel on its own schedule.
+    until(&listener, &mut listener_events, |s| {
         s.channels.contains_key(&other)
     })
     .await;
