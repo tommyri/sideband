@@ -438,9 +438,17 @@ closed, so clients must reconnect.
 An upload form must send `channel_id` before `file` (`400` otherwise): upload
 permission is checked before any file byte is read, and the file streams to
 disk. Downloads stream from disk. One account may have 16 uploads and downloads
-open at once (a signed-URL download counts against the client address); more
-get `429` with `Retry-After: 1`. A deleted message's attachments return `404`,
-signed URLs included, and their files are deleted by the next cleanup pass.
+open at once; more get `429` with `Retry-After: 1`. A signed-URL download counts
+against the account that signed it, never the client address. A download is cut
+off 300 s after it starts even if the client has stopped reading, which frees
+its slot. A deleted message's attachments return `404`, signed URLs included,
+and their files are deleted by the next cleanup pass.
+
+The upload reply's `url` carries `token=base64url(expiry ‖ signer ‖ mac)`:
+big-endian Unix-millisecond expiry (8 bytes), the uploader's id (16), and
+HMAC-SHA256 over attachment id ‖ signer ‖ expiry (32), keyed by
+`data-dir/attachment.key`. It is opaque to clients and lives 10 minutes; tokens
+issued before this layout stop verifying on upgrade.
 
 ## 7. Versioning
 

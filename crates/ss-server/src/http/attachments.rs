@@ -9,40 +9,34 @@
 //! download.
 //!
 //! Each account may have [`crate::storage::UploadPolicy::transfers_per_account`]
-//! uploads and downloads open at once; a signed-URL download counts against
-//! the client address instead. A download's slot is held until its body is
-//! sent or dropped, and the body fails after [`TRANSFER_TIMEOUT`].
+//! uploads and downloads open at once. A signed-URL download counts against
+//! the account that signed it (the token binds the signer), never the client
+//! address, which behind a reverse proxy is the proxy's. A download's file and
+//! slot belong to a task that ends when the body is sent, dropped, or
+//! [`crate::storage::UploadPolicy::transfer_timeout`] passes, whether or not
+//! the client is reading.
 
-use std::{
-    collections::HashMap,
-    fmt::Write,
-    io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, fmt::Write, io, sync::Arc, time::Duration};
 
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::Engine;
 use bytes::Bytes;
-use futures::Stream;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use ss_core::{ChannelKind, Id, Permissions};
-use tokio::io::AsyncReadExt;
+use tokio::{io::AsyncReadExt, sync::mpsc};
 
-use super::hardening::TRANSFER_TIMEOUT;
 use crate::{
     auth::Auth,
     db::{self, attachments, channels, messages, settings, users},
-    limits::{KeyedLimiter, UPLOAD_BURST, UPLOAD_PERIOD, peer_key, quota},
+    limits::{KeyedLimiter, UPLOAD_BURST, UPLOAD_PERIOD, quota},
     perms::{AccessError, PermissionService},
     storage::{Incoming, SaveError, Saved, Store},
 };
@@ -63,7 +57,7 @@ pub struct FilesState {
     pub files: Store,
     /// Uploads per account, ahead of the daily byte quota.
     uploads: Arc<KeyedLimiter<Id>>,
-    /// Open uploads and downloads per account or address.
+    /// Open uploads and downloads per account.
     transfers: Arc<TransferGate>,
 }
 
@@ -99,7 +93,7 @@ async fn upload(
 ) -> Result<Json<Value>, HttpError> {
     let user = caller(&state.auth, &headers).await?;
     state.uploads.check(&user).map_err(HttpError::RateLimited)?;
-    let _transfer = state.transfers.enter(Transferer::Account(user))?;
+    let _transfer = state.transfers.enter(user)?;
     let (filename, incoming) = read_upload(
         &mut multipart,
         state.files.max_bytes(),
@@ -115,7 +109,7 @@ async fn upload(
         .save_incoming(user, &filename, incoming)
         .await
         .map_err(save_error)?;
-    let url = state.files.download_url(saved.id, &saved.filename);
+    let url = state.files.download_url(saved.id, &saved.filename, user);
     Ok(Json(saved_json(&saved, &url)))
 }
 
@@ -123,14 +117,13 @@ async fn download(
     State(state): State<FilesState>,
     Path((attachment_id, filename)): Path<(String, String)>,
     Query(query): Query<DownloadQuery>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let id = parse_id(&attachment_id)?;
-    if query
+    if let Some(signer) = query
         .token
         .as_deref()
-        .is_some_and(|token| state.files.authorize(id, token))
+        .and_then(|token| state.files.authorize(id, token))
     {
         let file = load_file(&state, id).await?;
         if file.filename != filename {
@@ -139,14 +132,7 @@ async fn download(
         if let Some(message_id) = file.message_id {
             live_message(&state, message_id).await?;
         }
-        let address = peer.map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.0.ip());
-        return serve(
-            &state,
-            &file,
-            &headers,
-            Transferer::Address(peer_key(address)),
-        )
-        .await;
+        return serve(&state, &file, &headers, signer).await;
     }
     let user = caller(&state.auth, &headers).await?;
     let file = load_file(&state, id).await?;
@@ -154,7 +140,7 @@ async fn download(
         return Err(HttpError::NotFound);
     }
     may_read(&state, user, &file).await?;
-    serve(&state, &file, &headers, Transferer::Account(user)).await
+    serve(&state, &file, &headers, user).await
 }
 
 /// The message a file is attached to, unless it is missing or deleted.
@@ -270,7 +256,7 @@ async fn serve(
     state: &FilesState,
     file: &db::Attachment,
     headers: &HeaderMap,
-    who: Transferer,
+    who: Id,
 ) -> Result<Response, HttpError> {
     let etag = format!("\"{}\"", hex(&file.sha256));
     if headers
@@ -304,58 +290,71 @@ async fn serve(
         .header(header::CONTENT_SECURITY_POLICY, super::hardening::CSP)
         .header(header::CACHE_CONTROL, "private, no-cache")
         .header(header::CONTENT_LENGTH, len)
-        .body(Body::from_stream(blob_stream(blob, len, permit)))
+        .body(blob_body(blob, len, permit, state.files.transfer_timeout()))
         .map_err(|_| HttpError::Internal)
 }
 
-/// `len` bytes of `file` in [`CHUNK`]s. Only one chunk is in memory at a
-/// time; the next is read when the connection takes the last. `permit` is
-/// released when the stream ends or is dropped.
-fn blob_stream(
-    file: tokio::fs::File,
-    len: u64,
+/// A body of `len` bytes of `file`. A spawned task reads [`CHUNK`]s into a
+/// one-slot channel, so at most two chunks are in memory. The task owns the
+/// file and `permit` and ends when the last chunk is queued, the body is
+/// dropped, or `timeout` passes. The timer runs even when nobody polls the
+/// body, as with an HTTP/2 client that stopped reading. On timeout the file
+/// and slot are released at once; the body then yields an error instead of
+/// ending short.
+fn blob_body(file: tokio::fs::File, len: u64, permit: TransferPermit, timeout: Duration) -> Body {
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(pump(file, len, permit, timeout, tx));
+    Body::from_stream(futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    }))
+}
+
+async fn pump(
+    mut file: tokio::fs::File,
+    mut remaining: u64,
     permit: TransferPermit,
-) -> impl Stream<Item = io::Result<Bytes>> + Send + 'static {
-    let deadline = Instant::now() + TRANSFER_TIMEOUT;
-    futures::stream::try_unfold(
-        (file, len, permit),
-        move |(mut file, remaining, permit)| async move {
-            if remaining == 0 {
-                return Ok(None);
-            }
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "attachment transfer deadline",
-                ));
-            }
+    timeout: Duration,
+    tx: mpsc::Sender<io::Result<Bytes>>,
+) {
+    let sending = async {
+        while remaining > 0 {
             let want = usize::try_from(remaining).unwrap_or(CHUNK).min(CHUNK);
             let mut buf = vec![0; want];
-            let read = file.read(&mut buf).await?;
-            if read == 0 {
-                return Err(io::ErrorKind::UnexpectedEof.into());
+            let chunk = match file.read(&mut buf).await {
+                Ok(0) => Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(read) => {
+                    buf.truncate(read);
+                    remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(remaining));
+                    Ok(Bytes::from(buf))
+                }
+                Err(error) => Err(error),
+            };
+            let failed = chunk.is_err();
+            if tx.send(chunk).await.is_err() || failed {
+                return;
             }
-            buf.truncate(read);
-            let left = remaining.saturating_sub(u64::try_from(read).unwrap_or(remaining));
-            Ok(Some((Bytes::from(buf), (file, left, permit))))
-        },
-    )
+        }
+    };
+    let timed_out = tokio::time::timeout(timeout, sending).await.is_err();
+    drop(file);
+    drop(permit);
+    if timed_out {
+        // Only the channel is left; this waits for the body to be polled or dropped.
+        let _ = tx
+            .send(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "attachment transfer deadline",
+            )))
+            .await;
+    }
 }
 
-/// Who a transfer counts against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Transferer {
-    /// The bearer's account.
-    Account(Id),
-    /// A signed-URL download: the client address (IPv4, or IPv6 /64).
-    Address(IpAddr),
-}
-
-/// Open transfers per [`Transferer`]. A key leaves the map with its last
-/// transfer, so the map is as large as the set of active transferers.
+/// Open transfers per account: the bearer, or a signed URL's signer. A key
+/// leaves the map with its last transfer, so the map is as large as the set
+/// of accounts with a transfer open.
 struct TransferGate {
     max: usize,
-    open: parking_lot::Mutex<HashMap<Transferer, usize>>,
+    open: parking_lot::Mutex<HashMap<Id, usize>>,
 }
 
 impl TransferGate {
@@ -366,7 +365,7 @@ impl TransferGate {
         }
     }
 
-    fn enter(self: &Arc<Self>, who: Transferer) -> Result<TransferPermit, HttpError> {
+    fn enter(self: &Arc<Self>, who: Id) -> Result<TransferPermit, HttpError> {
         let mut open = self.open.lock();
         let count = open.entry(who).or_insert(0);
         if *count >= self.max {
@@ -386,7 +385,7 @@ impl TransferGate {
 /// One open transfer. Dropping it frees the slot.
 struct TransferPermit {
     gate: Arc<TransferGate>,
-    who: Transferer,
+    who: Id,
 }
 
 impl Drop for TransferPermit {

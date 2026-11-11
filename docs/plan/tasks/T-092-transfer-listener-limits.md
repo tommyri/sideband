@@ -83,17 +83,34 @@ fails).
   the default cap (16 served, 184 get 429) and with the cap raised to 200 so
   every stream is served. Measured growth was 0–18 MiB and 17–23 MiB on macOS.
   A download reads 64 KiB chunks only when hyper takes the previous one, so
-  per stream it holds one chunk plus what flow control queues (hyper's server
-  sends at most 400 KiB ahead). Its body fails at `TRANSFER_TIMEOUT` (300 s)
-  from the start, so a slow reader cannot hold a slot past that; a fully
-  stalled one is closed by the 60 s idle close. `Content-Length` is set from
+  per stream it holds at most two chunks plus what flow control queues
+  (hyper's server sends at most 400 KiB ahead). `Content-Length` is set from
   the file. The test is `#[cfg(unix)]` (it samples RSS with `ps`).
 - **Transfer cap.** `UploadPolicy::transfers_per_account`, default 16:
   uploads plus downloads open at once per account (the desktop allows 10 per
-  app). A signed-URL download counts against the client address (IPv4 or
-  IPv6 /64). Over the cap is 429 `too many concurrent transfers` with
-  `Retry-After: 1`. A download keeps its slot until its body ends or is
-  dropped; 304s take none. Map entries leave with their last transfer.
+  app). Over the cap is 429 `too many concurrent transfers` with
+  `Retry-After: 1`. 304s take no slot. Map entries leave with their last
+  transfer.
+- **Signed URLs count against their signer** (review follow-up). Keying them
+  on the peer address let one member block everyone's signed downloads behind
+  NGINX. The token is now `expiry(8) ‖ signer(16) ‖ HMAC(id ‖ signer ‖
+  expiry)(32)`, base64url; the only issuer is the upload reply, so the signer
+  is the uploader. No client parses the token (desktop and core download with
+  the bearer and read only `attachmentId` from the reply). Old 40-byte tokens
+  fail to verify after upgrade; they lived 10 minutes (`token_ttl`). The
+  server has no trusted-proxy setting and forwarded headers are not read.
+  Every allowed download is now attributable, so there is no address or
+  global bucket. Test: `signed_downloads_through_one_proxy_count_against_their_signer`
+  (red: 429 for the second member).
+- **Deadline independent of polling** (review follow-up). A download's file
+  and slot belong to a spawned task that reads into a one-slot channel and
+  stops when the last chunk is queued, the body is dropped, or
+  `UploadPolicy::transfer_timeout` (default 300 s) passes. On timeout the file
+  and slot go at once; the task then waits only to hand the body an error, so
+  a cut-off download never looks complete. Test:
+  `a_download_nobody_reads_frees_its_slot_at_the_deadline` with a 300 ms
+  deadline (red: still 429 after 700 ms). Uploads remain bounded by the
+  request deadline middleware.
 - **Uploads.** `channel_id` must precede `file` (400 `channel id must come
   before the file`); the official client already sends it first. Permission
   is checked when `channel_id` arrives, before any file byte is read. The file

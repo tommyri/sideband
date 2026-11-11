@@ -1,10 +1,11 @@
 //! T-092: concurrent transfers per account, the upload permission check
 //! before the file body, and attachments of deleted messages.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode, header},
     response::Response,
 };
@@ -25,6 +26,8 @@ use tower::ServiceExt;
 const PASSWORD: &str = "password-ok";
 const DEADLINE: Duration = Duration::from_secs(5);
 const BOUNDARY: &str = "ssbound";
+/// Several download chunks, so a body nobody reads stays open.
+const BIG: usize = 512 * 1024;
 
 struct Rig {
     pool: Arc<db::Pool>,
@@ -39,6 +42,10 @@ struct Rig {
 
 impl Rig {
     async fn open() -> Self {
+        Self::open_with(UploadPolicy::default()).await
+    }
+
+    async fn open_with(policy: UploadPolicy) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let pool = Arc::new(
             db::Pool::open(dir.path().join("socialspeak.db"))
@@ -75,13 +82,9 @@ impl Rig {
                 .await
                 .unwrap(),
         );
-        let store = Store::open_in(
-            Arc::clone(&pool),
-            dir.path().to_path_buf(),
-            UploadPolicy::default(),
-        )
-        .await
-        .unwrap();
+        let store = Store::open_in(Arc::clone(&pool), dir.path().to_path_buf(), policy)
+            .await
+            .unwrap();
         Self {
             auth: Arc::new(auth::Auth::new(Arc::clone(&pool))),
             owner: owner.user.id,
@@ -207,8 +210,9 @@ async fn concurrent_transfers_are_capped_per_account() {
     let rig = Rig::open().await;
     let cap = UploadPolicy::default().transfers_per_account;
     let member = rig.member("bea").await;
-    let (file, _) = rig.posted("note.txt", b"hello transfer").await;
-    let uri = format!("/api/v1/attachments/{file}/note.txt");
+    let big = vec![5_u8; BIG];
+    let (file, _) = rig.posted("note.bin", &big).await;
+    let uri = format!("/api/v1/attachments/{file}/note.bin");
     let router = rig.router();
 
     // Response bodies that are never read keep their transfer open.
@@ -216,7 +220,10 @@ async fn concurrent_transfers_are_capped_per_account() {
     for _ in 0..cap {
         let response = get(&router, Some(&rig.owner_token), &uri).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_LENGTH], "14");
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            BIG.to_string().as_str()
+        );
         open.push(response);
     }
     let refused = get(&router, Some(&rig.owner_token), &uri).await;
@@ -236,14 +243,14 @@ async fn concurrent_transfers_are_capped_per_account() {
         StatusCode::OK,
         "another account is not capped"
     );
-    let read = axum::body::to_bytes(other.into_body(), 1024).await.unwrap();
-    assert_eq!(read.as_ref(), b"hello transfer");
+    let read = axum::body::to_bytes(other.into_body(), BIG).await.unwrap();
+    assert_eq!(read.as_ref(), big.as_slice());
 
     let finished = open.pop().unwrap();
-    let read = axum::body::to_bytes(finished.into_body(), 1024)
+    let read = axum::body::to_bytes(finished.into_body(), BIG)
         .await
         .unwrap();
-    assert_eq!(read.as_ref(), b"hello transfer");
+    assert_eq!(read.as_ref(), big.as_slice());
     let again = get(&router, Some(&rig.owner_token), &uri).await;
     assert_eq!(
         again.status(),
@@ -257,12 +264,71 @@ async fn concurrent_transfers_are_capped_per_account() {
 }
 
 #[tokio::test]
+async fn signed_downloads_through_one_proxy_count_against_their_signer() {
+    let rig = Rig::open().await;
+    let bea = rig.member("bea").await;
+    let cy = rig.member("cyd").await;
+    let router = rig.router();
+    let bea_url = uploaded_url(&router, &bea, rig.channel, "bea.bin", &vec![1_u8; BIG]).await;
+    let cy_url = uploaded_url(&router, &cy, rig.channel, "cy.bin", b"cy's file").await;
+    // Behind NGINX every client has the proxy's address.
+    let proxy: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+    let cap = UploadPolicy::default().transfers_per_account;
+    let mut stalled = Vec::new();
+    for _ in 0..cap {
+        let response = get_from(&router, &bea_url, proxy).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        stalled.push(response);
+    }
+    assert_eq!(
+        get_from(&router, &bea_url, proxy).await.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the signer's own cap still applies"
+    );
+    let other = get_from(&router, &cy_url, proxy).await;
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "one member's stalled signed downloads blocked another's"
+    );
+    drop(stalled);
+}
+
+#[tokio::test]
+async fn a_download_nobody_reads_frees_its_slot_at_the_deadline() {
+    let rig = Rig::open_with(UploadPolicy {
+        transfers_per_account: 1,
+        transfer_timeout: Duration::from_millis(300),
+        ..UploadPolicy::default()
+    })
+    .await;
+    let (file, _) = rig.posted("big.bin", &vec![3_u8; BIG]).await;
+    let uri = format!("/api/v1/attachments/{file}/big.bin");
+    let router = rig.router();
+    // Never polled, like an HTTP/2 stream whose client stopped reading.
+    let held = get(&router, Some(&rig.owner_token), &uri).await;
+    assert_eq!(held.status(), StatusCode::OK);
+    assert_eq!(
+        get(&router, Some(&rig.owner_token), &uri).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        get(&router, Some(&rig.owner_token), &uri).await.status(),
+        StatusCode::OK,
+        "the unread download still held its slot after the deadline"
+    );
+    let body = axum::body::to_bytes(held.into_body(), BIG).await;
+    assert!(body.is_err(), "a cut-off body must not look complete");
+}
+
+#[tokio::test]
 async fn a_deleted_messages_attachment_is_gone() {
     let rig = Rig::open().await;
     let member = rig.member("bea").await;
     let (file, message) = rig.posted("gone.txt", b"soon gone").await;
     let path = format!("/api/v1/attachments/{file}/gone.txt");
-    let signed = rig.store.download_url(file, "gone.txt");
+    let signed = rig.store.download_url(file, "gone.txt", rig.owner);
     let router = rig.router();
     assert_eq!(
         get(&router, Some(&member), &path).await.status(),
@@ -318,6 +384,34 @@ async fn stalled_upload(router: &axum::Router, token: &str, channel: Id) -> Resp
     timeout(DEADLINE, post(router, token, Body::from_stream(body)))
         .await
         .expect("the upload waited for a body that never ends")
+}
+
+/// Uploads through HTTP and returns the signed URL from the reply.
+async fn uploaded_url(
+    router: &axum::Router,
+    token: &str,
+    channel: Id,
+    filename: &str,
+    bytes: &[u8],
+) -> String {
+    let response = post(
+        router,
+        token,
+        Body::from(multipart(channel, filename, bytes)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    json(response).await["url"].as_str().unwrap().to_owned()
+}
+
+/// An anonymous GET that arrives from `peer`, as the public listener records it.
+async fn get_from(router: &axum::Router, uri: &str, peer: SocketAddr) -> Response {
+    let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer));
+    timeout(DEADLINE, router.clone().oneshot(request))
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 fn file_part(filename: &str) -> String {
