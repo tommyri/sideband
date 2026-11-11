@@ -17,7 +17,7 @@ test:
     cargo test --workspace
 
 run-server:
-    cargo run -p ss-server
+    cargo run -p ss-server -- spike
 
 run-cli:
     cargo run -p ss-cli

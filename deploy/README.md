@@ -339,7 +339,7 @@ interchangeable.
 `deploy/smoke.sh` builds the image, waits for `/healthz`, verifies the
 public endpoint answers HTTPS and refuses plaintext HTTP, then runs
 `ss-cli connect --bots 2` against a second container started from the
-same image with no subcommand. That entrypoint is the unauthenticated
+same image with the explicit `spike` subcommand. That is the unauthenticated
 voice spike. `ss-cli` still speaks that spike; it does not log into
 `ss-server run`.
 
