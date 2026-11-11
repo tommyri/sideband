@@ -10,6 +10,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from './Composer'
+import { Chat } from './Chat'
 import { useChat } from './useChat'
 import { grouped, canEdit, atBottom } from './model'
 import { receiveChatEvent } from './api'
@@ -41,6 +42,8 @@ const snapshot = {
   canSend: true,
   canManage: false,
   canAttach: true,
+  start: true,
+  latest: true,
 }
 afterEach(() => {
   cleanup()
@@ -174,6 +177,64 @@ describe('native cache synchronization', () => {
     await waitFor(() => expect(result.current.view?.messages).toEqual([]))
     expect(result.current.hasOlder).toBe(false)
   })
+  it('shows the cached messages when the first page fails, and keeps the reason', async () => {
+    vi.mocked(invokeBridge).mockImplementation(async (command) => {
+      if (command === 'load_history')
+        throw { code: 'client', message: 'state changed while loading history; retry the page' }
+      return snapshot
+    })
+    const { result } = renderHook(() => useChat('server', 'channel'))
+    await waitFor(() => expect(result.current.error).toMatch('state changed'))
+    await waitFor(() => expect(result.current.view?.messages).toHaveLength(1))
+  })
+  it('clears a snapshot error once a later snapshot succeeds', async () => {
+    let fail = true
+    vi.mocked(invokeBridge).mockImplementation(async (command) => {
+      if (command === 'load_history') return []
+      if (fail) throw { code: 'disconnected', message: 'That server is not connected.' }
+      return snapshot
+    })
+    const { result } = renderHook(() => useChat('server', 'channel'))
+    await waitFor(() => expect(result.current.error).toMatch('not connected'))
+    fail = false
+    act(() =>
+      receiveChatEvent({
+        serverId: 'server',
+        occurredAtMs: 0,
+        event: { kind: 'connection', status: { kind: 'connected' } },
+      }),
+    )
+    await waitFor(() => expect(result.current.view?.messages).toHaveLength(1))
+    expect(result.current.error).toBe('')
+  })
+  it('shows the run around a jumped-to message and loads newer pages below it', async () => {
+    let latest = false
+    vi.mocked(invokeBridge).mockImplementation(async (command) =>
+      command === 'chat_snapshot' ? { ...snapshot, start: false, latest } : [],
+    )
+    const { result } = renderHook(() => useChat('server', 'channel'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(() => result.current.show('old'))
+    expect(invokeBridge).toHaveBeenLastCalledWith('chat_snapshot', {
+      serverId: 'server',
+      channelId: 'channel',
+      around: 'old',
+    })
+    latest = true
+    await act(() => result.current.loadNewer('01'))
+    expect(invokeBridge).toHaveBeenCalledWith('load_newer', {
+      serverId: 'server',
+      channelId: 'channel',
+      messageId: '01',
+    })
+    // The run reached the newest: later reads show the newest run again.
+    await act(() => result.current.refresh())
+    expect(invokeBridge).toHaveBeenLastCalledWith('chat_snapshot', {
+      serverId: 'server',
+      channelId: 'channel',
+      around: null,
+    })
+  })
   it('never installs a late response from a previous channel', async () => {
     let resolve!: (value: unknown) => void
     vi.mocked(invokeBridge).mockImplementation(async (command, args) => {
@@ -212,4 +273,28 @@ it('requires the actual bottom of the scroll viewport', () => {
   expect(atBottom(element)).toBe(false)
   element.scrollTop = 800
   expect(atBottom(element)).toBe(true)
+})
+
+it('offers newer pages below a jumped-to run and does not mark it read', async () => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+  vi.mocked(invokeBridge).mockImplementation(async (command) =>
+    command === 'chat_snapshot' ? { ...snapshot, start: false, latest: false } : [],
+  )
+  render(<Chat server="s" channel="c" name="general" connected />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Load newer messages' }))
+  await waitFor(() =>
+    expect(invokeBridge).toHaveBeenCalledWith('load_newer', {
+      serverId: 's',
+      channelId: 'c',
+      messageId: '01',
+    }),
+  )
+  expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
+  expect(
+    vi.mocked(invokeBridge).mock.calls.some(([, args]) => JSON.stringify(args).includes('"read"')),
+  ).toBe(false)
 })

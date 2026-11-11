@@ -69,8 +69,19 @@ pub(crate) fn message_view(message: &v1::Message) -> Result<BridgeMessage, ApiEr
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a flat bridge struct the webview reads field by field"
+)]
 pub struct ChatSnapshot {
+    /// One gapless run of messages: the newest, or the one around the
+    /// requested message.
     messages: Vec<BridgeMessage>,
+    /// Nothing older than the first message exists.
+    start: bool,
+    /// The run reaches the newest message; otherwise newer ones must be
+    /// loaded before new messages show at its end.
+    latest: bool,
     own_user_id: Option<String>,
     last_read: Option<String>,
     can_send: bool,
@@ -86,16 +97,23 @@ pub async fn chat_snapshot(
     state: State<'_, AppState>,
     server_id: String,
     channel_id: String,
+    around: Option<String>,
 ) -> Result<ChatSnapshot, ApiError> {
-    snapshot_for(&state, &server_id, &channel_id)
+    snapshot_for(&state, &server_id, &channel_id, around.as_deref())
 }
+/// Project the run of loaded messages around `around`, or the newest run.
+/// Runs apart from it (a jump to an old message, or live messages the cache
+/// let go) are left out: showing them side by side would hide the messages
+/// missing between them.
 fn snapshot_for(
     state: &AppState,
     server_id: &str,
     channel_id: &str,
+    around: Option<&str>,
 ) -> Result<ChatSnapshot, ApiError> {
     let server = parse_server_id(server_id)?;
     let channel = id(channel_id)?;
+    let around = around.map(id).transpose()?;
     let client = state
         .client(&server)
         .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
@@ -109,26 +127,26 @@ fn snapshot_for(
             "This channel is no longer visible.",
         ));
     }
+    let segment = view
+        .messages
+        .get(&channel)
+        .map(|cache| cache.segment(around))
+        .unwrap_or_default();
+    let mut messages = segment
+        .messages
+        .iter()
+        .map(|message| message_view(message))
+        .collect::<Result<Vec<_>, _>>()?;
+    for message in &segment.deleted {
+        let mut row = message_view(message)?;
+        row.deleted = true;
+        messages.push(row);
+    }
+    messages.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(ChatSnapshot {
-        messages: view
-            .messages
-            .get(&channel)
-            .map(|cache| {
-                let mut messages = cache
-                    .ordered()
-                    .into_iter()
-                    .map(message_view)
-                    .collect::<Result<Vec<_>, _>>()?;
-                for message in cache.deleted() {
-                    let mut row = message_view(message)?;
-                    row.deleted = true;
-                    messages.push(row);
-                }
-                messages.sort_by(|a, b| a.id.cmp(&b.id));
-                Ok::<_, ApiError>(messages)
-            })
-            .transpose()?
-            .unwrap_or_default(),
+        messages,
+        start: segment.start,
+        latest: segment.latest,
         own_user_id: view.own_user.as_ref().map(|u| display(&u.id)).transpose()?,
         last_read: view
             .read_states
@@ -225,6 +243,27 @@ pub async fn message_context(
     }
     Ok(())
 }
+/// Load the messages after `message_id`: closes the gap below a jumped-to
+/// message, page by page, until its run reaches the newest.
+#[tauri::command]
+pub async fn load_newer(
+    state: State<'_, AppState>,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<Vec<BridgeMessage>, ApiError> {
+    let server = parse_server_id(&server_id)?;
+    let client = state
+        .client(&server)
+        .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
+    client
+        .load_newer(id(&channel_id)?, id(&message_id)?)
+        .await
+        .map_err(api_error)?
+        .iter()
+        .map(message_view)
+        .collect()
+}
 fn external_url(value: &str) -> Result<reqwest::Url, ApiError> {
     let url =
         reqwest::Url::parse(value).map_err(|_| ApiError::new("invalid_url", "Invalid link."))?;
@@ -277,7 +316,7 @@ mod tests {
     ) {
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                if predicate(&snapshot_for(state, server, channel).unwrap()) {
+                if predicate(&snapshot_for(state, server, channel, None).unwrap()) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -346,6 +385,7 @@ mod tests {
         let channel = channel.to_string();
         wait_for(&state, key.as_str(), &channel, |v| {
             v.messages.len() == 1
+                && v.latest
                 && v.can_send
                 && v.messages[0].username.as_deref() == Some("owner")
         })
@@ -391,7 +431,7 @@ mod tests {
             v.messages.len() == 1 && v.messages[0].deleted && v.messages[0].content.is_empty()
         })
         .await;
-        assert!(snapshot_for(&state, key.as_str(), &Id::generate().to_string()).is_err());
+        assert!(snapshot_for(&state, key.as_str(), &Id::generate().to_string(), None).is_err());
         assert!(
             action_for(
                 &state,

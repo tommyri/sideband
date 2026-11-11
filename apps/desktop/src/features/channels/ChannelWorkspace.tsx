@@ -21,6 +21,7 @@ import { MemberRow } from './MemberRow'
 import { MemberMenu } from './MemberMenu'
 import { AudioSettings } from '../settings/audio/AudioSettings'
 import { ServerHome } from '../onboarding/ServerHome'
+import { ServerNotices } from '../onboarding/ServerNotices'
 
 function visibleChannels(channels: ChannelView[], collapsed: Set<string>) {
   const byId = new Map(channels.map((c) => [c.id, c]))
@@ -439,6 +440,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
             Reconnecting to {label} (attempt {status.attempt})… Your microphone gate is closed.
           </p>
         )}
+        <ServerNotices server={server} />
         {current?.kind === 3 ? (
           <>
             {active?.serverId === server && active.channelId === current.id ? (

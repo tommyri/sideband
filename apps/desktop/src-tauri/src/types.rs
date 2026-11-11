@@ -248,6 +248,9 @@ pub enum ClientEventPayload {
     ServerError {
         code: i32,
         message: String,
+        /// How long the server asked the client to wait, if it said.
+        #[serde(rename = "retryAfterMs")]
+        retry_after_ms: Option<u32>,
     },
 }
 

@@ -3,4 +3,8 @@ import type { ConnectionStatus } from "./ConnectionStatus";
 import type { VoiceDevicePayload } from "./VoiceDevicePayload";
 import type { VoiceStatsPayload } from "./VoiceStatsPayload";
 
-export type ClientEventPayload = { "kind": "resynced" } | { "kind": "channelsChanged" } | { "kind": "messagesChanged", channel: string, } | { "kind": "voiceChanged" } | { "kind": "voiceStats", stats: VoiceStatsPayload, } | { "kind": "voiceDevice", state: VoiceDevicePayload, } | { "kind": "membersChanged" } | { "kind": "readStatesChanged" } | { "kind": "invitesChanged" } | { "kind": "typing", channel: string, user: string, } | { "kind": "connection", status: ConnectionStatus, } | { "kind": "notice", message: string, } | { "kind": "removed", banned: boolean, reason: string, } | { "kind": "keyframeRequested", track: number, } | { "kind": "subscriberHint", track: number, maxHeight: number, maxFps: number, viewerCount: number, } | { "kind": "serverError", code: number, message: string, };
+export type ClientEventPayload = { "kind": "resynced" } | { "kind": "channelsChanged" } | { "kind": "messagesChanged", channel: string, } | { "kind": "voiceChanged" } | { "kind": "voiceStats", stats: VoiceStatsPayload, } | { "kind": "voiceDevice", state: VoiceDevicePayload, } | { "kind": "membersChanged" } | { "kind": "readStatesChanged" } | { "kind": "invitesChanged" } | { "kind": "typing", channel: string, user: string, } | { "kind": "connection", status: ConnectionStatus, } | { "kind": "notice", message: string, } | { "kind": "removed", banned: boolean, reason: string, } | { "kind": "keyframeRequested", track: number, } | { "kind": "subscriberHint", track: number, maxHeight: number, maxFps: number, viewerCount: number, } | { "kind": "serverError", code: number, message: string, 
+/**
+ * How long the server asked the client to wait, if it said.
+ */
+retryAfterMs: number | null, };

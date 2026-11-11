@@ -21,6 +21,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::broadcast;
 
 pub(crate) fn api_error(error: ClientError) -> ApiError {
     match error {
@@ -101,6 +102,7 @@ fn event(event: ClientEvent) -> ClientEventPayload {
         ClientEvent::ServerError(error) => ClientEventPayload::ServerError {
             code: error.code,
             message: error.message,
+            retry_after_ms: error.retry_after_ms,
         },
     }
 }
@@ -190,6 +192,18 @@ pub(crate) fn parse_server_id(value: &str) -> Result<ServerId, ApiError> {
     ServerId::new(host, port).map_err(|error| ApiError::new("invalid_server", error.to_string()))
 }
 
+/// The next event to forward, or `None` once the client is gone. When the
+/// forwarder fell behind and the channel dropped events, says `Resynced`
+/// instead: the webview then re-reads every view, since it cannot tell what
+/// it missed.
+async fn next_event(receiver: &mut broadcast::Receiver<ClientEvent>) -> Option<ClientEvent> {
+    match receiver.recv().await {
+        Ok(incoming) => Some(incoming),
+        Err(broadcast::error::RecvError::Lagged(_)) => Some(ClientEvent::Resynced),
+        Err(broadcast::error::RecvError::Closed) => None,
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -264,12 +278,7 @@ pub async fn connect(
     let event_server_id = server_id.clone();
     let notification_store = client.state();
     tauri::async_runtime::spawn(async move {
-        loop {
-            let incoming = match receiver.recv().await {
-                Ok(incoming) => incoming,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            };
+        while let Some(incoming) = next_event(&mut receiver).await {
             crate::notifications::observe(&app, &event_server_id, &notification_store, &incoming)
                 .await;
             if matches!(incoming, ClientEvent::MessageReceived { .. }) {
@@ -434,7 +443,30 @@ pub(crate) async fn history(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_server_id;
+    use super::{ClientEvent, broadcast, next_event, parse_server_id};
+
+    #[tokio::test]
+    async fn a_lagged_forwarder_resyncs_the_webview() {
+        let (sender, mut receiver) = broadcast::channel(2);
+        for _ in 0..5 {
+            sender.send(ClientEvent::MembersChanged).unwrap();
+        }
+        // Three events were dropped: the webview must re-read everything.
+        assert!(matches!(
+            next_event(&mut receiver).await,
+            Some(ClientEvent::Resynced)
+        ));
+        assert!(matches!(
+            next_event(&mut receiver).await,
+            Some(ClientEvent::MembersChanged)
+        ));
+        assert!(matches!(
+            next_event(&mut receiver).await,
+            Some(ClientEvent::MembersChanged)
+        ));
+        drop(sender);
+        assert!(next_event(&mut receiver).await.is_none());
+    }
 
     #[test]
     fn parses_stable_ipv4_and_ipv6_server_ids() {

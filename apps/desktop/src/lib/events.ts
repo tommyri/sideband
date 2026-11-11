@@ -1,6 +1,7 @@
 import { navigateMessage } from '../features/chat/navigation'
 import { messageLink } from '../features/chat/rich-model'
 import { receiveChatEvent } from '../features/chat/api'
+import { receiveNotice } from './notices'
 import { observe, record } from '../features/testing/report'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { AppEvent } from './bindings'
@@ -29,6 +30,7 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
           ),
           listen<AppEvent>('ss://event', ({ payload }) => {
             receiveChatEvent(payload)
+            receiveNotice(payload)
             observe(payload, useVoiceStore.getState().active?.serverId)
             useAppStore.getState().receiveEvent(payload)
             if (payload.event.kind === 'voiceStats') {

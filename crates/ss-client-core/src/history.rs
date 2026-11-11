@@ -1,6 +1,8 @@
 //! Pinned HTTPS pagination and protobuf-JSON decoding.
 use crate::{
-    Client, ClientEvent, ConnectionState, Error, ServerAddr, connection::DEADLINE, state::id,
+    Client, ClientEvent, Error, ServerAddr,
+    connection::DEADLINE,
+    state::{Fetch, id},
 };
 use base64::Engine;
 use serde::Deserialize;
@@ -13,45 +15,46 @@ impl Client {
     /// Redirects and environment proxies are disabled. HTTP and QUIC must
     /// use the same trust policy (the same leaf only in pinned mode).
     /// Pages are retained until reconnect.
-    /// If a live event races the request, returns `StateChanged` for a retry.
+    /// If a live event changes this channel's messages while the request
+    /// runs, returns `StateChanged` for a retry.
     pub async fn load_older(
         &self,
         channel: Id,
         before: Option<Id>,
     ) -> Result<Vec<v1::Message>, Error> {
-        self.load_page(channel, before, None).await
+        self.load_page(channel, Fetch::Before(before)).await
+    }
+
+    /// Fetch the 50 messages after `after`, toward the newest: how a host
+    /// closes the gap below a message it jumped to.
+    pub async fn load_newer(&self, channel: Id, after: Id) -> Result<Vec<v1::Message>, Error> {
+        self.load_page(channel, Fetch::After(after)).await
     }
 
     /// Load the authorized history window around a reply/link target over verified HTTPS.
     pub async fn load_around(&self, channel: Id, around: Id) -> Result<Vec<v1::Message>, Error> {
-        self.load_page(channel, None, Some(around)).await
+        self.load_page(channel, Fetch::Around(around)).await
     }
 
-    async fn load_page(
-        &self,
-        channel: Id,
-        before: Option<Id>,
-        around: Option<Id>,
-    ) -> Result<Vec<v1::Message>, Error> {
-        let revision = {
-            let state = self.store.read();
-            if state.connection != ConnectionState::Connected {
-                return Err(Error::Disconnected);
-            }
-            state.revision
-        };
+    async fn load_page(&self, channel: Id, fetch: Fetch) -> Result<Vec<v1::Message>, Error> {
+        let ticket = self.store.ticket()?;
         let session = self.auth.read().clone().ok_or(Error::Disconnected)?;
+        let (before, after, around) = match fetch {
+            Fetch::Before(before) => (before, None, None),
+            Fetch::After(after) => (None, Some(after), None),
+            Fetch::Around(around) => (None, None, Some(around)),
+        };
         let page = fetch_page(
             &self.address,
             session.trust,
             &session.token,
             channel,
             before,
-            None,
+            after,
             around,
         )
         .await?;
-        self.store.history(channel, revision, page.clone())?;
+        self.store.history(channel, ticket, fetch, page.clone())?;
         let _ = self.events.send(ClientEvent::MessagesChanged { channel });
         Ok(page)
     }

@@ -3,6 +3,7 @@ import { AudioSettings } from '../settings/audio/AudioSettings'
 import { getSnapshot, removeServer, reorderServers } from '../../lib/api'
 import { useAppStore } from '../../store/app-store'
 import { friendlyError } from './validation'
+import { ServerNotices } from './ServerNotices'
 
 export function ServerHome() {
   const servers = useAppStore((s) => s.servers)
@@ -71,9 +72,11 @@ export function ServerHome() {
           )}
           {server.status.kind === 'failed' && (
             <p className="form-error" role="alert">
-              Connection ended. Reconnect to check the certificate and sign in again.
+              Connection ended: {server.status.message.replace(/\.$/, '')}. Reconnect to check the
+              certificate and sign in again.
             </p>
           )}
+          <ServerNotices server={server.id} />
           {server.status.kind !== 'connected' && server.status.kind !== 'reconnecting' && (
             <button
               className="button primary"
