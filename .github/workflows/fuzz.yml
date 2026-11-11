@@ -19,7 +19,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [control_frames, media_headers, mentions, preview_html, multipart_upload]
+        target:
+          - control_frames
+          - control_stream
+          - video_group
+          - media_headers
+          - mentions
+          - preview_html
+          - multipart_upload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

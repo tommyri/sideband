@@ -138,12 +138,15 @@ impl State {
 
     /// Server-resolved permissions. None means an older server did not supply
     /// them; never guess by ignoring channel overrides.
+    ///
+    /// Bits a newer server grants that this build has no name for are left
+    /// out: no feature here could use them. The channel keeps the raw mask.
     pub fn permissions(&self, channel: Id) -> Option<Permissions> {
         self.channels
             .get(&channel)
             .or_else(|| self.direct_messages.get(&channel))?
             .effective_permissions
-            .and_then(Permissions::from_bits)
+            .map(Permissions::from_bits_truncate)
     }
 }
 
@@ -332,12 +335,9 @@ pub(crate) fn id(bytes: &[u8]) -> Result<Id, Error> {
 
 impl State {
     fn channel(&mut self, channel: v1::Channel) -> Result<(), Error> {
+        // Masks stay raw, unknown bits included (`02-protocol.md` §7): a
+        // newer server may grant bits this build has no name for.
         let key = id(&channel.id)?;
-        if let Some(bits) = channel.effective_permissions
-            && Permissions::from_bits(bits).is_none()
-        {
-            return Err(Error::Protocol("invalid permissions"));
-        }
         self.channels.remove(&key);
         self.direct_messages.remove(&key);
         if matches!(
@@ -924,6 +924,35 @@ mod tests {
         let before = store.read().revision;
         assert!(store.welcome(&welcome).is_err());
         assert_eq!(store.read().revision, before);
+    }
+    #[test]
+    fn permission_bits_from_a_newer_server_are_kept_raw_and_read_as_known() {
+        // A bit this build has no name for, as a newer server could grant.
+        let future = 1_u64 << 40;
+        let raw = Permissions::EVERYONE.bits() | future;
+        let (store, key, _) = store();
+        let mut c = channel(key, 0);
+        c.effective_permissions = Some(raw);
+        let welcome = v1::Welcome {
+            user: store.read().own_user.clone(),
+            snapshot: Some(v1::Snapshot {
+                channels: vec![c.clone()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        store.welcome(&welcome).unwrap();
+        // Decisions see only what this build knows; the wire copy is intact.
+        assert_eq!(store.read().permissions(key), Some(Permissions::EVERYONE));
+        assert_eq!(store.read().channels[&key].effective_permissions, Some(raw));
+        c.effective_permissions = Some(Permissions::VIEW_CHANNEL.bits() | future);
+        store
+            .apply(Msg::ChannelUpdated(v1::ChannelUpdated { channel: Some(c) }))
+            .unwrap();
+        assert_eq!(
+            store.read().permissions(key),
+            Some(Permissions::VIEW_CHANNEL)
+        );
     }
     #[test]
     fn reconnect_snapshot_keeps_the_cache_and_resync_pages_replace_their_span() {

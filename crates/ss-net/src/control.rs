@@ -93,8 +93,7 @@ impl<Out: ControlMessage, In: Message + Default> ControlStream<Out, In> {
             receiver: ControlReceiver {
                 stream: recv,
                 connection,
-                buffer: BytesMut::new(),
-                marker: PhantomData,
+                frames: FrameDecoder::default(),
             },
         }
     }
@@ -159,12 +158,75 @@ impl<M: ControlMessage> ControlSender<M> {
     }
 }
 
+/// Incremental control-frame parser over byte chunks of any size, with no I/O.
+///
+/// Both peers' readers use it; the `control_stream` fuzz target drives it with
+/// arbitrary chunk boundaries. It holds at most one frame
+/// (`MAX_FRAME_LEN + 4` bytes) and never consumes past the end of a frame.
+/// Errors are sticky: after one, every call returns an error.
+pub struct FrameDecoder<M> {
+    buffer: BytesMut,
+    marker: PhantomData<M>,
+}
+
+impl<M> Default for FrameDecoder<M> {
+    fn default() -> Self {
+        Self {
+            buffer: BytesMut::new(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<M: Message + Default> FrameDecoder<M> {
+    /// Bytes still missing from the current length prefix or frame body.
+    /// Nonzero whenever [`Self::feed`] last returned `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError::TooLarge`] once a prefix exceeds `MAX_FRAME_LEN`.
+    pub fn wanted(&self) -> Result<usize, FrameError> {
+        let Some(prefix) = self.buffer.get(..4) else {
+            return Ok(4 - self.buffer.len());
+        };
+        let len = u32::from_be_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]) as usize;
+        if len > frame::MAX_FRAME_LEN {
+            return Err(FrameError::TooLarge { len });
+        }
+        Ok(len + 4 - self.buffer.len())
+    }
+
+    /// Takes bytes from the front of `input` up to the end of the next frame
+    /// and returns that frame once it is complete. Leftover input belongs to
+    /// later frames; an empty `input` is allowed.
+    ///
+    /// # Errors
+    ///
+    /// An oversize length prefix or a body that is not a valid protobuf.
+    pub fn feed(&mut self, input: &mut &[u8]) -> Result<Option<M>, FrameError> {
+        loop {
+            let wanted = self.wanted()?;
+            if wanted == 0 {
+                // A complete frame; four zero bytes alone are an empty message.
+                let message = frame::decode(&self.buffer)?;
+                self.buffer.clear();
+                return Ok(Some(message));
+            }
+            if input.is_empty() {
+                return Ok(None);
+            }
+            let (head, tail) = input.split_at(wanted.min(input.len()));
+            self.buffer.extend_from_slice(head);
+            *input = tail;
+        }
+    }
+}
+
 /// One typed reader with a bounded, resumable frame buffer.
 pub struct ControlReceiver<M> {
     stream: quinn::RecvStream,
     connection: quinn::Connection,
-    buffer: BytesMut,
-    marker: PhantomData<M>,
+    frames: FrameDecoder<M>,
 }
 
 impl<M: Message + Default> ControlReceiver<M> {
@@ -177,38 +239,21 @@ impl<M: Message + Default> ControlReceiver<M> {
         result
     }
 
+    // Cancellation-safe: a chunk is never larger than the decoder wants, and
+    // it is fed before the next await, so no read byte is ever dropped.
     async fn read_frame(&mut self) -> Result<M, ControlError> {
+        let mut chunk = Bytes::new();
         loop {
-            let target = if self.buffer.len() < 4 {
-                4
-            } else {
-                let len = u32::from_be_bytes([
-                    self.buffer[0],
-                    self.buffer[1],
-                    self.buffer[2],
-                    self.buffer[3],
-                ]) as usize;
-                if len > frame::MAX_FRAME_LEN {
-                    return Err(FrameError::TooLarge { len }.into());
-                }
-                len + 4
-            };
-            if self.buffer.len() == target && target >= 4 {
-                // Four bytes alone can be a legitimate zero-length protobuf.
-                if target != 4 || self.buffer[..4] == [0, 0, 0, 0] {
-                    let message = frame::decode(&self.buffer)?;
-                    self.buffer.clear();
-                    return Ok(message);
-                }
-                continue;
+            if let Some(message) = self.frames.feed(&mut chunk.as_ref())? {
+                return Ok(message);
             }
-            let chunk = self
+            chunk = self
                 .stream
-                .read_chunk(target - self.buffer.len(), true)
+                .read_chunk(self.frames.wanted()?, true)
                 .await
                 .map_err(|error| ControlError::Read(Arc::new(error)))?
-                .ok_or_else(|| ControlError::from(FrameError::Incomplete))?;
-            self.buffer.extend_from_slice(&chunk.bytes);
+                .ok_or_else(|| ControlError::from(FrameError::Incomplete))?
+                .bytes;
         }
     }
 }
@@ -232,6 +277,8 @@ type Response = oneshot::Sender<Result<ServerEnvelope, ControlError>>;
 struct Pending {
     requests: HashMap<u32, Response>,
     terminal: Option<ControlError>,
+    /// Events with a `msg` variant this build does not know, skipped.
+    unknown: u64,
 }
 
 impl Pending {
@@ -308,6 +355,12 @@ impl ClientControl {
             Some(server_envelope::Msg::Error(error)) => Ok(Reply::Error(error)),
             _ => Err(ControlError::Protocol("expected Ack or Error")),
         }
+    }
+
+    /// Server events skipped because their message is one this build does not
+    /// know: a newer server's addition (`02-protocol.md` §7).
+    pub fn unknown_messages(&self) -> u64 {
+        self.pending.lock().unknown
     }
 
     /// Reason the control workers stopped, if available.
@@ -396,6 +449,39 @@ async fn write_requests(
     pending.lock().fail(&ControlError::Closed);
 }
 
+/// Where the reader sends one server envelope.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// Request id zero: an event, including an unsolicited `Error` notice.
+    Event,
+    /// The reply to request `id`, if anyone still waits for it.
+    Reply(u32),
+    /// An event whose `msg` variant this build does not know.
+    Unknown,
+}
+
+// Fields are only ever added (`02-protocol.md` §7), and the server cannot
+// tell which ones a client knows. An unknown `msg` variant decodes to none.
+fn route(envelope: &ServerEnvelope) -> Result<Route, ControlError> {
+    let payload_id = match &envelope.msg {
+        None if envelope.request_id == 0 => return Ok(Route::Unknown),
+        // Only an `Error` can be unsolicited (`envelope.proto`).
+        Some(server_envelope::Msg::Ack(_)) if envelope.request_id == 0 => {
+            return Err(ControlError::Protocol("unsolicited Ack"));
+        }
+        Some(server_envelope::Msg::Ack(ack)) => Some(ack.request_id),
+        Some(server_envelope::Msg::Error(error)) => Some(error.request_id),
+        _ => None,
+    };
+    if payload_id.is_some_and(|id| id != envelope.request_id) {
+        return Err(ControlError::Protocol("response ids disagree"));
+    }
+    Ok(match envelope.request_id {
+        0 => Route::Event,
+        id => Route::Reply(id),
+    })
+}
+
 async fn read_responses(
     mut receiver: ControlReceiver<ServerEnvelope>,
     events: mpsc::Sender<ServerEnvelope>,
@@ -406,25 +492,112 @@ async fn read_responses(
             Ok(envelope) => envelope,
             Err(error) => break error,
         };
-        if envelope.msg.is_none() {
-            break ControlError::Protocol("missing server message");
-        }
-        let payload_id = match &envelope.msg {
-            Some(server_envelope::Msg::Ack(ack)) => Some(ack.request_id),
-            Some(server_envelope::Msg::Error(error)) => Some(error.request_id),
-            _ => None,
-        };
-        if payload_id.is_some_and(|id| id == 0 || id != envelope.request_id) {
-            break ControlError::Protocol("response ids disagree");
-        }
-        if envelope.request_id == 0 {
-            if events.try_send(envelope).is_err() {
-                break ControlError::Capacity;
+        match route(&envelope) {
+            Ok(Route::Event) => {
+                if events.try_send(envelope).is_err() {
+                    break ControlError::Capacity;
+                }
             }
-        } else if let Some(reply) = pending.lock().requests.remove(&envelope.request_id) {
-            let _ = reply.send(Ok(envelope));
+            Ok(Route::Reply(id)) => {
+                if let Some(reply) = pending.lock().requests.remove(&id) {
+                    let _ = reply.send(Ok(envelope));
+                }
+            }
+            Ok(Route::Unknown) => {
+                let mut pending = pending.lock();
+                pending.unknown = pending.unknown.saturating_add(1);
+            }
+            Err(error) => break error,
         }
     };
     pending.lock().fail(&error);
     close_if_open(&receiver.connection, 2, b"control reader stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ss_proto::v1::{ack, server_envelope::Msg};
+
+    fn decode_all(
+        decoder: &mut FrameDecoder<ServerEnvelope>,
+        mut input: &[u8],
+    ) -> Vec<ServerEnvelope> {
+        let mut out = Vec::new();
+        while let Some(message) = decoder.feed(&mut input).unwrap() {
+            out.push(message);
+        }
+        assert_eq!(input.len(), 0);
+        out
+    }
+
+    #[test]
+    fn frames_decode_identically_at_every_chunk_size() {
+        let messages = [
+            ServerEnvelope::default(),
+            ServerEnvelope::ack(7, ack::Result::Empty(v1::Empty {})),
+            ServerEnvelope::rate_limited(0, "slow down", std::time::Duration::from_secs(1)),
+        ];
+        let mut stream = Vec::new();
+        for message in &messages {
+            stream.extend_from_slice(&frame::encode(message).unwrap());
+        }
+        for size in 1..=stream.len() {
+            let mut decoder = FrameDecoder::default();
+            let mut messages_seen = Vec::new();
+            for chunk in stream.chunks(size) {
+                messages_seen.extend(decode_all(&mut decoder, chunk));
+            }
+            assert_eq!(messages_seen, messages, "chunk size {size}");
+            assert_eq!(decoder.wanted().unwrap(), 4);
+        }
+    }
+
+    #[test]
+    fn oversize_prefixes_and_bad_bodies_stay_failed() {
+        let mut decoder = FrameDecoder::<ServerEnvelope>::default();
+        let mut input = &[0xff, 0xff, 0xff, 0xff, 0][..];
+        assert!(matches!(
+            decoder.feed(&mut input),
+            Err(FrameError::TooLarge { .. })
+        ));
+        assert_eq!(input, [0]);
+        assert!(decoder.wanted().is_err());
+        let mut decoder = FrameDecoder::<ServerEnvelope>::default();
+        assert!(decoder.feed(&mut &[0, 0, 0, 1, 0xff][..]).is_err());
+        assert!(decoder.feed(&mut &[][..]).is_err());
+    }
+
+    #[test]
+    fn unsolicited_errors_are_events_and_unknown_messages_are_skipped() {
+        let notice = ServerEnvelope::rate_limited(
+            0,
+            "media bitrate exceeded",
+            std::time::Duration::from_secs(2),
+        );
+        assert_eq!(route(&notice).unwrap(), Route::Event);
+        let unknown = ServerEnvelope {
+            request_id: 0,
+            msg: None,
+        };
+        assert_eq!(route(&unknown).unwrap(), Route::Unknown);
+        // A reply in a shape this build does not know still ends its request.
+        let reply = ServerEnvelope {
+            request_id: 9,
+            msg: None,
+        };
+        assert_eq!(route(&reply).unwrap(), Route::Reply(9));
+        assert!(route(&ServerEnvelope::ack(0, ack::Result::Empty(v1::Empty {}))).is_err());
+        let mut mismatch = ServerEnvelope::ack(3, ack::Result::Empty(v1::Empty {}));
+        mismatch.request_id = 4;
+        assert!(route(&mismatch).is_err());
+        let mut late = ServerEnvelope::error(5, v1::ErrorCode::Invalid, "x");
+        if let Some(Msg::Error(error)) = late.msg.as_mut() {
+            error.request_id = 0;
+        }
+        assert!(
+            route(&late).is_err(),
+            "a reply's id must match its envelope"
+        );
+    }
 }

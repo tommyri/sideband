@@ -845,3 +845,25 @@ async fn busy_connections_are_closed_at_their_maximum_age() {
     assert!(answered > 1, "closed before it was busy");
     site.stop().await;
 }
+
+#[tokio::test]
+async fn an_unknown_command_is_refused_and_the_connection_stays_up() {
+    let world = World::new().await;
+    let (_owner, mut ada, _general) = world.owner().await;
+    // A newer client's command variant decodes here with no message.
+    let request_id = ada.next;
+    ada.next += 1;
+    ada.stream
+        .send(&v1::ClientEnvelope {
+            request_id,
+            msg: None,
+        })
+        .await
+        .unwrap();
+    let reply = ada.reply(request_id).await;
+    let error = error_of(&reply);
+    assert_eq!(error.code, i32::from(v1::ErrorCode::Invalid));
+    assert_eq!(error.message, "unsupported command");
+    let pong = ada.call(Msg::Ping(v1::Ping { sent_at: 7 })).await;
+    assert!(matches!(pong.msg, Some(Event::Pong(_))), "{pong:?}");
+}

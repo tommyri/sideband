@@ -789,3 +789,70 @@ fn resync_pages_yield_to_live_edits_and_deletes() {
         ["kept", "new"]
     );
 }
+
+/// What a newer server sends for an event this build does not know:
+/// envelope field 2047 (`msg` variants are numbered from 2). Prost skips the
+/// unknown field, so the envelope decodes with no message.
+fn future_event() -> v1::ServerEnvelope {
+    // Length prefix, then field 2047, wire type 2, two bytes of payload.
+    let frame = [0, 0, 0, 5, 0xfa, 0x7f, 0x02, 0x08, 0x01];
+    let envelope: v1::ServerEnvelope = ss_proto::decode(&frame).unwrap();
+    assert_eq!(envelope.request_id, 0);
+    assert!(envelope.msg.is_none());
+    envelope
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unsolicited_errors_and_unknown_events_keep_the_connection() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let session = peer.session().await;
+    let mut events = client.subscribe();
+    // As `ss-server` sends it before a media rate-limit close.
+    let wait = Duration::from_millis(1500);
+    session
+        .events
+        .send(v1::ServerEnvelope::rate_limited(
+            0,
+            "media bitrate exceeded",
+            wait,
+        ))
+        .unwrap();
+    session.events.send(future_event()).unwrap();
+    session
+        .events
+        .send(v1::ServerEnvelope {
+            request_id: 0,
+            msg: Some(Event::ServerNotice(v1::ServerNotice {
+                text: "still here".into(),
+            })),
+        })
+        .unwrap();
+    let (error, notice) = timeout(WAIT, async {
+        let mut error = None;
+        loop {
+            match events.recv().await {
+                Ok(ClientEvent::ServerError(e)) => error = Some(e),
+                Ok(ClientEvent::Notice(text)) => return (error, text),
+                Ok(ClientEvent::Connection(state)) if state != ConnectionState::Connected => {
+                    panic!("connection changed to {state:?}")
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("client stopped"),
+            }
+        }
+    })
+    .await
+    .expect("events after the error did not arrive");
+    let error = error.expect("the unsolicited error did not reach the application");
+    assert_eq!(error.code, i32::from(v1::ErrorCode::RateLimited));
+    assert_eq!(error.retry_after_ms, Some(1500));
+    assert_eq!(notice, "still here");
+    assert_eq!(client.state().read().connection, ConnectionState::Connected);
+    assert!(
+        session.connection.quic().close_reason().is_none(),
+        "connection closed: {:?}",
+        session.connection.quic().close_reason()
+    );
+    assert!(peer.sessions.try_recv().is_err(), "client reconnected");
+}
