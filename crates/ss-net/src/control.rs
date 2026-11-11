@@ -273,6 +273,10 @@ pub enum Reply {
 
 type Response = oneshot::Sender<Result<ServerEnvelope, ControlError>>;
 
+/// Server events the router buffers for the application before its reader
+/// waits for room ([`ClientControl::start`]).
+pub const EVENT_QUEUE: usize = 256;
+
 #[derive(Default)]
 struct Pending {
     requests: HashMap<u32, Response>,
@@ -311,13 +315,16 @@ pub struct ClientControl {
 
 impl ClientControl {
     /// Starts independent read/write workers and returns the request-id-zero
-    /// event receiver. Overflow closes the connection instead of losing state.
+    /// event receiver, which holds [`EVENT_QUEUE`] events. When it is full the
+    /// reader waits for room: no event is dropped, and replies behind the
+    /// waiting events wait too, so the application must drain this receiver
+    /// while it awaits a reply. Dropping the receiver closes the connection.
     pub fn start(stream: ClientStream) -> (Self, mpsc::Receiver<ServerEnvelope>) {
         let (sender, receiver) = stream.split();
         let connection = sender.connection.clone();
         let pending = Arc::new(Mutex::new(Pending::default()));
         let (commands, command_rx) = mpsc::channel(64);
-        let (events, event_rx) = mpsc::channel(256);
+        let (events, event_rx) = mpsc::channel(EVENT_QUEUE);
         let writer = tokio::spawn(write_requests(sender, command_rx, pending.clone()));
         let reader = tokio::spawn(read_responses(receiver, events, pending.clone()));
         (
@@ -494,8 +501,20 @@ async fn read_responses(
         };
         match route(&envelope) {
             Ok(Route::Event) => {
-                if events.try_send(envelope).is_err() {
-                    break ControlError::Capacity;
+                // Wait for room rather than close: a burst past the queue (a
+                // category delete, a role reorder) only slows this reader.
+                // Reading nothing meanwhile, it lets QUIC flow control hold
+                // the server back, and the server closes a consumer that
+                // stays wedged (`ss-server` `SLOW_CONSUMER_AFTER`). Replies
+                // queue behind the events, as on the wire, so an application
+                // must keep reading events while it awaits a reply.
+                tokio::select! {
+                    sent = events.send(envelope) => {
+                        if sent.is_err() {
+                            break ControlError::Closed;
+                        }
+                    }
+                    _ = receiver.connection.closed() => break ControlError::Closed,
                 }
             }
             Ok(Route::Reply(id)) => {

@@ -521,20 +521,54 @@ async fn cancelled_requests_do_not_reuse_ids_or_steal_later_replies() {
     .await;
 }
 
+/// A burst far past the 256-event queue (a category delete, a role reorder)
+/// arrives while a command waits for its Ack and the application is busy.
+/// The reader waits for room instead of closing, nothing is lost or
+/// reordered, and the Ack queued behind the burst still arrives.
 #[tokio::test]
-async fn event_overflow_closes_instead_of_silently_losing_state() {
+async fn an_event_burst_past_the_queue_waits_for_the_application() {
+    const BURST: usize = 1000;
     let mut server = Server::new().await;
     let (_client, stream, peer, mut peer_stream) = server.pair().await;
-    let (router, _events) = ClientControl::start(stream);
-    for _ in 0..257 {
-        if peer_stream.send(&notice("queued")).await.is_err() {
-            break;
-        }
-    }
+    let (router, mut events) = ClientControl::start(stream);
+    let (reply, ()) = within(async {
+        tokio::join!(router.call(ping(1)), async {
+            let request = peer_stream.recv().await.unwrap();
+            for index in 0..BURST {
+                peer_stream.send(&notice(&index.to_string())).await.unwrap();
+            }
+            peer_stream.send(&ack(request.request_id)).await.unwrap();
+            // The application reads nothing while it is busy elsewhere.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                peer.quic().close_reason().is_none(),
+                "closed: {:?}",
+                peer.quic().close_reason()
+            );
+            for index in 0..BURST {
+                assert_eq!(events.recv().await.unwrap(), notice(&index.to_string()));
+            }
+        })
+    })
+    .await;
+    assert!(matches!(reply.unwrap(), Reply::Ack(_)));
+    assert!(router.terminal_error().is_none());
+    assert!(peer.quic().close_reason().is_none());
+}
+
+/// An application that drops its event receiver stops the router: events
+/// must not be discarded while the connection looks healthy.
+#[tokio::test]
+async fn a_dropped_event_receiver_closes_the_connection() {
+    let mut server = Server::new().await;
+    let (_client, stream, peer, mut peer_stream) = server.pair().await;
+    let (router, events) = ClientControl::start(stream);
+    drop(events);
+    let _ = peer_stream.send(&notice("unread")).await;
     within(peer.quic().closed()).await;
     assert!(matches!(
         router.terminal_error(),
-        Some(ControlError::Capacity)
+        Some(ControlError::Closed)
     ));
 }
 

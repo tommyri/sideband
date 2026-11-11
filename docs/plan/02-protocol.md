@@ -105,7 +105,10 @@ messages in its id range, so edits and deletes made while the client was
 away show; if the 4 pages do not reach the old cache, the older messages
 are dropped and load again on scroll, so no gap is left. A message a page
 brought in before its own `MessageCreated` still counts as new when that
-event arrives.
+event arrives. A page refused with `429` is asked again after its
+`Retry-After` (one second if absent), plus up to a quarter more; after three
+refusals that channel keeps its cache and the client says the resync was
+deferred.
 
 ## 2. Control stream framing
 
@@ -121,7 +124,12 @@ allocates nonzero request ids monotonically, separates events, and sends
 has sent its first Hello. A fresh router never sends Ping before Hello. `Hello`/`Welcome`
 and `Ping`/`Pong` use the router's `request` method; commands expecting
 `Ack`/`Error` use `call`. Authentication and server-side responses are owned
-by the application.
+by the application. The router buffers 256 events for the application; when
+they are unread it stops reading and waits, so a burst slows the stream (and,
+through QUIC flow control, the server) instead of closing it. A reply waits
+behind the events in front of it, so the application keeps reading events
+while it awaits one; a client that stops reading is closed by the server as a
+slow consumer (code 2).
 
 ## 3. Message schema (protobuf, `crates/ss-proto/proto/socialspeak/v1/*.proto`)
 

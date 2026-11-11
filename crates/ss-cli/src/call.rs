@@ -131,8 +131,29 @@ pub(crate) struct Joined {
     pub(crate) control: ClientControl,
     pub(crate) events: mpsc::Receiver<v1::ServerEnvelope>,
     pub(crate) track_id: u32,
-    pub(crate) user_id: Bytes,
+    pub(crate) own: Own,
     pub(crate) remote_tracks: Vec<u32>,
+}
+
+/// Who this session is, to tell its own track from everyone else's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Own {
+    /// Signed-in user.
+    pub(crate) user_id: Bytes,
+    /// This connection (`Welcome.conn_id`). Empty from servers older than it.
+    pub(crate) conn_id: Bytes,
+}
+
+impl Own {
+    /// Whether `track` is this connection's. Another session of the same
+    /// account is not ours; without a connection id, only the user is known.
+    pub(crate) fn is(&self, track: &v1::TrackAdded) -> bool {
+        if self.conn_id.is_empty() {
+            track.user_id == self.user_id
+        } else {
+            track.conn_id == self.conn_id
+        }
+    }
 }
 
 /// Join `name` with the host, channel, and pins in `options`.
@@ -157,16 +178,17 @@ pub(crate) async fn join_client(options: &Options, name: &str) -> Result<Joined,
     )
     .await
     .map_err(|_| CallError::Timeout)??;
-    let user_id = match response.msg {
-        Some(server_envelope::Msg::Welcome(welcome)) => {
-            welcome
+    let own = match response.msg {
+        Some(server_envelope::Msg::Welcome(welcome)) => Own {
+            user_id: welcome
                 .user
                 .ok_or(CallError::Rejected {
                     command: "Hello",
                     message: "Welcome omitted the user".to_owned(),
                 })?
-                .id
-        }
+                .id,
+            conn_id: welcome.conn_id,
+        },
         Some(server_envelope::Msg::Error(error)) => {
             return Err(CallError::Rejected {
                 command: "Hello",
@@ -180,14 +202,26 @@ pub(crate) async fn join_client(options: &Options, name: &str) -> Result<Joined,
             });
         }
     };
-    let reply = timeout(
-        Duration::from_secs(10),
-        control.call(client_envelope::Msg::JoinVoice(v1::JoinVoice {
-            channel_id: id_to_bytes(options.channel),
-            self_mute: false,
-            self_deaf: false,
-        })),
-    )
+    let mut track_id = 0_u32;
+    let mut remote_tracks = Vec::new();
+    // The server announces every member's track before the Ack, and the
+    // router holds the Ack behind events nobody reads: read them meanwhile.
+    let join = control.call(client_envelope::Msg::JoinVoice(v1::JoinVoice {
+        channel_id: id_to_bytes(options.channel),
+        self_mute: false,
+        self_deaf: false,
+    }));
+    let reply = timeout(Duration::from_secs(10), async {
+        tokio::pin!(join);
+        loop {
+            tokio::select! {
+                reply = &mut join => break reply,
+                Some(event) = events.recv() => {
+                    note_track(&event, &own, &mut track_id, &mut remote_tracks);
+                }
+            }
+        }
+    })
     .await
     .map_err(|_| CallError::Timeout)??;
     if let Reply::Error(error) = reply {
@@ -196,48 +230,48 @@ pub(crate) async fn join_client(options: &Options, name: &str) -> Result<Joined,
             message: error.message,
         });
     }
-    let (track_id, remote_tracks) = collect_tracks(&mut events, &user_id).await?;
+    collect_tracks(&mut events, &own, &mut track_id, &mut remote_tracks).await?;
     tracing::info!(%name, track_id, "joined voice");
     Ok(Joined {
         connection,
         control,
         events,
         track_id,
-        user_id,
+        own,
         remote_tracks,
     })
 }
 
 async fn collect_tracks(
     events: &mut mpsc::Receiver<v1::ServerEnvelope>,
-    user_id: &Bytes,
-) -> Result<(u32, Vec<u32>), CallError> {
-    let mut track_id = 0_u32;
-    let mut remote_tracks = Vec::new();
+    own: &Own,
+    track_id: &mut u32,
+    remote_tracks: &mut Vec<u32>,
+) -> Result<(), CallError> {
     let deadline = Instant::now() + Duration::from_secs(2);
-    while track_id == 0 && Instant::now() < deadline {
+    while *track_id == 0 && Instant::now() < deadline {
         let Ok(Some(event)) = timeout(Duration::from_millis(200), events.recv()).await else {
             continue;
         };
-        note_track(&event, user_id, &mut track_id, &mut remote_tracks);
+        note_track(&event, own, track_id, remote_tracks);
     }
     while let Ok(event) = events.try_recv() {
-        note_track(&event, user_id, &mut track_id, &mut remote_tracks);
+        note_track(&event, own, track_id, remote_tracks);
     }
-    if track_id == 0 {
+    if *track_id == 0 {
         return Err(CallError::NoTrack);
     }
-    Ok((track_id, remote_tracks))
+    Ok(())
 }
 
 fn note_track(
     event: &v1::ServerEnvelope,
-    user_id: &Bytes,
+    own: &Own,
     track_id: &mut u32,
     remote_tracks: &mut Vec<u32>,
 ) {
     match &event.msg {
-        Some(server_envelope::Msg::TrackAdded(track)) if track.user_id == *user_id => {
+        Some(server_envelope::Msg::TrackAdded(track)) if own.is(track) => {
             *track_id = track.track_id;
         }
         Some(server_envelope::Msg::TrackAdded(track)) if track.track_id != 0 => {
@@ -284,7 +318,7 @@ pub async fn run(options: Options) -> Result<Report, CallError> {
         &talker.remote_tracks,
         Arc::clone(&talker_connection),
         talker.events,
-        &talker.user_id,
+        &talker.own,
         AudioSide {
             measure: options.measure_latency,
             correlate: false,
@@ -317,7 +351,7 @@ pub async fn run(options: Options) -> Result<Report, CallError> {
                 &ear.remote_tracks,
                 connection,
                 ear.events,
-                &ear.user_id,
+                &ear.own,
                 AudioSide {
                     measure: false,
                     correlate: true,
@@ -411,7 +445,7 @@ async fn launch_audio(
     remote_tracks: &[u32],
     connection: Arc<Connection>,
     events: mpsc::Receiver<v1::ServerEnvelope>,
-    user_id: &Bytes,
+    own: &Own,
     side: AudioSide,
     probe: Arc<Probe>,
     epoch: Instant,
@@ -430,7 +464,7 @@ async fn launch_audio(
     let (incoming_tx, incoming_rx) = mpsc::channel(256);
     let (track_tx, track_rx) = mpsc::channel(64);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
-    let user_id = user_id.clone();
+    let own = own.clone();
     let mut events_stop = stop_rx.clone();
     let channels = u32::from(options.profile.encoder_params().channels);
     tasks.spawn(async move {
@@ -444,7 +478,7 @@ async fn launch_audio(
                 }
                 event = events.recv() => {
                     let Some(event) = event else { break };
-                    if let Some(update) = track_update(&event, &user_id, channels)
+                    if let Some(update) = track_update(&event, &own, channels)
                         && track_tx.send(update).await.is_err()
                     {
                         break;
@@ -494,9 +528,13 @@ async fn launch_audio(
     .await
 }
 
-fn track_update(event: &v1::ServerEnvelope, user_id: &Bytes, channels: u32) -> Option<TrackUpdate> {
+pub(crate) fn track_update(
+    event: &v1::ServerEnvelope,
+    own: &Own,
+    channels: u32,
+) -> Option<TrackUpdate> {
     match &event.msg {
-        Some(server_envelope::Msg::TrackAdded(track)) if track.user_id == *user_id => None,
+        Some(server_envelope::Msg::TrackAdded(track)) if own.is(track) => None,
         Some(server_envelope::Msg::TrackAdded(track)) => {
             if track
                 .codec

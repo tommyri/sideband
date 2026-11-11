@@ -53,6 +53,8 @@ const MAX_STATED_WAIT: Duration = Duration::from_mins(10);
 const REPLAY_WINDOW: Duration = Duration::from_mins(4);
 /// Pages fetched per channel when resyncing after a reconnect.
 const RESYNC_PAGES: usize = 4;
+/// `429` refusals one resync page waits out before its channel is deferred.
+const RESYNC_RATE_LIMITS: u32 = 3;
 
 /// One host, QUIC port, and HTTPS port. HTTPS uses the QUIC identity's pin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,8 +918,10 @@ impl Runner {
         let control = control.as_ref().ok_or(Error::Disconnected)?;
         self.draining(incoming, call(control, message)).await
     }
-    /// Await one reconnect-setup step while applying events, so a busy
-    /// server cannot overflow the router before the connection loop runs.
+    /// Await one reconnect-setup step while applying events. The router
+    /// waits for room when its event queue is full, and a reply behind those
+    /// events waits with them: a step that awaited a reply without draining
+    /// would stall until the server closed it as a slow consumer.
     async fn draining<T>(
         &mut self,
         incoming: &mut mpsc::Receiver<v1::ServerEnvelope>,
@@ -1237,7 +1241,7 @@ impl Resync {
             for (channel, floor) in floors {
                 let mut before = None;
                 for fetched in 1..=RESYNC_PAGES {
-                    let messages = match history.page(channel, before, None, None).await {
+                    let messages = match resync_page(&history, channel, before).await {
                         Ok(page) => page,
                         Err(error) => {
                             deferred(error);
@@ -1319,6 +1323,29 @@ impl Resync {
                 }
             })
             .collect()
+    }
+}
+
+/// One resync page. A `429` waits as long as the server says, plus up to a
+/// quarter more so clients behind one address spread out, as a refused
+/// resume does; after [`RESYNC_RATE_LIMITS`] of them the channel is deferred.
+async fn resync_page(
+    history: &crate::history::History,
+    channel: ss_core::Id,
+    before: Option<ss_core::Id>,
+) -> Result<Vec<v1::Message>, Error> {
+    let mut refused = 0;
+    loop {
+        match history.page(channel, before, None, None).await {
+            Err(Error::Server {
+                code, retry_after, ..
+            }) if code == i32::from(v1::ErrorCode::RateLimited) && refused < RESYNC_RATE_LIMITS => {
+                refused += 1;
+                let wait = retry_after.unwrap_or(Duration::from_secs(1));
+                tokio::time::sleep(stated_delay(wait)).await;
+            }
+            result => return result,
+        }
     }
 }
 

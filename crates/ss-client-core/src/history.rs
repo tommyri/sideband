@@ -131,7 +131,11 @@ impl History {
         if let Some(after) = after {
             request = request.query(&[("after", after.to_string())]);
         }
-        let mut response = request.send().await?.error_for_status()?;
+        let response = request.send().await?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(rate_limited(response.headers()));
+        }
+        let mut response = response.error_for_status()?;
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             if body.len() + chunk.len() > MAX_PAGE_BYTES {
@@ -140,6 +144,23 @@ impl History {
             body.extend_from_slice(&chunk);
         }
         decode(&body, channel)
+    }
+}
+
+/// A `429` as the control stream reports a quota: `RATE_LIMITED`, with the
+/// wait from `Retry-After` in whole seconds (`ss-server` always sends one).
+fn rate_limited(headers: &reqwest::header::HeaderMap) -> Error {
+    let retry_after = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+    Error::Server {
+        code: v1::ErrorCode::RateLimited.into(),
+        message: "history rate limited".to_owned(),
+        retry_after,
+        min_version: None,
+        max_version: None,
     }
 }
 
@@ -293,5 +314,34 @@ impl Preview {
             image_url: self.image_url,
             site_name: self.site_name,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    #[test]
+    fn a_429_carries_the_stated_wait() {
+        let wait = |value: Option<&'static str>| {
+            let mut headers = HeaderMap::new();
+            if let Some(value) = value {
+                headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            }
+            match rate_limited(&headers) {
+                Error::Server {
+                    code, retry_after, ..
+                } => {
+                    assert_eq!(code, i32::from(v1::ErrorCode::RateLimited));
+                    retry_after
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(wait(Some("3")), Some(std::time::Duration::from_secs(3)));
+        assert_eq!(wait(None), None);
+        // The HTTP-date form is not used by `ss-server`; no wait is read.
+        assert_eq!(wait(Some("Wed, 21 Oct 2015 07:28:00 GMT")), None);
     }
 }

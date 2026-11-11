@@ -457,8 +457,8 @@ async fn reconnect_resumes_audio_before_a_slow_resync_and_drains_events() {
         Some(v1::hello::Auth::ResumeToken(_))
     ));
     // More events than the control router buffers (256), trickling in over
-    // about a second while the resync is stalled. A single burst of that size
-    // can outrun any reader; that is the router's own limit.
+    // about a second while the resync is stalled. A single burst is covered
+    // by `an_event_burst_while_a_command_is_pending_keeps_the_connection`.
     let flood = {
         let events = second.events.clone();
         let channel = peer.channels[0].as_bytes().to_vec();
@@ -497,6 +497,71 @@ async fn reconnect_resumes_audio_before_a_slow_resync_and_drains_events() {
     assert_eq!(client.state().read().connection, ConnectionState::Connected);
     client.close().await;
     stalled.abort();
+}
+
+/// A burst of events far past the router's 256-event queue, written in one
+/// go while a command waits for its Ack: the connection stays up, the event
+/// written after the burst arrives, and the command completes. Before the
+/// router waited for room, this closed with "control reader stopped".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_event_burst_while_a_command_is_pending_keeps_the_connection() {
+    const BURST: usize = 3000;
+    let mut peer = Peer::new(Duration::from_millis(300), 1).await;
+    let client = peer.client().await;
+    let mut session = peer.session().await;
+    let mut events = client.subscribe();
+    let channel = peer.channels[0];
+    let typing = v1::ServerEnvelope {
+        request_id: 0,
+        msg: Some(Event::TypingStarted(v1::TypingStarted {
+            channel_id: channel.as_bytes().to_vec().into(),
+            user_id: ss_core::Id::generate().as_bytes().to_vec().into(),
+        })),
+    };
+    let command = client.command(Msg::SendMessage(v1::SendMessage {
+        channel_id: channel.as_bytes().to_vec().into(),
+        content: "pending".into(),
+        ..Default::default()
+    }));
+    let burst = async {
+        // The command is on the wire; its Ack follows the burst.
+        timeout(WAIT, session.commands.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..BURST {
+            session.events.send(typing.clone()).unwrap();
+        }
+        session
+            .events
+            .send(v1::ServerEnvelope {
+                request_id: 0,
+                msg: Some(Event::ServerNotice(v1::ServerNotice {
+                    text: "after the burst".into(),
+                })),
+            })
+            .unwrap();
+    };
+    let watch = timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Ok(ClientEvent::Notice(text)) if text == "after the burst" => break,
+                Ok(ClientEvent::Connection(state)) => panic!("connection changed to {state:?}"),
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("client stopped"),
+            }
+        }
+    });
+    let (acked, (), seen) = tokio::join!(timeout(WAIT, command), burst, watch);
+    seen.expect("the event after the burst never arrived");
+    acked.expect("the command never completed").unwrap();
+    assert!(
+        session.connection.quic().close_reason().is_none(),
+        "connection closed: {:?}",
+        session.connection.quic().close_reason()
+    );
+    assert!(peer.sessions.try_recv().is_err(), "client reconnected");
+    assert_eq!(client.state().read().connection, ConnectionState::Connected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
