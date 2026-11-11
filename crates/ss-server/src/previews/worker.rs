@@ -2,7 +2,8 @@
 //!
 //! A fresh URL is fetched once. The same URL is reused until its TTL, 24
 //! hours after success and 1 hour after failure. Viewers then get
-//! `MessageUpdated`.
+//! `MessageUpdated`, unless the message was deleted meanwhile: a soft delete
+//! keeps the content, so publishing it would show a deleted message again.
 
 use std::time::{Duration, Instant};
 
@@ -35,24 +36,44 @@ pub(crate) async fn enrich(
     if urls.is_empty() {
         return Ok(());
     }
-    let mut ready = false;
+    let mut ready = Vec::new();
     for (position, url) in urls.iter().enumerate() {
         let preview = resolve(pool, fetcher, url).await?;
         if preview.status == PreviewStatus::Ready {
-            let mut conn = pool.write().await;
-            link_previews::link(
-                &mut conn,
-                job.message_id,
-                url,
-                i64::try_from(position).unwrap_or(i64::MAX),
-            )
-            .await?;
-            ready = true;
+            ready.push((position, url));
         }
     }
-    if ready {
-        publish(pool, bus, job.message_id).await?;
+    if ready.is_empty() {
+        return Ok(());
     }
+    // Check, link and publish under the writer. A delete needs the writer to
+    // commit and publishes after it, so it cannot fall between the check and
+    // this event, and its `MessageDeleted` always follows it.
+    let mut conn = pool.write().await;
+    let Some(message) = messages::get(&mut conn, job.message_id).await? else {
+        return Ok(());
+    };
+    if message.deleted_at.is_some() {
+        return Ok(());
+    }
+    for (position, url) in ready {
+        link_previews::link(
+            &mut conn,
+            job.message_id,
+            url,
+            i64::try_from(position).unwrap_or(i64::MAX),
+        )
+        .await?;
+    }
+    let wire = crate::handlers::messages::to_proto(&mut conn, &message).await?;
+    bus.publish(
+        None,
+        server_envelope::Msg::MessageUpdated(v1::MessageUpdated {
+            message: Some(wire),
+            nonce: None,
+        }),
+    );
+    drop(conn);
     Ok(())
 }
 
@@ -141,27 +162,103 @@ fn expiry(ttl: Duration) -> Timestamp {
     Timestamp::from_millis(Timestamp::now().as_millis().saturating_add(extra))
 }
 
-async fn publish(
-    pool: &db::Pool,
-    bus: &EventBus,
-    message_id: ss_core::Id,
-) -> Result<(), db::Error> {
-    let mut conn = pool.read().await?;
-    let Some(message) = messages::get(&mut conn, message_id).await? else {
-        return Ok(());
-    };
-    let wire = crate::handlers::messages::to_proto(&mut conn, &message).await?;
-    drop(conn);
-    bus.publish(
-        None,
-        server_envelope::Msg::MessageUpdated(v1::MessageUpdated {
-            message: Some(wire),
-            nonce: None,
-        }),
-    );
-    Ok(())
-}
-
 fn fetch_timeout() -> Duration {
     Duration::from_secs(5)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use ss_core::{Id, Timestamp};
+
+    use super::{DAY, enrich, expiry};
+    use crate::{
+        db::{self, NewLinkPreview, NewMessage, PreviewStatus, link_previews, messages},
+        events::EventBus,
+        previews::{
+            PreviewJob,
+            fetch::{Fetcher, Lookup},
+        },
+    };
+
+    #[tokio::test]
+    async fn a_message_deleted_before_its_preview_resolves_is_not_republished() {
+        let pool = db::testing::pool().await;
+        let url = "https://example.com/page";
+        let content = format!("see {url}");
+        let message = {
+            let mut conn = pool.write().await;
+            let author = db::testing::user(&mut conn, 1).await.id;
+            let channel = db::testing::text_channel(&mut conn, 2, author).await.id;
+            // A cached card, so the worker resolves without a fetch.
+            link_previews::upsert(
+                &mut conn,
+                NewLinkPreview {
+                    url: url.to_owned(),
+                    status: PreviewStatus::Ready,
+                    title: Some("Hello".into()),
+                    description: None,
+                    image_url: None,
+                    site_name: None,
+                    expires_at: expiry(DAY),
+                },
+            )
+            .await
+            .unwrap();
+            let message = messages::insert(
+                &mut conn,
+                NewMessage {
+                    id: Id::generate(),
+                    channel_id: channel,
+                    author_id: Some(author),
+                    webhook_id: None,
+                    webhook_name: None,
+                    content: content.clone(),
+                    reply_to: None,
+                    mentions: Vec::new(),
+                    mentions_everyone: false,
+                },
+            )
+            .await
+            .unwrap();
+            // Deleted while its preview job waited in the queue.
+            messages::soft_delete(&mut conn, message.id, Timestamp::now())
+                .await
+                .unwrap();
+            message.id
+        };
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let fetcher = Fetcher::new(
+            Lookup::Fixed(std::collections::HashMap::new()),
+            false,
+            Vec::new(),
+            Vec::new(),
+        );
+        enrich(
+            &pool,
+            &bus,
+            &fetcher,
+            &PreviewJob {
+                message_id: message,
+                content,
+            },
+        )
+        .await
+        .unwrap();
+        let published = tokio::time::timeout(Duration::from_millis(200), events.recv()).await;
+        assert!(
+            published.is_err(),
+            "a deleted message was republished: {published:?}"
+        );
+        let mut conn = pool.read().await.unwrap();
+        assert!(
+            link_previews::links(&mut conn, message)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a deleted message was linked to a preview"
+        );
+    }
 }

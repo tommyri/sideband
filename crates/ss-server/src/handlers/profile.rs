@@ -74,19 +74,28 @@ impl Profiles {
             },
         )
         .await?;
-        let user = wire_user(&updated);
-        let member = v1::Member {
-            user: Some(user.clone()),
-            roles: role_ids(&mut conn, actor).await?,
-            presence: Some(self.registry.presence(actor)),
-        };
+        let member = member(&mut conn, &updated, self.registry.presence(actor)).await?;
         Ok(CommandReply {
-            ack: ack::Result::User(user),
+            ack: ack::Result::User(wire_user(&updated)),
             events: vec![server_envelope::Msg::MemberUpdated(v1::MemberUpdated {
                 member: Some(member),
             })],
         })
     }
+}
+
+/// Wire member for `user`: profile, role ids lowest first with `@everyone`,
+/// and `presence`. `MemberUpdated` and `MemberJoined` carry it.
+pub(crate) async fn member(
+    conn: &mut sqlx::SqliteConnection,
+    user: &db::User,
+    presence: v1::Presence,
+) -> Result<v1::Member, Error> {
+    Ok(v1::Member {
+        user: Some(wire_user(user)),
+        roles: role_ids(conn, user.id).await?,
+        presence: Some(presence),
+    })
 }
 
 fn chosen_name(current: &str, requested: &str) -> Result<String, Error> {

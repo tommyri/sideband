@@ -1,4 +1,5 @@
-//! In-memory voice seats. Forwarding and membership edits share one lock.
+//! In-memory voice seats, behind one `parking_lot::RwLock` shared with the
+//! datagram forwarder: forwarding and snapshots read, membership edits write.
 
 use std::collections::{HashMap, HashSet};
 

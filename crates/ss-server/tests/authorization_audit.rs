@@ -581,12 +581,19 @@ const OUTBOUND: &[(&str, &str, &[&str])] = &[
     ("connection.rs", "deliver", &["snapshot::delivers("]),
     // A leave names no channel; only connections that saw the arrival get it.
     ("registry.rs", "enqueue", &["admit("]),
-    // Seats are rechecked after every command and on resume.
+    // Seats are rechecked after every role, grant, override or guild channel
+    // change, after every Hello's permission reload, and on resume.
     (
         "voice/session.rs",
         "refresh_seats",
         &["may_hold(", ".refresh("],
     ),
+    (
+        "connection.rs",
+        "replies",
+        &["refreshes_guild", "refresh_seats("],
+    ),
+    ("connection.rs", "prepare_welcome", &["refresh_seats("]),
     ("voice/session.rs", "resume", &["may_hold("]),
     (
         "voice/session.rs",

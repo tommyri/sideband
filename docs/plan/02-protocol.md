@@ -183,7 +183,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
-| `MemberJoined` / `MemberLeft` / `MemberUpdated` | `Member{user, roles, presence}` | |
+| `MemberJoined` / `MemberLeft` / `MemberUpdated` | `Member{user, roles, presence}` | `MemberJoined` when an account registers, before its `PresenceUpdated`; not sent to the new member. `MemberLeft` is reserved: no server path disables or removes an account, and a banned account stays in the member list |
 | `PresenceUpdated` | `user_id`, `status`, `activity` | |
 | `VoiceStateUpdated` | `user_id`, `conn_id`, `channel_id?`, `self_mute`, `self_deaf`, `server_mute` | |
 | `TrackAdded` | `track_id`, `user_id`, `conn_id`, `kind` (AUDIO/VIDEO/SCREEN), `codec{name, sample_rate, channels}`, `channel_id` | Mapping for datagram demux |

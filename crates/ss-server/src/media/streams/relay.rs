@@ -72,7 +72,7 @@ impl Streams {
         }
         let prefix = prefix.freeze();
         let targets = {
-            let mut rooms = self.rooms.lock();
+            let mut rooms = self.rooms.write();
             let channel = rooms.seat(owner).map(|seat| seat.channel);
             let Some(track) = rooms
                 .video

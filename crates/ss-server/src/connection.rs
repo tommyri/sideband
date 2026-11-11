@@ -9,7 +9,11 @@
 //! Each command runs on its own task while the session keeps draining the
 //! event bus, so a command that waits on the database does not make the
 //! session fall behind. Commands from one connection still run one at a
-//! time, in order. DM channel events go only to that DM's members and are
+//! time, in order. A command that has started runs to the end and publishes
+//! its events from its own task even if its connection closes meanwhile, so
+//! a committed change is never left without its reload or its event. A
+//! registration is announced with `MemberJoined`. DM channel events go only
+//! to that DM's members and are
 //! applied from the event itself; role, override and guild channel changes
 //! make each session diff its guild channel view, at most once per
 //! [`REFRESH_DEBOUNCE`] for a burst.
@@ -440,8 +444,12 @@ impl Server {
                 wait,
             )));
         }
+        let registering = matches!(hello.auth, Some(v1::hello::Auth::Register(_)));
         let outcome = self.auth.hello(hello, peer).await;
         scrub(hello);
+        if registering && let Ok(authed) = &outcome {
+            self.announce_member(&authed.user).await;
+        }
         outcome.map_err(|error| {
             tracing::debug!(%error, "hello rejected");
             Box::new(error_envelope(
@@ -451,6 +459,27 @@ impl Server {
                 error.retry_after(),
             ))
         })
+    }
+
+    /// Publishes `MemberJoined` for an account that just registered, before
+    /// its presence, so connected clients learn of it without reconnecting.
+    /// The new session subscribes later and is not sent its own.
+    async fn announce_member(&self, user: &crate::db::User) {
+        let member = match self.pool.read().await {
+            Ok(mut conn) => {
+                crate::handlers::member(&mut conn, user, self.registry.presence(user.id)).await
+            }
+            Err(error) => Err(error.into()),
+        };
+        match member {
+            Ok(member) => self.bus.publish(
+                None,
+                server_envelope::Msg::MemberJoined(v1::MemberJoined {
+                    member: Some(member),
+                }),
+            ),
+            Err(error) => tracing::warn!(%error, user_id = %user.id, "new member not announced"),
+        }
     }
 
     async fn prepare_welcome(
@@ -477,6 +506,12 @@ impl Server {
                 return reject(connection, stream, &envelope).await;
             }
         };
+        // The snapshot build reloaded permissions, which may carry a change
+        // made outside this process (the operator CLI). Seats are otherwise
+        // rechecked only after role, override and channel commands.
+        for event in self.voice.refresh_seats() {
+            self.bus.publish(None, event);
+        }
         self.voice.fill(&mut snapshot, authed.user.id);
         let server_name = self.auth.server_name().await;
         let mut welcome = welcome_envelope(request_id, authed, conn_id, &server_name, snapshot);
@@ -670,8 +705,10 @@ impl View {
     }
 }
 
-/// The command running for this connection. Dropping it aborts the task, as
-/// dropping the connection always cancelled its command.
+/// The command running for this connection. Dropping it, when the
+/// connection closes, detaches the task rather than aborting it: the task
+/// may be past its commit, and the reload and publish after it must still
+/// happen. Only the reply to the closed connection is lost.
 struct Inflight {
     request_id: u32,
     task: tokio::task::JoinHandle<Answer>,
@@ -693,12 +730,6 @@ impl Inflight {
                 }
             }
         }
-    }
-}
-
-impl Drop for Inflight {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 
@@ -788,7 +819,9 @@ async fn read_inbound(
                 inflight = Some(Inflight {
                     request_id: envelope.request_id,
                     task: tokio::spawn(async move {
-                        replies(&task_server, &task_context, &envelope).await
+                        let answer = replies(&task_server, &task_context, &envelope).await;
+                        publish(&task_server, &task_context, answer.events.clone());
+                        answer
                     }),
                 });
             }
@@ -812,8 +845,8 @@ async fn read_inbound(
     Ok(())
 }
 
-/// Sends a finished command's reply, updates this session's view, and
-/// publishes the events for everyone else.
+/// Sends a finished command's reply and updates this session's view. The
+/// command's task has already published the events for everyone else.
 async fn finish(
     server: &Server,
     context: &AuthedContext,
@@ -850,7 +883,6 @@ async fn finish(
     if refresh {
         sync_channels(server, context, view, outbound).await?;
     }
-    publish(server, context, answer.events);
     Ok(())
 }
 
@@ -1289,7 +1321,12 @@ async fn replies(
     match result {
         Ok(reply) => {
             let mut events = reply.events;
-            events.extend(server.voice.refresh_seats());
+            // Only a role, grant, override or guild channel change can cost
+            // a seat or the speak bit; a chat message must not recheck every
+            // seat under the media lock.
+            if events.iter().any(refreshes_guild) {
+                events.extend(server.voice.refresh_seats());
+            }
             let removed = deleted_channels(&events);
             for channel in removed {
                 events.extend(server.voice.evacuate(channel));

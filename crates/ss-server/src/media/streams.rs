@@ -6,7 +6,7 @@ use crate::{
     registry::ConnectionRegistry,
     voice::{Outcome, rooms::Rooms},
 };
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use ss_core::{Id, Permissions};
 use ss_proto::{v1, validate::id_to_bytes};
 use std::{
@@ -209,13 +209,13 @@ fn hint(registry: &ConnectionRegistry, track: &Track) {
 
 /// Owns video policy and receives uni streams after authenticated Hello.
 pub struct Streams {
-    rooms: Arc<Mutex<Rooms>>,
+    rooms: Arc<RwLock<Rooms>>,
     perms: Arc<PermissionService>,
     counters: Arc<Counters>,
 }
 impl Streams {
-    pub(crate) fn new(rooms: Arc<Mutex<Rooms>>, perms: Arc<PermissionService>) -> Self {
-        let counters = Arc::clone(&rooms.lock().video.counters);
+    pub(crate) fn new(rooms: Arc<RwLock<Rooms>>, perms: Arc<PermissionService>) -> Self {
+        let counters = Arc::clone(&rooms.read().video.counters);
         Self {
             rooms,
             perms,
@@ -225,7 +225,7 @@ impl Streams {
     /// Current publication count and cumulative forwarding/reset totals.
     pub fn stats(&self) -> Stats {
         Stats {
-            active: self.rooms.lock().video.tracks.len(),
+            active: self.rooms.read().video.tracks.len(),
             bytes_forwarded: self.counters.bytes.load(Ordering::Relaxed),
             resets: self.counters.resets.load(Ordering::Relaxed),
             rejected: self.counters.rejected.load(Ordering::Relaxed),
@@ -248,7 +248,7 @@ impl Streams {
         }
     }
     fn command(&self, conn: Id, user: Id, command: &Msg) -> Result<Outcome, Error> {
-        let mut rooms = self.rooms.lock();
+        let mut rooms = self.rooms.write();
         let mut outcome = Outcome {
             ack: v1::ack::Result::Empty(v1::Empty {}),
             broadcast: Vec::new(),

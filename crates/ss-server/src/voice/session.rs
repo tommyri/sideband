@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use ss_core::{ChannelKind, Id, Permissions, VoiceProfile};
 use ss_proto::{v1, validate::id_from_bytes};
 
@@ -24,15 +24,57 @@ pub(crate) struct Outcome {
 /// Authenticated voice sessions. One user occupies one connection.
 pub struct Voice {
     perms: Arc<PermissionService>,
-    rooms: Arc<Mutex<Rooms>>,
+    rooms: Arc<RwLock<Rooms>>,
     streams: Arc<crate::media::streams::Streams>,
-    leases: Mutex<HashMap<String, Lease>>,
+    leases: Mutex<Leases>,
 }
 
 #[derive(Clone, Copy)]
 struct Lease {
     conn: Id,
     user: Id,
+    /// Which grant this is. A resume keeps the connection id, so a second
+    /// disconnect leases the same `conn` again; only the timer started for
+    /// this grant may end it.
+    grant: u64,
+}
+
+/// Seats held for a resume, by session token.
+#[derive(Default)]
+struct Leases {
+    held: HashMap<String, Lease>,
+    grants: u64,
+}
+
+impl Leases {
+    /// Holds `conn`'s seat for `token`. Returns the grant its timer ends.
+    fn grant(&mut self, token: String, conn: Id, user: Id) -> u64 {
+        self.grants += 1;
+        let grant = self.grants;
+        self.held.insert(token, Lease { conn, user, grant });
+        grant
+    }
+
+    /// Takes the lease `token` holds for `user`, ending it.
+    fn take(&mut self, token: &str, user: Id) -> Option<Lease> {
+        match self.held.get(token) {
+            Some(lease) if lease.user == user => self.held.remove(token),
+            _ => None,
+        }
+    }
+
+    /// Ends `grant` if `token` still holds it. `true` when its seat must now
+    /// be dropped; a lease granted again since is left alone.
+    fn expire(&mut self, token: &str, grant: u64) -> bool {
+        let expired = self
+            .held
+            .get(token)
+            .is_some_and(|lease| lease.grant == grant);
+        if expired {
+            self.held.remove(token);
+        }
+        expired
+    }
 }
 
 const RESUME_LEASE: Duration = Duration::from_secs(60);
@@ -42,7 +84,7 @@ impl Voice {
         perms: Arc<PermissionService>,
         registry: Arc<crate::registry::ConnectionRegistry>,
     ) -> (Arc<Self>, Arc<Forwarder>) {
-        let rooms = Arc::new(Mutex::new(Rooms::new(registry)));
+        let rooms = Arc::new(RwLock::new(Rooms::new(registry)));
         let streams = Arc::new(crate::media::streams::Streams::new(
             Arc::clone(&rooms),
             Arc::clone(&perms),
@@ -51,7 +93,7 @@ impl Voice {
             streams,
             perms,
             rooms: Arc::clone(&rooms),
-            leases: Mutex::new(HashMap::new()),
+            leases: Mutex::new(Leases::default()),
         });
         (voice, Arc::new(Forwarder::new(rooms)))
     }
@@ -63,11 +105,11 @@ impl Voice {
     /// Seats currently in a voice channel.
     #[must_use]
     pub fn member_count(&self) -> usize {
-        self.rooms.lock().member_count()
+        self.rooms.read().member_count()
     }
 
     pub(crate) fn attach(&self, conn: Id, user: Id, connection: quinn::Connection) {
-        self.rooms.lock().attach(conn, user, connection);
+        self.rooms.write().attach(conn, user, connection);
     }
 
     /// Reattaches a leased seat when the member may still hold it.
@@ -81,17 +123,11 @@ impl Voice {
         user: Id,
         connection: quinn::Connection,
     ) -> Result<Id, Vec<v1::server_envelope::Msg>> {
-        let lease = {
-            let mut leases = self.leases.lock();
-            match leases.get(token) {
-                Some(lease) if lease.user == user => leases.remove(token),
-                _ => None,
-            }
-        };
+        let lease = self.leases.lock().take(token, user);
         let Some(lease) = lease else {
             return Err(Vec::new());
         };
-        let mut rooms = self.rooms.lock();
+        let mut rooms = self.rooms.write();
         let allowed = rooms
             .seat(lease.conn)
             .is_some_and(|seat| self.may_hold(user, seat.channel, seat.flags.moved()));
@@ -127,24 +163,16 @@ impl Voice {
         user: Id,
         bus: crate::events::EventBus,
     ) -> bool {
-        if !self.rooms.lock().is_seated(conn) {
+        if !self.rooms.read().is_seated(conn) {
             return false;
         }
-        self.leases
-            .lock()
-            .insert(token.clone(), Lease { conn, user });
+        let granted = self.leases.lock().grant(token.clone(), conn, user);
         let voice = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(RESUME_LEASE).await;
-            let expired = voice
-                .leases
-                .lock()
-                .get(&token)
-                .is_some_and(|lease| lease.conn == conn);
-            if !expired {
+            if !voice.leases.lock().expire(&token, granted) {
                 return;
             }
-            voice.leases.lock().remove(&token);
             for event in voice.detach(conn) {
                 bus.publish(None, event);
             }
@@ -153,7 +181,7 @@ impl Voice {
     }
 
     pub(crate) fn detach(&self, conn: Id) -> Vec<v1::server_envelope::Msg> {
-        self.rooms.lock().detach(conn)
+        self.rooms.write().detach(conn)
     }
 
     /// `Some` when `msg` is a voice command this task owns.
@@ -186,7 +214,7 @@ impl Voice {
     /// removed; the rest get their speak bit updated. Video publishers and
     /// viewers are rechecked too. Returns the leave and removal events.
     pub(crate) fn refresh_seats(&self) -> Vec<v1::server_envelope::Msg> {
-        let mut rooms = self.rooms.lock();
+        let mut rooms = self.rooms.write();
         let mut events = rooms.video.refresh(&self.perms);
         events.extend(rooms.refresh(|user, channel, moved| {
             self.may_hold(user, channel, moved).then(|| {
@@ -216,17 +244,17 @@ impl Voice {
 
     /// Drop every seat in a channel that is about to disappear.
     pub(crate) fn evacuate(&self, channel: Id) -> Vec<v1::server_envelope::Msg> {
-        let conns = self.rooms.lock().channel_conns(channel);
+        let conns = self.rooms.read().channel_conns(channel);
         let mut events = Vec::new();
         for conn in conns {
-            events.extend(self.rooms.lock().leave(conn));
+            events.extend(self.rooms.write().leave(conn));
         }
         events
     }
 
     pub(crate) fn fill(&self, snapshot: &mut v1::Snapshot, viewer: Id) {
         let perms = Arc::clone(&self.perms);
-        let (states, tracks) = self.rooms.lock().snapshot(|channel| {
+        let (states, tracks) = self.rooms.read().snapshot(|channel| {
             perms
                 .check(viewer, Some(channel), Permissions::VIEW_CHANNEL)
                 .is_ok()
@@ -256,7 +284,7 @@ impl Voice {
         let profile = channel.voice_profile.unwrap_or(VoiceProfile::Voice);
         let events = self
             .rooms
-            .lock()
+            .write()
             .join(JoinPlan {
                 conn,
                 channel: channel_id,
@@ -286,7 +314,7 @@ impl Voice {
     fn leave(&self, conn: Id) -> Outcome {
         Outcome {
             ack: empty_ack(),
-            broadcast: self.rooms.lock().leave(conn),
+            broadcast: self.rooms.write().leave(conn),
             direct: Vec::new(),
         }
     }
@@ -294,7 +322,7 @@ impl Voice {
     fn set_flags(&self, conn: Id, self_mute: bool, self_deaf: bool) -> Result<Outcome, Error> {
         let broadcast = self
             .rooms
-            .lock()
+            .write()
             .set_flags(conn, self_mute, self_deaf)
             .map_err(join_error)?;
         Ok(Outcome {
@@ -322,7 +350,7 @@ impl Voice {
         drop(conn);
         let broadcast = self
             .rooms
-            .lock()
+            .write()
             .server_mute(user, command.muted)
             .into_iter()
             .collect();
@@ -372,17 +400,17 @@ impl Voice {
             Permissions::VIEW_CHANNEL,
             "missing view channel",
         )?;
-        let placed = self.rooms.lock().placed(target);
+        let placed = self.rooms.read().placed(target);
         let (conn, self_mute, self_deaf) = placed
             .filter(|(conn, _, _)| {
-                let current = self.rooms.lock().seat(*conn);
+                let current = self.rooms.read().seat(*conn);
                 current.is_some_and(|seat| self.sees(actor, seat.channel))
             })
             .ok_or(Error::Invalid("not in a voice channel"))?;
         let profile = channel.voice_profile.unwrap_or(VoiceProfile::Voice);
         let events = self
             .rooms
-            .lock()
+            .write()
             .join(JoinPlan {
                 conn,
                 channel: channel_id,
@@ -446,4 +474,30 @@ fn join_error(error: JoinError) -> Error {
 
 fn empty_ack() -> v1::ack::Result {
     v1::ack::Result::Empty(v1::Empty {})
+}
+
+#[cfg(test)]
+mod tests {
+    use ss_core::Id;
+
+    use super::Leases;
+
+    #[test]
+    fn a_first_lease_timer_does_not_end_a_second_lease() {
+        let mut leases = Leases::default();
+        let (conn, user) = (Id::generate(), Id::generate());
+        // Disconnect: the seat is leased and a 60 s timer starts.
+        let first = leases.grant("token".into(), conn, user);
+        // Resume within the lease keeps the same connection id...
+        assert!(leases.take("token", user).is_some());
+        // ...and a second disconnect leases the seat again, with its own timer.
+        let second = leases.grant("token".into(), conn, user);
+        // The first timer fires: the second lease must survive it.
+        assert!(
+            !leases.expire("token", first),
+            "the first lease's timer ended the second lease early"
+        );
+        assert!(leases.expire("token", second));
+        assert!(leases.take("token", user).is_none());
+    }
 }

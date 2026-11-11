@@ -71,12 +71,22 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
 - **Connection registry**: `user_id → ConnectionHandle` (a `quinn::Connection`
   clone plus an mpsc sender for outbound control messages). A user may have
   several connections (desktop + laptop); voice is per connection.
-- **Voice registry**: `channel_id → Vec<VoiceMember { conn_id, user_id, track_ids, deaf, server_mute }>`.
-  Stored in a `parking_lot::RwLock<HashMap>`; read-heavy on the datagram path.
+- **Voice registry** (`voice::rooms::Rooms`): seats by connection (channel,
+  track, mute/deaf/speak flags), the member set of each channel, server mutes,
+  and the video track table, all behind one `parking_lot::RwLock` shared by
+  `voice::Voice`, the media router and the video relay. The datagram path and
+  the `Welcome` voice snapshot take it for reading; joins, leaves, flag
+  changes, video commands and seat rechecks take it for writing. The lock is
+  never held across an `.await`. Seats are rechecked against permissions
+  (`refresh_seats`) only after a command that changed roles, grants,
+  overrides or guild channels, not after every command.
 - **Media router**: on datagram receive, parse the 8–10 byte header, look up
-  the sender's voice channel, and call `send_datagram` on every other member's
-  connection that isn't deafened. No decode, no copy beyond the slice. Drops
-  on a full send buffer are counted, never awaited.
+  the sender's voice channel under the read lock, and call `send_datagram` on
+  every other member's connection that isn't deafened, still under that read
+  lock. Fan-outs from different senders run in parallel on a multi-threaded
+  runtime; a membership change waits only for the fan-outs already running.
+  No decode, no copy beyond the slice. Drops on a full send buffer are
+  counted, never awaited.
 - **Domain services** are plain structs with `async fn`s over a `sqlx::SqlitePool`
   (WAL mode, `synchronous=NORMAL`, single writer via a connection pool of
   size 1 for writes plus a read pool).
@@ -84,7 +94,9 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   `tokio::sync::broadcast` channel; each connection task filters by
   permission/visibility and forwards to its control stream, waiting for room
   in its own bounded queue. Each command runs on its own task so the session
-  keeps draining the bus meanwhile. A session that falls behind the bus, or
+  keeps draining the bus meanwhile; the task publishes the command's events
+  and runs to the end even if its connection closes, so a commit is never
+  left without its permission reload or its event. A session that falls behind the bus, or
   whose queue for frames addressed to it by other tasks fills, is closed and
   resyncs from `Welcome`; no frame is dropped on an open connection. DM
   channel events are applied from the event by that DM's members only; role,
