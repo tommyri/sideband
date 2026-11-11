@@ -1,4 +1,8 @@
 //! Permission-aware datagram fan-out. The hot path never copies payloads or awaits.
+//!
+//! Forwarding takes the rooms lock for reading only, so datagrams from
+//! different senders fan out in parallel on a multi-threaded runtime, and a
+//! membership change waits only for the fan-outs already running.
 
 use std::{
     collections::HashMap,
@@ -10,7 +14,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use ss_core::Id;
 use ss_net::media::DatagramHeader;
 
@@ -18,7 +22,7 @@ use crate::{media::Stats, voice::rooms::Rooms};
 
 /// Forwards datagrams for [`crate::voice::Voice`].
 pub struct Forwarder {
-    rooms: Arc<Mutex<Rooms>>,
+    rooms: Arc<RwLock<Rooms>>,
     received: AtomicU64,
     forwarded: AtomicU64,
     rejected: AtomicU64,
@@ -52,7 +56,7 @@ pub enum ForwardOutcome {
 }
 
 impl Forwarder {
-    pub(crate) fn new(rooms: Arc<Mutex<Rooms>>) -> Self {
+    pub(crate) fn new(rooms: Arc<RwLock<Rooms>>) -> Self {
         Self {
             rooms,
             received: AtomicU64::new(0),
@@ -71,7 +75,7 @@ impl Forwarder {
             self.rejected.fetch_add(1, Ordering::Relaxed);
             return ForwardOutcome::Complete;
         };
-        let rooms = self.rooms.lock();
+        let rooms = self.rooms.read();
         let Some(seat) = rooms.seat(sender) else {
             self.rejected.fetch_add(1, Ordering::Relaxed);
             return ForwardOutcome::Complete;

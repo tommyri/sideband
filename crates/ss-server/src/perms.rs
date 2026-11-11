@@ -37,13 +37,26 @@ pub struct PermissionService {
     patches: parking_lot::Mutex<Patches>,
 }
 
-/// DM patches a reload in flight must re-apply. A reload reads the database
-/// without a lock, so a DM change committed and patched after that read
-/// began would otherwise be overwritten when the reload stores, and a member
-/// who left would regain access until the next reload. Every store goes
-/// through this lock; the database read does not.
+/// Orders the stores of reloads in flight and holds the DM patches they must
+/// re-apply. A reload reads the database without a lock, so two hazards
+/// remain when it stores, and both are settled under this lock:
+///
+/// - A reload that began earlier may finish later. Its read can predate a
+///   commit that a newer reload already stored, and storing it would give a
+///   demoted member their old permissions until the next reload. Each reload
+///   takes a ticket when it begins, and one whose ticket is older than the
+///   snapshot already stored drops what it read.
+/// - A DM change committed and patched after a reload's read began would be
+///   overwritten when that reload stores, and a member who left would regain
+///   access. The reload re-applies those patches.
+///
+/// Every store goes through this lock; the database read does not.
 #[derive(Default)]
 struct Patches {
+    /// Tickets handed to reloads, in the order they began.
+    tickets: u64,
+    /// Ticket of the reload whose read is in the cache. Zero is `open`.
+    stored: u64,
     /// Bumped by every [`PermissionService::set_direct`].
     generation: u64,
     /// Reloads in flight, by the generation they started at.
@@ -89,6 +102,8 @@ impl Patches {
 /// log growing for the life of the process.
 struct ReloadStart<'a> {
     service: &'a PermissionService,
+    /// Orders this reload against the others; see [`Patches`].
+    ticket: u64,
     generation: u64,
     finished: bool,
 }
@@ -128,6 +143,10 @@ impl PermissionService {
     }
 
     /// Replaces the snapshot. Call this after a role or override commit.
+    ///
+    /// Reloads may overlap (every `Hello` reloads too). The snapshot a call
+    /// leaves is never older than its own read: a reload that began before
+    /// this one and finishes after it does not replace it.
     pub async fn reload(&self) -> Result<(), db::Error> {
         let started = self.begin_reload();
         let snapshot = load(&self.pool).await;
@@ -136,17 +155,21 @@ impl PermissionService {
 
     fn begin_reload(&self) -> ReloadStart<'_> {
         let mut patches = self.patches.lock();
+        patches.tickets += 1;
+        let ticket = patches.tickets;
         let generation = patches.generation;
         *patches.active.entry(generation).or_default() += 1;
         ReloadStart {
             service: self,
+            ticket,
             generation,
             finished: false,
         }
     }
 
     /// Stores a loaded snapshot with every DM patch made since its read
-    /// began applied on top, then forgets patches no reload still needs.
+    /// began applied on top, unless a reload that began later has already
+    /// stored, then forgets patches no reload still needs.
     fn finish_reload(
         &self,
         mut started: ReloadStart<'_>,
@@ -155,12 +178,17 @@ impl PermissionService {
         started.finished = true;
         let mut patches = self.patches.lock();
         let result = snapshot.map(|mut snapshot| {
+            // The cache already holds a read that began after this one.
+            if started.ticket < patches.stored {
+                return;
+            }
             for (generation, channel, view) in &patches.log {
                 if *generation > started.generation {
                     snapshot.channels.insert(*channel, Arc::clone(view));
                 }
             }
             self.cache.store(Arc::new(snapshot));
+            patches.stored = started.ticket;
         });
         patches.release(started.generation);
         result
@@ -406,7 +434,7 @@ mod tests {
     use ss_core::{ChannelKind, Id, Permissions};
 
     use super::{PermissionService, load};
-    use crate::db::{self, NewChannel, channels, testing};
+    use crate::db::{self, NewChannel, NewRole, channels, roles, testing};
 
     #[tokio::test]
     async fn a_reload_that_read_before_a_dm_leave_does_not_restore_access() {
@@ -473,6 +501,50 @@ mod tests {
             "a stale reload gave a departed member access back"
         );
         assert!(view(ada) && view(cyd));
+    }
+
+    #[tokio::test]
+    async fn an_older_reload_never_replaces_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::Pool::open(dir.path().join("perms.db")).await.unwrap());
+        let (ada, role) = {
+            let mut conn = pool.write().await;
+            let ada = testing::user(&mut conn, 1).await.id;
+            let role = roles::insert(
+                &mut conn,
+                NewRole {
+                    id: Id::generate(),
+                    name: "Mods".into(),
+                    color: None,
+                    permissions: Permissions::MANAGE_CHANNELS,
+                    position: 1,
+                },
+            )
+            .await
+            .unwrap();
+            roles::assign(&mut conn, ada, role.id).await.unwrap();
+            (ada, role.id)
+        };
+        let perms = PermissionService::open(Arc::clone(&pool)).await.unwrap();
+        let manages = || perms.holds(ada, None, Permissions::MANAGE_CHANNELS);
+        assert!(manages());
+
+        // Someone's Hello starts a reload and reads while Ada is a moderator...
+        let hello = perms.begin_reload();
+        let stale = load(&pool).await;
+        // ...an admin demotes her and the command reloads and stores...
+        {
+            let mut conn = pool.write().await;
+            roles::unassign(&mut conn, ada, role).await.unwrap();
+        }
+        perms.reload().await.unwrap();
+        assert!(!manages());
+        // ...and only then does the Hello store what it read.
+        perms.finish_reload(hello, stale).unwrap();
+        assert!(
+            !manages(),
+            "an older reload restored the permissions of a demoted member"
+        );
     }
 
     #[tokio::test]
