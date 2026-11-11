@@ -5,7 +5,9 @@ use crate::{
     types::ApiError,
     voice_view::{self, ActiveVoiceView, MemberAction, ServerView, SpeakingView},
 };
-use ss_client_core::{AudioConfig, Client, ConnectionState, StateStore, VoiceSession, v1};
+use ss_client_core::{
+    AudioConfig, Client, ConnectionState, Error, StateStore, VoiceSession, v1, voice::Membership,
+};
 use ss_core::Id;
 use ss_net::pins::ServerId;
 use std::{
@@ -18,7 +20,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub struct ActiveVoice {
     pub server: ServerId,
     pub session: Arc<VoiceSession>,
-    pub connection: Id,
     /// The call's client state, readable without the client map lock.
     pub store: StateStore,
     pub muted: bool,
@@ -32,16 +33,20 @@ struct PttInputs {
     global: bool,
 }
 impl ActiveVoice {
-    fn new(server: ServerId, session: VoiceSession, client: &Client) -> Result<Self, ApiError> {
-        Ok(Self {
-            connection: own_connection(client)?,
+    fn new(server: ServerId, session: VoiceSession, client: &Client) -> Self {
+        Self {
             store: client.state(),
             muted: session.self_muted(),
             deafened: session.self_deafened(),
             server,
             session: Arc::new(session),
             ptt: PttInputs::default(),
-        })
+        }
+    }
+    /// The connection holding the call's seat; it changes when a reconnect
+    /// could not resume the lease.
+    pub fn connection(&self) -> Id {
+        self.session.connection()
     }
     /// Whether the call's server connection is up. Never waits for a lock.
     pub fn connected(&self) -> bool {
@@ -81,23 +86,6 @@ fn server_id(value: &str) -> Result<ServerId, ApiError> {
 }
 fn disconnected() -> ApiError {
     ApiError::new("disconnected", "Connect to the server first.")
-}
-
-fn own_connection(client: &Client) -> Result<Id, ApiError> {
-    let state = client.state();
-    let state = state.read();
-    if let Some(conn) = state.own_conn {
-        return Ok(conn);
-    }
-    // Older servers do not name our connection.
-    let user = state.own_user.as_ref().ok_or_else(disconnected)?;
-    let track = state
-        .tracks
-        .values()
-        .filter(|t| t.user_id == user.id && t.kind == v1::TrackKind::Audio as i32)
-        .max_by_key(|t| t.track_id)
-        .ok_or_else(disconnected)?;
-    Id::try_from(track.conn_id.as_ref()).map_err(|_| disconnected())
 }
 
 /// Called under operations. Release devices before removing/replacing clients.
@@ -240,8 +228,7 @@ async fn join_with_config(
     session.set_cues_enabled(!preferences.dnd);
     session.set_control_cues_enabled(preferences.sounds(server.as_str()));
     session.play_cue(ss_client_core::voice::Cue::Join);
-    let active = ActiveVoice::new(server, session, &client)?;
-    *state.voice.lock().await = Some(active);
+    *state.voice.lock().await = Some(ActiveVoice::new(server, session, &client));
     Ok(())
 }
 
@@ -432,40 +419,14 @@ pub async fn watch(app: AppHandle) {
 }
 
 /// One watch tick, called under operations. Returns the speaking users.
+/// The core decides what the seat is doing; the shell only acts on it.
 async fn observe(app: &AppHandle, state: &AppState) -> (String, Vec<String>) {
     let mut voice = state.voice.lock().await;
     let Some(active) = voice.as_mut() else {
         return (String::new(), Vec::new());
     };
-    let client = state.client(&active.server);
-    // A reconnect that did not resume the seat has a new connection id.
-    let (connected, retrying, channel) = client.as_ref().map_or((false, false, None), |client| {
-        let store = client.state();
-        let current = store.read();
-        if let Some(conn) = current.own_conn {
-            active.connection = conn;
-        }
-        (
-            current.connection == ConnectionState::Connected,
-            matches!(current.connection, ConnectionState::Reconnecting { .. }),
-            current
-                .voice_states
-                .get(&active.connection)
-                .and_then(|v| v.channel_id.as_ref())
-                .and_then(|c| Id::try_from(c.as_ref()).ok()),
-        )
-    });
-    if retrying {
-        active.release_ptt();
-        return (String::new(), Vec::new());
-    }
-    let (Some(client), Some(channel)) = (client.filter(|_| connected), channel) else {
-        voice.take();
-        let _ = app.emit("ss://voice-session", ());
-        return (String::new(), Vec::new());
-    };
-    if channel == active.session.channel() {
-        return (
+    match active.session.reconcile() {
+        Membership::Seated => (
             active.server.as_str().into(),
             active
                 .session
@@ -473,31 +434,54 @@ async fn observe(app: &AppHandle, state: &AppState) -> (String, Vec<String>) {
                 .into_iter()
                 .map(|id| id.to_string())
                 .collect(),
-        );
-    }
-    // Follow moderator moves muted, adopting the destination profile. The
-    // voice lock is released while joining so PTT and mute never wait on it.
-    let server = active.server.clone();
-    voice.take();
-    drop(voice);
-    let config = AudioConfig {
-        start_muted: true,
-        ..crate::audio::load(app)
-            .and_then(|p| p.config())
-            .unwrap_or_default()
-    };
-    match VoiceSession::start(&client, channel, config).await {
-        Ok(session) => {
-            if let Ok(active) = ActiveVoice::new(server, session, &client) {
-                *state.voice.lock().await = Some(active);
-            }
+        ),
+        Membership::Retrying => {
+            // The core released the gate; forget the held keys as well.
+            active.release_ptt();
+            (String::new(), Vec::new())
         }
+        Membership::Ended => {
+            voice.take();
+            let _ = app.emit("ss://voice-session", ());
+            (String::new(), Vec::new())
+        }
+        Membership::Follow { channel } => {
+            // The voice lock is released while joining so PTT and mute
+            // never wait on it.
+            let previous = voice.take();
+            drop(voice);
+            if let Some(previous) = previous {
+                follow(app, state, previous, channel).await;
+            }
+            (String::new(), Vec::new())
+        }
+    }
+}
+
+/// Restart the call where a moderator moved it. The core applies the
+/// follow rule (muted, the destination's profile); the shell supplies the
+/// saved devices and publishes the result.
+async fn follow(app: &AppHandle, state: &AppState, previous: ActiveVoice, channel: Id) {
+    let ActiveVoice {
+        server, session, ..
+    } = previous;
+    let config = crate::audio::load(app)
+        .and_then(|p| p.config())
+        .unwrap_or_default();
+    let next = match state.client(&server) {
+        Some(client) => session
+            .follow(&client, channel, config)
+            .await
+            .map(|session| ActiveVoice::new(server, session, &client)),
+        None => Err(Error::Disconnected),
+    };
+    match next {
+        Ok(active) => *state.voice.lock().await = Some(active),
         Err(error) => {
             let _ = app.emit("ss://voice-error", error.to_string());
         }
     }
     let _ = app.emit("ss://voice-session", ());
-    (String::new(), Vec::new())
 }
 
 #[cfg(test)]

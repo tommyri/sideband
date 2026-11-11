@@ -195,7 +195,7 @@ move:
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
 | [T-102](T-102-client-core-notification-policy.md) | Notification policy moves to ss-client-core | M | T-095 | todo |
-| [T-103](T-103-client-core-voice-following.md) | Voice membership reconciliation moves to ss-client-core | M | T-084, T-089, T-095 | todo |
+| [T-103](T-103-client-core-voice-following.md) | Voice membership reconciliation moves to ss-client-core | M | T-084, T-089, T-095 | in-progress |
 | [T-104](T-104-download-provenance-marks.md) | Mark saved downloads as coming from the internet | S | T-095, T-096 | todo |
 | [T-105](T-105-shell-permission-projections.md) | Remaining permission projections use ss-client-core authority | S | T-095, T-096 | todo |
 

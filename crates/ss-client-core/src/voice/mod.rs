@@ -2,7 +2,10 @@
 
 mod graph;
 mod host;
+mod membership;
 mod worker;
+
+pub use membership::Membership;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -288,6 +291,9 @@ pub struct VoiceSession {
     tasks: Vec<JoinHandle<()>>,
     stats: Arc<RwLock<VoiceStats>>,
     requested: Arc<Mutex<SelfState>>,
+    /// The connection holding the seat. A reconnect that did not resume the
+    /// lease changes it; [`Self::reconcile`] keeps it current.
+    connection: Mutex<Id>,
 }
 
 /// The latest self-mute/deafen request. `revision` orders requests so only
@@ -326,7 +332,7 @@ impl VoiceSession {
             })
             .await?;
         let deadline = tokio::time::Instant::now() + super::connection::DEADLINE;
-        let initial = loop {
+        let (initial, connection) = loop {
             let tracks = load_tracks(
                 &client.store,
                 client.storage.clone(),
@@ -334,8 +340,8 @@ impl VoiceSession {
                 channel,
             )
             .await?;
-            if tracks.own != 0 {
-                break tracks;
+            if let Some(conn) = tracks.own_conn {
+                break (tracks, conn);
             }
             tokio::time::timeout_at(deadline, events.recv())
                 .await
@@ -382,7 +388,72 @@ impl VoiceSession {
             tasks,
             stats,
             requested,
+            connection: Mutex::new(connection),
         })
+    }
+
+    /// Follow a moderator move reported by [`Self::reconcile`]: stop this
+    /// call and start one in `channel`, muted, with that channel's profile
+    /// and bitrate. The rest of `config` (devices, gate, deafen) applies as
+    /// given, and the host's cue switches carry over.
+    ///
+    /// Devices are released first when no one else holds the session.
+    pub async fn follow(
+        self: Arc<Self>,
+        client: &Client,
+        channel: Id,
+        config: AudioConfig,
+    ) -> Result<Self, Error> {
+        if client.address.id()? != self.server {
+            return Err(Error::Protocol("follow needs the call's own client"));
+        }
+        let cues = self.worker.as_ref().map(|worker| {
+            (
+                worker.shared.cues_enabled.load(Ordering::Relaxed),
+                worker.shared.controls_enabled.load(Ordering::Relaxed),
+            )
+        });
+        match Arc::try_unwrap(self) {
+            Ok(mut session) => session.shutdown().await,
+            Err(shared) => drop(shared),
+        }
+        let config = AudioConfig {
+            start_muted: true,
+            ..config
+        };
+        let session = Self::start(client, channel, config).await?;
+        if let Some((cues, controls)) = cues {
+            session.set_cues_enabled(cues);
+            session.set_control_cues_enabled(controls);
+        }
+        Ok(session)
+    }
+
+    /// Reconcile the call with its seat; hosts call this at UI cadence and
+    /// act on the answer. Reads only the call's own state and never waits.
+    ///
+    /// While the connection retries, this releases push-to-talk. A host
+    /// that combines several PTT inputs resets them as well.
+    pub fn reconcile(&self) -> Membership {
+        // A stopped client cannot report its state any more.
+        if self.commands.is_closed() {
+            return Membership::Ended;
+        }
+        let membership = membership::membership(
+            &self.store.read(),
+            &mut self.connection.lock(),
+            self.channel,
+        );
+        if membership == Membership::Retrying {
+            self.release_ptt();
+        }
+        membership
+    }
+
+    /// The connection holding the call's seat, as of the last
+    /// [`Self::reconcile`].
+    pub fn connection(&self) -> Id {
+        *self.connection.lock()
     }
 
     /// Current joined channel.
@@ -827,6 +898,8 @@ fn channel_profile(store: &StateStore, channel: Id) -> Result<(VoiceProfile, u32
 
 struct Tracks {
     own: u32,
+    /// The connection publishing `own`, once the seat has a track.
+    own_conn: Option<Id>,
     remote: Vec<TrackSpec>,
 }
 
@@ -855,18 +928,16 @@ async fn load_tracks(
         // connection's track is ours. Older servers do not name our
         // connection, so fall back to the newest track of our user.
         let own = match state.own_conn {
-            Some(own_conn) => tracks
-                .iter()
-                .find(|(_, _, conn)| *conn == own_conn)
-                .map(|(track, _, _)| *track),
+            Some(own_conn) => tracks.iter().find(|(_, _, conn)| *conn == own_conn),
             None => tracks
                 .iter()
                 .filter(|(_, user, _)| *user == own_user)
-                .map(|(track, _, _)| *track)
-                .max(),
-        };
-        (own.unwrap_or(0), tracks)
+                .max_by_key(|(track, _, _)| *track),
+        }
+        .map(|(track, _, conn)| (*track, *conn));
+        (own, tracks)
     };
+    let (own, own_conn) = own.map_or((0, None), |(track, conn)| (track, Some(conn)));
     let users: BTreeSet<_> = tracks
         .iter()
         .filter(|(track, _, _)| *track != own)
@@ -904,7 +975,11 @@ async fn load_tracks(
             }
         })
         .collect();
-    Ok(Tracks { own, remote })
+    Ok(Tracks {
+        own,
+        own_conn,
+        remote,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1080,6 +1155,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tracks.own, 5);
+        assert_eq!(tracks.own_conn, Some(ours));
         let mut remote: Vec<_> = tracks.remote.iter().map(|spec| spec.id).collect();
         remote.sort_unstable();
         assert_eq!(remote, [6, 7], "the other device is heard like anyone else");
