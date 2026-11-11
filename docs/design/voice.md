@@ -161,6 +161,14 @@ Each enabled stage must finish well under the frame duration. T-053 budgets
 uses WASAPI shared mode. macOS uses CoreAudio. The per-OS reasons are
 decision D7 in [decisions.md](decisions.md).
 
+Mono capture takes one device input, the first unless the user picks
+another in audio settings (`CaptureChannel`). Averaging every input stays
+available as an option: on a two-input interface with the microphone on
+input 1 it costs 6 dB, on an eight-input one 18 dB plus the noise of the
+unused inputs. Stereo capture takes inputs 1 and 2. VoiceProcessingIO
+chooses its own microphone and ignores the setting. Every callback moves
+whole frames between device and ring, so left and right cannot swap.
+
 The capture and playback streams expose `cpal`'s hardware timestamps
 (`StreamTrait::now` in 0.18). Mouth-to-ear measurement and, later, lining a
 screen share up with a voice both use that clock.

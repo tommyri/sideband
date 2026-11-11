@@ -591,7 +591,7 @@ impl Replacement {
         channels: usize,
         events: &tokio::sync::broadcast::Sender<ClientEvent>,
     ) -> Self {
-        let capture_config = graph_config(channels);
+        let capture_config = graph_config(channels, config);
         if config.device_backend != DeviceBackend::Portable {
             return Self::OnWorker { failed: None };
         }
@@ -623,11 +623,11 @@ impl Replacement {
         previous: &AudioConfig,
     ) -> Result<(), String> {
         let channels = runtime.graph.channels();
-        let capture_config = graph_config(channels);
         runtime.pacer.reset();
         match self {
             Self::Opened { portable, result } => {
                 let applied = if result.is_ok() { config } else { previous };
+                let capture_config = graph_config(channels, applied);
                 runtime.devices = Some(Devices::from_portable(*portable, applied, capture_config));
                 result
             }
@@ -636,10 +636,11 @@ impl Replacement {
                 let hosts = Arc::clone(&runtime.hosts);
                 let result = match failed {
                     Some(error) => Err(error),
-                    None => open_devices(hosts(), config, capture_config, &events)
+                    None => open_devices(hosts(), config, graph_config(channels, config), &events)
                         .map(|devices| runtime.devices = Some(devices)),
                 };
                 if result.is_err() {
+                    let capture_config = graph_config(channels, previous);
                     runtime.devices =
                         Some(open_previous(hosts(), previous, capture_config, &events));
                 }
@@ -957,7 +958,7 @@ impl Runtime {
         graph.configure(&config);
         let (chain, vad) = build_processing(&config, graph.channels())?;
         let devices = if config.source == AudioSource::Device {
-            let capture_config = graph_config(graph.channels());
+            let capture_config = graph_config(graph.channels(), &config);
             Some(open_devices(hosts(), &config, capture_config, &events)?)
         } else {
             None
@@ -1121,6 +1122,7 @@ impl Runtime {
         config.start_deafened = self.shared.deaf.load(Ordering::Relaxed);
         let reopen = config.source == AudioSource::Device
             && (self.config.input_device != config.input_device
+                || self.config.input_channel != config.input_channel
                 || self.config.output_device != config.output_device
                 || self.config.device_backend != config.device_backend);
         let channels = self.graph.channels();
@@ -1569,12 +1571,13 @@ fn send_device_error(events: &tokio::sync::broadcast::Sender<ClientEvent>, error
     let _ = events.send(ClientEvent::VoiceDevice(state));
 }
 
-fn graph_config(channels: usize) -> GraphConfig {
-    if channels == 2 {
+fn graph_config(channels: usize, config: &AudioConfig) -> GraphConfig {
+    let graph = if channels == 2 {
         GraphConfig::STEREO
     } else {
         GraphConfig::MONO
-    }
+    };
+    graph.with_input(config.input_channel)
 }
 
 /// Playback queue counters, published with the worker stats.
@@ -2277,7 +2280,7 @@ mod tests {
     /// Unplug and replug devices under a running worker, through the mock host.
     mod recovery {
         use ss_audio::{
-            device::{DeviceId, Direction},
+            device::{CaptureChannel, DeviceId, Direction},
             processing::MAX_RENDER_BATCH,
         };
 
@@ -2614,6 +2617,25 @@ mod tests {
                 Some(id("headset")),
                 "Apply left the capture stream closed"
             );
+        }
+
+        #[test]
+        fn apply_reopens_capture_on_the_chosen_input_channel() {
+            let world = mock::world(&["interface"], &["speakers"]);
+            let mut runtime = device_runtime(&world, AudioConfig::default());
+            let asked = || world.lock().capture_config.map(|config| config.input);
+            assert_eq!(asked(), Some(CaptureChannel::FIRST));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            runtime.update(Update::Configure {
+                config: AudioConfig {
+                    input_channel: CaptureChannel::Index(1),
+                    ..runtime.config.clone()
+                },
+                reply: tx,
+            });
+            assert_eq!(settle(&mut runtime, rx), Ok(()));
+            assert_eq!(asked(), Some(CaptureChannel::Index(1)));
+            assert!(open_on(&runtime, Direction::Capture).is_some());
         }
 
         #[test]

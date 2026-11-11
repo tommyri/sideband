@@ -7,6 +7,7 @@ export type { AudioPreferences } from '../../../lib/generated/AudioPreferences'
 export const defaults: AudioPreferences = {
   version: 1,
   input: null,
+  inputChannel: 1,
   output: null,
   mode: 'ptt',
   binding: '',
@@ -40,6 +41,7 @@ export function migratePreferences(value: unknown): AudioPreferences {
   }
   result.version = 1
   const ranges = {
+    inputChannel: [0, 64],
     releaseMs: [0, 2000],
     threshold: [-96, 0],
     hangoverMs: [0, 5000],
@@ -51,8 +53,9 @@ export function migratePreferences(value: unknown): AudioPreferences {
   } as const
   for (const key of Object.keys(ranges) as (keyof typeof ranges)[]) {
     const [min, max] = ranges[key]
-    if (!Number.isFinite(result[key]) || result[key] < min || result[key] > max)
-      result[key] = defaults[key]
+    const value = result[key]
+    const whole = key !== 'inputChannel' || Number.isInteger(value)
+    if (!Number.isFinite(value) || value < min || value > max || !whole) result[key] = defaults[key]
   }
   if (!['ptt', 'vad', 'open'].includes(result.mode)) result.mode = 'ptt'
   if (!['off', 'sonora', 'rnnoise'].includes(result.noise)) result.noise = 'off'

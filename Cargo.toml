@@ -111,6 +111,13 @@ objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = 
   "AudioOutputUnit",
   "AudioUnitProperties",
   "block2",
+  "objc2-core-audio-types",
+] }
+# `AudioBufferList` and `AudioTimeStamp` for the VoiceProcessingIO input proc,
+# which renders into a buffer sized before the unit starts.
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "CoreAudioBaseTypes",
 ] }
 parking_lot = "0.13.0"
 prost = "0.14"

@@ -2,7 +2,7 @@
 use crate::{state::AppState, types::ApiError};
 use serde::{Deserialize, Serialize};
 use ss_audio::{
-    device::{DeviceManager, GraphConfig},
+    device::{CaptureChannel, DeviceManager, GraphConfig},
     processing::{Backend, NoiseSuppression, ProcessingConfig, SuppressionLevel},
     vad,
 };
@@ -27,6 +27,9 @@ fn error(e: impl std::fmt::Display) -> ApiError {
 pub struct AudioPreferences {
     pub version: u8,
     pub input: Option<String>,
+    /// The microphone's input on a multi-input device, from 1; 0 averages
+    /// every input. Records without it take input 1.
+    pub input_channel: u8,
     pub output: Option<String>,
     pub mode: String,
     pub binding: String,
@@ -48,6 +51,7 @@ impl Default for AudioPreferences {
         Self {
             version: 1,
             input: None,
+            input_channel: 1,
             output: None,
             mode: "ptt".into(),
             binding: String::new(),
@@ -69,6 +73,7 @@ impl Default for AudioPreferences {
 impl AudioPreferences {
     pub fn config(&self) -> Result<AudioConfig, ApiError> {
         if self.version != 1
+            || self.input_channel > MAX_INPUT_CHANNEL
             || self.release_ms > 2000
             || self.hangover_ms > 5000
             || !(-96.0..=0.0).contains(&self.threshold)
@@ -122,6 +127,10 @@ impl AudioPreferences {
         };
         Ok(AudioConfig {
             input_device: resolve(&self.input, true)?,
+            input_channel: match self.input_channel {
+                0 => CaptureChannel::Average,
+                n => CaptureChannel::Index(u16::from(n - 1)),
+            },
             output_device: resolve(&self.output, false)?,
             gate,
             release_delay: Duration::from_millis(self.release_ms.into()),
@@ -147,6 +156,8 @@ impl AudioPreferences {
         })
     }
 }
+/// Highest input number the settings accept.
+const MAX_INPUT_CHANNEL: u8 = 64;
 pub fn load(app: &tauri::AppHandle) -> Result<AudioPreferences, ApiError> {
     let store = app
         .store_builder("audio.json")
@@ -308,7 +319,10 @@ fn preview(
     } else {
         Some(
             manager
-                .open_capture(config.input_device.as_ref(), GraphConfig::MONO)
+                .open_capture(
+                    config.input_device.as_ref(),
+                    GraphConfig::MONO.with_input(config.input_channel),
+                )
                 .map_err(error)?,
         )
     };
@@ -391,6 +405,18 @@ mod tests {
         assert!(!old.echo && !old.gain && !old.apple);
         assert_eq!(old.noise, "off");
         assert_eq!(old.release_ms, 150);
+        assert_eq!(old.input_channel, 1);
+    }
+    #[test]
+    fn the_input_channel_reaches_the_device_layer() {
+        let mut p = AudioPreferences::default();
+        assert_eq!(p.config().unwrap().input_channel, CaptureChannel::Index(0));
+        p.input_channel = 2;
+        assert_eq!(p.config().unwrap().input_channel, CaptureChannel::Index(1));
+        p.input_channel = 0;
+        assert_eq!(p.config().unwrap().input_channel, CaptureChannel::Average);
+        p.input_channel = 65;
+        assert!(p.config().is_err());
     }
     #[test]
     fn invalid_ranges_and_unknown_versions_fail_before_devices_open() {

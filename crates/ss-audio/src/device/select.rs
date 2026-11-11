@@ -5,18 +5,70 @@ use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigR
 
 use super::GRAPH_RATE;
 
+/// Which device inputs make up mono capture.
+///
+/// A microphone on input 1 of a multi-input interface keeps its level only
+/// when that one input is taken: averaging two inputs costs 6 dB, eight
+/// inputs 18 dB, plus the noise of the unused ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureChannel {
+    /// One input, counted from zero. An index the device does not have
+    /// falls back to the first input.
+    Index(u16),
+    /// The mean of all device inputs.
+    Average,
+}
+
+impl Default for CaptureChannel {
+    /// The first input.
+    fn default() -> Self {
+        Self::FIRST
+    }
+}
+
+impl CaptureChannel {
+    /// The first device input, the default.
+    pub const FIRST: Self = Self::Index(0);
+
+    /// The zero-based input to take from a device with `device_channels`
+    /// inputs, or `None` to average them.
+    #[must_use]
+    pub fn resolve(self, device_channels: usize) -> Option<usize> {
+        match self {
+            Self::Average if device_channels > 1 => None,
+            Self::Index(index) if usize::from(index) < device_channels => Some(usize::from(index)),
+            Self::Average | Self::Index(_) => Some(0),
+        }
+    }
+}
+
 /// What the rest of the audio graph sends and receives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphConfig {
     /// `1` for mono, `2` for stereo.
     pub channels: u16,
+    /// Mono capture only: the device inputs to take. Stereo capture takes
+    /// inputs 1 and 2; playback and Apple's VoiceProcessingIO ignore it.
+    pub input: CaptureChannel,
 }
 
 impl GraphConfig {
-    /// Mono 48 kHz frames.
-    pub const MONO: Self = Self { channels: 1 };
+    /// Mono 48 kHz frames from the first device input.
+    pub const MONO: Self = Self {
+        channels: 1,
+        input: CaptureChannel::FIRST,
+    };
     /// Stereo 48 kHz frames.
-    pub const STEREO: Self = Self { channels: 2 };
+    pub const STEREO: Self = Self {
+        channels: 2,
+        input: CaptureChannel::FIRST,
+    };
+
+    /// The same graph, capturing from `input`.
+    #[must_use]
+    pub const fn with_input(self, input: CaptureChannel) -> Self {
+        Self { input, ..self }
+    }
 
     /// Interleaved samples in one 10 ms frame.
     #[must_use]
@@ -102,7 +154,17 @@ fn frames_for(sample_rate: u32, milliseconds: u32) -> u32 {
 mod tests {
     use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
 
-    use super::{choose_buffer_size, choose_format, frames_for};
+    use super::{CaptureChannel, choose_buffer_size, choose_format, frames_for};
+
+    #[test]
+    fn a_missing_input_falls_back_to_the_first() {
+        assert_eq!(CaptureChannel::default().resolve(8), Some(0));
+        assert_eq!(CaptureChannel::Index(3).resolve(8), Some(3));
+        assert_eq!(CaptureChannel::Index(3).resolve(2), Some(0));
+        assert_eq!(CaptureChannel::Average.resolve(8), None);
+        // Nothing to average on a mono device.
+        assert_eq!(CaptureChannel::Average.resolve(1), Some(0));
+    }
 
     fn range(
         channels: u16,

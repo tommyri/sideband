@@ -50,6 +50,23 @@ describe('audio preferences', () => {
     ).toEqual(defaults)
     expect(migratePreferences(null)).toEqual(defaults)
     expect(() => migratePreferences({ version: 9 })).toThrow('newer')
+    expect(migratePreferences({ version: 1, inputChannel: 3 }).inputChannel).toBe(3)
+    expect(migratePreferences({ version: 1, inputChannel: 0 }).inputChannel).toBe(0)
+    for (const inputChannel of [65, -1, 1.5, NaN])
+      expect(migratePreferences({ version: 1, inputChannel }).inputChannel).toBe(1)
+  })
+  it('takes the first input by default and saves the chosen one', async () => {
+    render(<AudioSettings close={() => {}} />)
+    const select = await screen.findByLabelText('Microphone input')
+    expect(select).toHaveValue('1')
+    fireEvent.change(select, { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+    await screen.findByText('Applied and saved.')
+    expect(invokeBridge).toHaveBeenCalledWith('save_audio', {
+      preferences: { ...defaults, inputChannel: 2 },
+    })
+    fireEvent.change(select, { target: { value: '0' } })
+    expect(select).toHaveDisplayValue('Average of all inputs')
   })
   it('offers only supported models and applies native settings', async () => {
     render(<AudioSettings close={() => {}} />)
