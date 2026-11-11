@@ -112,6 +112,8 @@ with the server on the VPS.
 | Regenerate `pnpm-lock.yaml` with the pinned Node and pnpm; `pnpm install --frozen-lockfile` and `pnpm check` leave git clean | [T-098](T-098-deploy-ci-hygiene.md), [T-095](T-095-desktop-shell-hardening.md) | open | – | – | – |
 | Dispatch `ci.yml` (first Linux run of the feature steps and Compose smoke, first `windows-2025`) and `public-repo.yml` with Gitleaks | [T-098](T-098-deploy-ci-hygiene.md) | – | – | – | GitHub open |
 | Dispatch `fuzz.yml` with every target | [T-101](T-101-router-tolerance-parser-fuzzing.md), [T-067](T-067-security-acceptance.md) | – | – | – | GitHub open |
+| Dispatch `ci.yml`: `cargo deny` passes with the dated RUSTSEC-2026-0459 ignore | [T-110](T-110-ci-release-followups.md) | – | – | – | GitHub open |
+| Dispatch `fuzz.yml`: all seven targets on `ubuntu-24.04`, locked fetch passes, `fuzz/Cargo.lock` unchanged; Dependabot accepts `/.github/buildkit` | [T-110](T-110-ci-release-followups.md) | – | – | – | GitHub open |
 | Environments `desktop-release`, `desktop-signing`, `server-release` with secrets moved in; rulesets for `main` and `server-v*` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
 | Desktop release from a non-main branch fails; `server-v0.1.0` dry run, re-dispatch without `force` fails; first update-enabled release with no signing variables in the log and `gh attestation verify` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
 | Signing credentials provisioned; fresh install and N→N+1 updater upgrade of every package | [T-057](T-057-packaging-updater.md) | open | open | open | GitHub |

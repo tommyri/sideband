@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
           targets: ${{ matrix.target }}
@@ -200,8 +200,14 @@ jobs:
           if [ "$MOVE_LATEST" = true ]; then tags+=(--tag "$IMAGE:latest"); fi
           # Dockerfile.release only copies files, so both platforms build without emulation
           # and are pushed as one index: no per-architecture tags are ever created.
+          # Pinned by tag and digest in .github/buildkit/Dockerfile, which Dependabot updates.
+          buildkit=$(sed -n 's/^FROM //p' .github/buildkit/Dockerfile)
+          if [[ ! "$buildkit" =~ ^moby/buildkit:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::.github/buildkit/Dockerfile must have one FROM moby/buildkit:vX.Y.Z@sha256:<digest> line"
+            exit 1
+          fi
           docker buildx create --name sideband-release --driver docker-container \
-            --driver-opt image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+            --driver-opt "image=$buildkit"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io; docker buildx rm sideband-release' EXIT
           docker buildx build --builder sideband-release --platform linux/amd64,linux/arm64 \

@@ -63,9 +63,10 @@ jobs:
       # Windows signing happens inside `tauri build` (the app, the NSIS uninstaller and
       # both installers), so the certificate must be in the store during the build. It
       # is imported before any dependency code runs in this job, so no build script sees
-      # the PFX or its password. The key is marked non-exportable, but a build script
-      # can still sign with it, and the runner user is an administrator. Moving Windows
-      # signing out of the build is a recorded follow-up (docs/release.md).
+      # the PFX or its password. Every later step (pnpm install scripts, desktop tests,
+      # the build) can still sign with the key, and since the runner user is an
+      # administrator the non-exportable flag does not stop an export either. The
+      # planned separate signing job is described in docs/release.md (Windows).
       - name: Import Windows signing certificate
         if: runner.os == 'Windows' && inputs.updates
         shell: pwsh
@@ -83,7 +84,7 @@ jobs:
               "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
             } finally { Remove-Item $certPath }
           }
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
           targets: ${{ matrix.target }}

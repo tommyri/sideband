@@ -399,12 +399,63 @@ the attribute loop forever (fixed in `previews::parse`, regression test added).
 
 ## 11. Dependencies
 
-`cargo deny check` runs in CI: RustSec advisories and yanked crates fail,
-licenses are a permissive allow-list with two scoped exceptions
-(`webpki-roots`: CDLA-Permissive-2.0; `audio_thread_priority`, client only:
-MPL-2.0), crates.io is the only source. T-061 dropped the unmaintained
-`rustls-pemfile` (RUSTSEC-2025-0134) for `rustls-pki-types` PEM parsing and
-updated `h2` past RUSTSEC-2026-0258.
+`cargo deny check` runs in CI over the graph with every feature enabled:
+RustSec advisories and yanked crates fail, licenses are a permissive
+allow-list with per-crate exceptions recorded in `deny.toml`
+(CDLA-Permissive-2.0 for the Mozilla root stores, MPL-2.0 for
+`audio_thread_priority` and Tauri's CSS and directory helpers), crates.io is
+the only source. T-061 dropped the unmaintained `rustls-pemfile`
+(RUSTSEC-2025-0134) for `rustls-pki-types` PEM parsing and updated `h2` past
+RUSTSEC-2026-0258.
+
+Ignored advisories are listed in `deny.toml`, each with its reason. All but
+one are maintenance notices. The exception is RUSTSEC-2026-0459 (CVE-2026-119375),
+ignored on 2026-11-11 with a review date of 2027-02-11 (T-110):
+
+- SQLite before 3.54.0 can return uninitialized page-cache memory from
+  ordinary queries when it opens a database together with a `-wal` file
+  whose page size differs. The files must be crafted, and the process must
+  open them.
+- `libsqlite3-sys` 0.37.0 bundles SQLite 3.51.3. The fix is in 0.39
+  (SQLite 3.54), but `sqlx-sqlite` 0.9.0, the newest sqlx, requires
+  `<0.38`.
+- Only `ss-server` links SQLite; the desktop app and `ss-cli` do not (they
+  reach it only as a test dependency). The server opens only
+  `socialspeak.db` in its own data directory. A crafted `-wal` there needs
+  write access to that directory, which already allows replacing the
+  database. Backups from `ss-server backup` contain no WAL, and the restore
+  commands in `deploy/README.md` delete the WAL files first. A tar from an
+  untrusted source can still carry a `-wal`; restore only your own
+  backups.
+- Upgrade sqlx and remove the ignore when a release allows
+  `libsqlite3-sys` 0.39. `cargo deny` warns about an ignore that no longer
+  matches.
+
+Build tooling is pinned too. Actions are pinned by commit, and the Docker
+base images and the release BuildKit image (`.github/buildkit/Dockerfile`)
+by digest; Dependabot updates all of these. It does not update the Rust
+version (`rust-toolchain.toml` and the workflow `toolchain` inputs), the
+nightly used for fuzzing, the `cargo-deny` and `cargo-fuzz` versions that
+`taiki-e/install-action` installs (the newest, unpinned), the runner images, or
+the NSIS and WiX tools that Tauri downloads while bundling.
+
+Release signing keys are kept out of jobs that build dependencies, with one
+exception: Windows code signing (see `docs/release.md`, "Release gates").
+Tauri signs the app, the NSIS plugins and uninstaller, and both installers
+while bundling, so the Windows build job imports the certificate into the
+runner user's store before any dependency code runs. No dependency step
+gets the PFX or its password. Every later step of that job runs with the
+key in the store: `pnpm install` with its install scripts, the desktop tests, and
+`tauri build` (the frontend build, build scripts and proc macros). Any of
+them can sign arbitrary files with the release certificate until the job
+ends. The key is imported non-exportable, but that flag is enforced inside
+the Windows crypto libraries, and code running as the same user (an
+administrator) can bypass it, so assume it can export the key too. The
+updater key, the Apple credentials and the server release have no such
+step. The fix is a separate signing job that bundles the unsigned build
+(T-110's notes). Until then, a compromised npm or crates.io dependency that
+runs in that job can obtain Windows signatures, or the key, under
+Sideband's certificate.
 
 ## 12. Known gaps
 
