@@ -1,6 +1,12 @@
 # cargo-deny. Licenses are permissive only; advisories and yanked crates fail CI.
 # https://embarkstudios.github.io/cargo-deny/
 
+[graph]
+# Check optional dependencies too. Without this, the ss-video `vaapi` and
+# `nvidia` backends (moq-vaapi, moq-nvenc, cudarc, bindgen 0.70,
+# libloading 0.9 on 2026-11-11) were never license- or advisory-checked.
+all-features = true
+
 [advisories]
 version = 2
 yanked = "deny"

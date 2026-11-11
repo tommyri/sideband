@@ -64,3 +64,10 @@ Kubernetes, multi-node.
   An Ubuntu VPS was not rented, and the `x86_64` musl binary was not
   built on this machine. Those two checks are the release workflow and
   the CI smoke job.
+- Superseded (2026-11-11, T-097 and T-098): `release-server.yml` is
+  dispatched on a `server-vX.Y.Z` tag and publishes after CI and approval;
+  it no longer has a build-only dispatch. Both musl binaries build natively
+  with `musl-gcc` (aarch64 on an arm64 runner); no cross compiler is used.
+  Compose no longer adds `NET_BIND_SERVICE`: it drops all capabilities and
+  binds 443 through Docker's unprivileged-port sysctl. The smoke script also
+  runs both Compose files. See `deploy/README.md`.

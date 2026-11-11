@@ -259,16 +259,13 @@ async fn start() -> anyhow::Result<()> {
             action: ConnAction::List { data_dir },
         }) => {
             let config = ss_server::config::load(&data_dir)?;
-            anyhow::ensure!(
-                config.internal.bind.ip().is_loopback(),
-                "connection inspection requires a loopback internal listener"
-            );
+            let target = inspection_addr(config.internal.bind)?;
             let response = reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(5))
                 .build()?
-                .get(format!("http://{}/connections", config.internal.bind))
+                .get(format!("http://{target}/connections"))
                 .send()
                 .await?
                 .error_for_status()?;
@@ -343,6 +340,24 @@ async fn start() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Where `conn list` sends its request. A wildcard internal bind, which a
+/// container needs so Docker can publish the port, is reached on the same
+/// host's loopback. Any other non-loopback address is refused, so the request
+/// never leaves the machine.
+fn inspection_addr(bind: SocketAddr) -> anyhow::Result<SocketAddr> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let ip = match bind.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    anyhow::ensure!(
+        ip.is_loopback(),
+        "connection inspection requires a loopback or wildcard internal listener"
+    );
+    Ok(SocketAddr::new(ip, bind.port()))
 }
 
 async fn list_users(data_dir: PathBuf) -> anyhow::Result<()> {
@@ -518,4 +533,32 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr, check_migrations: bool) -> a
     endpoint.wait_idle().await;
     tracing::info!(stats = ?server.router().stats(), "voice spike stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::inspection_addr;
+
+    #[test]
+    fn loopback_and_wildcard_binds_are_inspected_on_loopback() {
+        for (bind, target) in [
+            ("127.0.0.1:9101", "127.0.0.1:9101"),
+            ("0.0.0.0:9101", "127.0.0.1:9101"),
+            ("[::1]:9101", "[::1]:9101"),
+            ("[::]:9101", "[::1]:9101"),
+        ] {
+            assert_eq!(
+                inspection_addr(bind.parse().unwrap()).unwrap(),
+                target.parse().unwrap(),
+                "{bind}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_addresses_are_refused() {
+        for bind in ["10.0.0.5:9101", "192.0.2.1:9101", "[2001:db8::1]:9101"] {
+            assert!(inspection_addr(bind.parse().unwrap()).is_err(), "{bind}");
+        }
+    }
 }

@@ -4,9 +4,11 @@
 MACOSX_DEPLOYMENT_TARGET = "13.0"
 
 # Used by the release workflow and `deploy/Dockerfile`. Ordinary host
-# builds do not select these targets.
+# builds do not select these targets. Both builds are native (the aarch64
+# binary is built on an arm64 runner or host), so each uses that machine's
+# `musl-gcc` from musl-tools; there is no cross compiler.
 [target.x86_64-unknown-linux-musl]
 linker = "musl-gcc"
 
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
+linker = "musl-gcc"

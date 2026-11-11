@@ -15,11 +15,21 @@ def violation(name: str) -> str | None:
         return "environment data"
     if path.suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".db", ".sqlite", ".sqlite3"}:
         return "credential or runtime database"
-    if path.name in {"sessions.json", "pins.json", "identity.json"}:
+    # The CLI writes `socialspeak-pins.json`; any `*pins.json` is a pin store.
+    if path.name in {"sessions.json", "identity.json"} or path.name.endswith("pins.json"):
         return "local identity or session data"
-    if len(path.parts) == 1 and path.suffix.lower() in {".wav", ".zip"}:
+    suffix = path.suffix.lower()
+    if suffix == ".wav" and _is_test_fixture(path):
+        return None
+    if suffix in {".wav", ".zip"}:
         return "local recording or evidence export"
     return None
+
+
+def _is_test_fixture(path: Path) -> bool:
+    """Audio under `<crate>/tests/fixtures/` is checked-in test input."""
+    parts = path.parts
+    return any(parts[i:i + 2] == ("tests", "fixtures") for i in range(len(parts) - 1))
 
 
 def main() -> int:

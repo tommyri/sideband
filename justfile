@@ -33,7 +33,9 @@ build-desktop:
 build-test-desktop *args:
     node scripts/build-test-desktop.mjs {{args}}
 
+# Stops first, with the reason, when Node or pnpm is not the pinned version.
 check-desktop:
+    node scripts/check-desktop-toolchain.mjs
     cd apps/desktop && CI=true pnpm check
     cargo test -p socialspeak-desktop
     cargo clippy -p socialspeak-desktop --all-targets -- -D warnings
@@ -41,4 +43,5 @@ check-desktop:
 # Fails if a crate depends on something above it in the graph.
 # Unix only (bash). CI runs this on Linux.
 check-deps:
+    bash scripts/check-deps.test.sh
     bash scripts/check-deps.sh

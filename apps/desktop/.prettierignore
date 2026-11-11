@@ -5,3 +5,5 @@ src-tauri/target
 src-tauri/gen
 design/*.png
 src-tauri/icons/*.png
+# pnpm writes the lockfile in its own format; Prettier would fight it.
+pnpm-lock.yaml

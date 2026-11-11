@@ -27,7 +27,11 @@ These apply to every task. Sub-agents: read before writing code.
 - Public items documented with `///`. Each crate has a `README.md` of ≤ 40
   lines saying what it owns and what it must not depend on.
 - Feature flags for optional native pieces: `ss-audio` features
-  `aec` (sonora), `rnnoise`, `deepfilter`, `dred`, `macos-voiceio`.
+  `aec` (sonora), `rnnoise`, `dred`, `macos-voiceio`. `deepfilter` is a
+  reserved, empty feature: no DeepFilterNet3 build meets the dependency and
+  model rules (T-053), so enabling it builds nothing. `ss-video` features
+  `capture` and `software` (default), `render`, `pipewire`, `vaapi`,
+  `nvidia` (the last three Linux-only).
 
 ## Testing
 
@@ -39,7 +43,15 @@ These apply to every task. Sub-agents: read before writing code.
 - Audio DSP (jitter buffer, resampler glue, mixer) is tested with synthetic
   signals: known sine → assert on RMS/THD/latency, not on exact samples.
 - `just check` = `cargo fmt --check && cargo clippy --all-targets -- -D
-  warnings && cargo test --workspace`. CI runs it on ubuntu, macos, windows.
+  warnings && cargo test --workspace`. It is the routine gate, run locally
+  before every commit (with `just check-desktop` for desktop or frontend
+  changes). Every GitHub workflow runs only when dispatched by hand; nothing
+  runs on push or pull request (maintainer decision, 2026-11-11, T-098).
+  Dispatch CI (`ci.yml`: Ubuntu, macOS and Windows, container smoke,
+  `check-deps`, `cargo deny`) before merging changes to platform code,
+  features, dependencies, `deploy/` or workflows, and the public repository
+  checks (`public-repo.yml`, Gitleaks) before publishing or releasing. The
+  release workflows run CI for the commit they publish.
 - Anything you write solely to verify your work goes under `/tmp` or is
   deleted before the PR.
 
@@ -75,8 +87,10 @@ These apply to every task. Sub-agents: read before writing code.
   `import.meta.env.DEV`, so packaged builds do not contain it.
 - Accessibility: keyboard navigable, focus-visible, ARIA roles on custom
   widgets. Respect `prefers-reduced-motion`.
-- `pnpm` as package manager. `pnpm check` = `tsc --noEmit && eslint && vitest
-  run`.
+- `pnpm` as package manager, at the exact `packageManager` version (another
+  pnpm rewrites `pnpm-lock.yaml`). `pnpm check` = `tsc -b && eslint . &&
+  prettier --check . && vitest run`; `just check-desktop` first stops unless
+  Node and pnpm match `apps/desktop/package.json`.
 
 ## Git
 

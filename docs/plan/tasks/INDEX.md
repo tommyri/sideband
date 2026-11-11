@@ -183,7 +183,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-095](T-095-desktop-shell-hardening.md) | Desktop shell: capabilities, lints, locks, scaffold leftovers | M | T-042, T-085 | in-progress |
 | [T-096](T-096-chat-history-notices-redaction.md) | Chat history robustness, user-visible notices, export redaction | M | T-045A, T-076, T-095 | todo |
 | [T-097](T-097-release-pipeline-gating.md) | Gate releases: main only, tested commit, isolated signing, provenance | M | T-057, T-034 | in-progress |
-| [T-098](T-098-deploy-ci-hygiene.md) | Deploy and CI hygiene: fail-closed checks, compose/NGINX limits, backups | M | T-034, T-001 | todo |
+| [T-098](T-098-deploy-ci-hygiene.md) | Deploy and CI hygiene: fail-closed checks, compose/NGINX limits, backups | M | T-034, T-001 | in-progress |
 | [T-099](T-099-plan-doc-reconciliation.md) | Reconcile the plan with the code; acceptance status page | S | — | todo |
 | [T-100](T-100-screen-share-backend-decision.md) | Decide the screen-share backend before adaptive bitrate | M | T-070, T-071, T-072 | todo |
 | [T-101](T-101-router-tolerance-parser-fuzzing.md) | Router tolerates what the protocol allows; fuzz the real parsers | M | T-004, T-061 | todo |
