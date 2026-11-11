@@ -633,3 +633,67 @@ fn contents(body: &Value) -> Vec<String> {
         .filter_map(|message| message["content"].as_str().map(str::to_owned))
         .collect()
 }
+
+/// The member-keyed DM queries (`channels::direct_page`, `groups_joined`)
+/// search `channel_members` by `user_id` instead of scanning it. The SQL is
+/// restated from `db/channels.rs`; keep the two in step.
+#[tokio::test]
+async fn dm_lookups_by_member_use_the_user_id_index() {
+    const DIRECT_PAGE: &str = "EXPLAIN QUERY PLAN SELECT * FROM (
+        SELECT c.id, c.kind, c.name, c.topic, c.parent_id, c.position, c.voice_profile, c.voice_bitrate,
+               c.user_limit, c.created_by, c.created_at, c.deleted_at,
+               (SELECT m.id FROM messages m
+                 WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+                 ORDER BY m.id DESC LIMIT 1) AS last_message_id
+        FROM channel_members cm JOIN channels c ON c.id = cm.channel_id
+        WHERE cm.user_id = ? AND c.kind IN (3, 4) AND c.deleted_at IS NULL
+     ) WHERE ? IS NULL OR coalesce(last_message_id, id) < ?
+     ORDER BY coalesce(last_message_id, id) DESC
+     LIMIT ?";
+    const GROUPS_JOINED: &str = "EXPLAIN QUERY PLAN
+        SELECT COUNT(*) FROM channel_members m JOIN channels c ON c.id = m.channel_id
+        WHERE m.user_id = ? AND c.kind = ? AND c.deleted_at IS NULL";
+    use sqlx::Row;
+
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::Pool::open(dir.path().join("socialspeak.db"))
+        .await
+        .unwrap();
+    let mut conn = pool.read().await.unwrap();
+    let user = Id::generate();
+    let direct: Vec<String> = sqlx::query(DIRECT_PAGE)
+        .bind(user)
+        .bind(Option::<Id>::None)
+        .bind(Option::<Id>::None)
+        .bind(100_i64)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get("detail"))
+        .collect();
+    let joined: Vec<String> = sqlx::query(GROUPS_JOINED)
+        .bind(user)
+        .bind(4_i64)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get("detail"))
+        .collect();
+    for (name, plan, alias) in [
+        ("direct_page", &direct, "cm"),
+        ("groups_joined", &joined, "m"),
+    ] {
+        assert!(
+            plan.iter()
+                .any(|step| step.starts_with(&format!("SEARCH {alias} USING"))
+                    && step.contains("channel_members_user_id (user_id=?)")),
+            "{name} does not search channel_members by user_id: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step == &format!("SCAN {alias}")),
+            "{name} scans channel_members: {plan:?}"
+        );
+    }
+}

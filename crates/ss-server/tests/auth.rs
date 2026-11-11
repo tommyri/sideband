@@ -282,7 +282,16 @@ async fn login_tokens_bans_and_disabled_accounts() {
 
 #[tokio::test]
 async fn login_attempts_are_limited_per_address() {
+    // `limiter::IP_BURST` and `IP_PERIOD`: five at once, then one per 12 s.
+    const PERIOD: std::time::Duration = std::time::Duration::from_secs(12);
+    // `governor`'s clock and `std::time::Instant` are separate reads of the
+    // monotonic clock.
+    const CLOCK_SLACK: std::time::Duration = std::time::Duration::from_millis(10);
     let accounts = Accounts::new().await;
+    // Each attempt runs argon2, so under load the burst can take seconds. The
+    // first slot frees `PERIOD` after it was spent, so the wait is bounded by
+    // the time the burst actually took, not by a fixed window.
+    let started = std::time::Instant::now();
     for _ in 0..5 {
         let error = accounts
             .auth
@@ -296,13 +305,17 @@ async fn login_attempts_are_limited_per_address() {
         .hello(&login("ghost", PASSWORD), peer(8))
         .await
         .unwrap_err();
+    let elapsed = started.elapsed();
     let auth::Error::RateLimited { retry_after } = limited else {
         panic!("expected a rate limit, got {limited:?}");
     };
     assert!(
-        retry_after > std::time::Duration::from_secs(10)
-            && retry_after <= std::time::Duration::from_secs(12),
-        "{retry_after:?}"
+        retry_after <= PERIOD,
+        "waits longer than one period: {retry_after:?}"
+    );
+    assert!(
+        retry_after + elapsed + CLOCK_SLACK >= PERIOD,
+        "the first slot came back early: wait {retry_after:?} after a {elapsed:?} burst"
     );
     let other = accounts
         .auth

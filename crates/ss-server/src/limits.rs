@@ -62,6 +62,11 @@ pub const GROUP_DMS_PER_MEMBER: usize = 200;
 pub const WELCOME_DMS: usize = 100;
 /// Largest `ListDms` page.
 pub const DM_PAGE: usize = 100;
+/// Roles on one server, counting `@everyone` and Admin. Every `Welcome`
+/// carries all of them (at most about 435 bytes each), and a `MoveRole`
+/// publishes one update per role, so this stays well under one frame and the
+/// 1024-event bus.
+pub const MAX_ROLES: usize = 250;
 
 /// Keys are pruned once this many checks have passed since the last prune.
 const PRUNE_EVERY: u64 = 4096;
