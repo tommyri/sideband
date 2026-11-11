@@ -49,3 +49,20 @@ it('opens on the diagnostic shortcut, shows core values, exports redacted JSON a
   })
   expect(vi.mocked(invokeBridge).mock.calls).toHaveLength(before)
 })
+it('reports the native reason when saving the bundle fails', async () => {
+  vi.mocked(invokeBridge).mockImplementation(async (command) => {
+    if (command === 'diagnostics_snapshot') return fixture
+    if (command === 'test_build_identity') return { commit: 'test' }
+    if (command === 'export_test_report')
+      throw { code: 'io', message: 'Could not create the reports folder.' }
+    throw new Error('No environment')
+  })
+  render(<DiagnosticsPanel />)
+  fireEvent.keyDown(window, { code: 'KeyD', ctrlKey: true, shiftKey: true })
+  await screen.findByText('24 ms')
+  fireEvent.click(screen.getByRole('button', { name: 'Preview redacted diagnostics' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save log bundle' }))
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Could not create the reports folder.',
+  )
+})

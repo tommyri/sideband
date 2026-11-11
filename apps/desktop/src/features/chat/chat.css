@@ -112,6 +112,14 @@
   color: #a6a6b3;
   font-size: 13px;
 }
+.chat-gap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  color: #a6a6b3;
+  font-size: 13px;
+}
 .chat button:focus-visible,
 .chat-scroll:focus-visible,
 .chat-message:focus-visible {

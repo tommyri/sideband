@@ -50,3 +50,21 @@ it('exports a human-judged sanitized run without recording', async () => {
   expect(report.steps[1].outcome).toBe('not-run')
   expect(report.build.commit).toBe('full-sha')
 })
+it('reports the native reason when an export is refused', async () => {
+  vi.mocked(invokeBridge).mockImplementation(async (command) => {
+    if (command === 'test_build_identity') return { commit: 'full-sha' }
+    // Native commands reject with an ApiError object, not an Error.
+    if (command === 'export_test_report')
+      throw { code: 'too_large', message: 'The report bundle is larger than 16 MiB.' }
+    throw new Error('Unavailable test environment')
+  })
+  render(<TestingPanel />)
+  fireEvent.click(screen.getByRole('button', { name: 'Guided tests' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+  await screen.findByText(/events retained/)
+  fireEvent.click(screen.getByRole('button', { name: 'Finish run' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Preview sanitized bundle' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Export ZIP to Downloads' }))
+  expect(await screen.findByText(/larger than 16 MiB/)).toBeInTheDocument()
+  expect(screen.queryByText(/Downloads is writable/)).not.toBeInTheDocument()
+})

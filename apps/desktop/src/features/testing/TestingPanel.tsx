@@ -18,6 +18,7 @@ import {
   type TestId,
 } from './report'
 import schema from './report.schema.json'
+import { errorText } from '../../lib/errors'
 
 async function captureContext(): Promise<Json> {
   try {
@@ -28,7 +29,7 @@ async function captureContext(): Promise<Json> {
   }
 }
 const message = (e: unknown) =>
-  e instanceof Error ? e.message : 'The native operation failed. Check that Downloads is writable.'
+  errorText(e, 'The native operation failed. Check that Downloads is writable.')
 export function TestingPanel() {
   const [open, setOpen] = useState(false)
   const [run, setRun] = useState<Run | null>(null)

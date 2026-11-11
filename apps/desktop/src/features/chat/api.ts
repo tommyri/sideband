@@ -4,10 +4,14 @@ import type { ChatSnapshot } from '../../lib/generated/ChatSnapshot'
 import type { ChatAction } from '../../lib/generated/ChatAction'
 import type { AppEvent } from '../../lib/bindings'
 
-export const chatSnapshot = (serverId: string, channelId: string) =>
-  invokeBridge<ChatSnapshot>('chat_snapshot', { serverId, channelId })
+// `around` picks the run of loaded messages holding that message; without it
+// the newest run is shown.
+export const chatSnapshot = (serverId: string, channelId: string, around: string | null = null) =>
+  invokeBridge<ChatSnapshot>('chat_snapshot', { serverId, channelId, around })
 export const loadHistory = (serverId: string, channelId: string, before: string | null) =>
   invokeBridge<BridgeMessage[]>('load_history', { request: { serverId, channelId, before } })
+export const loadNewer = (serverId: string, channelId: string, messageId: string) =>
+  invokeBridge<BridgeMessage[]>('load_newer', { serverId, channelId, messageId })
 export const chatAction = (serverId: string, action: ChatAction) =>
   invokeBridge<void>('chat_action', { serverId, action })
 
@@ -21,11 +25,7 @@ export function onChatEvent(listener: (event: AppEvent) => void) {
     listeners.delete(listener)
   }
 }
-export function errorText(error: unknown): string {
-  return error && typeof error === 'object' && 'message' in error
-    ? String(error.message)
-    : 'The request failed. Please try again.'
-}
+export { errorText } from '../../lib/errors'
 
 export const messageContext = (serverId: string, channelId: string, messageId: string) =>
   invokeBridge<void>('message_context', { serverId, channelId, messageId })

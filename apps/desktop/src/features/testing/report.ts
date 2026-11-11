@@ -212,22 +212,45 @@ export function context(audio: AudioEnvironment, shortcuts: Snapshot): Json {
     network: missing('Network addresses and credentials are never collected'),
   }
 }
+// An IPv6 literal has "::" or all eight groups; times such as 12:30:45 and
+// paths such as a::b (no hex digit after a word) do not qualify.
+function ipv6(candidate: string) {
+  const core = candidate
+    .replace(/^\[/, '')
+    .replace(/\](?::\d+)?$/, '')
+    .replace(/%[\w.-]+$/, '')
+  return core.includes('::') || core.split(':').length === 8
+}
 export function redact(text: string): string {
-  return text
-    .slice(0, 16000)
-    .replace(
-      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
-      '[redacted private key]',
-    )
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted email]')
-    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '[redacted address]')
-    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(
-      /\b(password|passwd|token|secret|authorization|cookie|invite|api[_-]?key|session)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      '$1=[redacted]',
-    )
-    .replace(/(?:https?|socialspeak):\/\/[^\s<>]+/gi, '[redacted URL]')
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted token]')
+  return (
+    text
+      .slice(0, 16000)
+      .replace(
+        /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
+        '[redacted private key]',
+      )
+      // Any scheme: the app's own sideband:// and ss:// links name a server.
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]*/gi, '[redacted URL]')
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted email]')
+      .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+      .replace(
+        /\b(password|passwd|token|secret|authorization|cookie|invite|api[_-]?key|session)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1=[redacted]',
+      )
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted token]')
+      .replace(
+        /(?<![\w:.])\[?[0-9a-f]*:[0-9a-f:.]*:[0-9a-f.]*(?:%[\w.-]+)?\]?(?::\d{1,5})?(?![\w:])/gi,
+        (candidate) => (ipv6(candidate) ? '[redacted address]' : candidate),
+      )
+      .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '[redacted address]')
+      // host:port, where the host has a letter (12:30 is a time).
+      .replace(
+        /\b(?=[a-z0-9.-]*[a-z])[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:\d{1,5}\b/gi,
+        '[redacted address]',
+      )
+      // Dotted host names, local ones included.
+      .replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi, '[redacted host]')
+  )
 }
 function clean(value: Json, omit: boolean): Json {
   if (typeof value === 'string') return redact(value)

@@ -73,6 +73,51 @@ it('redacts seeded secrets and optional identifiers without mutating the source'
     'seed',
   )
 })
+it('redacts every address form seeded into notes, steps and trial fields', () => {
+  const seeded = [
+    'sideband://message/voice.friends.example%3A5781/01J0/01J1',
+    'ss://voice.friends.example:5781',
+    'socialspeak://legacy.example/invite',
+    'quic://203.0.113.9:5781/path',
+    'lan-box:5781',
+    'gaming-pc.local',
+    'voice.friends.example',
+    '[2001:db8::7]:5781',
+    '2001:db8:0:0:0:0:0:42',
+    'fe80::1%en0',
+    '::1',
+    '198.51.100.23:443',
+  ]
+  const r = new Recorder('device-recovery', {}, {})
+  r.run.notes = seeded.map((value) => `tried ${value}, then`).join(' ')
+  r.run.steps[0]!.observation = `Joined via ${seeded[1]} at 12:30:45`
+  r.run.trial.conditionId = seeded[4]!
+  r.run.acoustic.evidence = `${seeded[7]} recording`
+  const output = JSON.stringify(preview(r.run, false))
+  for (const value of [
+    ...seeded,
+    'friends.example',
+    'gaming-pc',
+    'lan-box',
+    '2001:db8',
+    'fe80',
+    '203.0.113.9',
+    '198.51.100.23',
+  ])
+    expect(output).not.toContain(value)
+  // A quote inside a URL does not end the redaction early.
+  for (const url of [
+    `https://h.test/a?q="x"&token=quoted-secret`,
+    `ss://h.test/p?name='y'&key=single-secret`,
+  ]) {
+    const out = redact(`see ${url} now`)
+    expect(out).not.toContain('secret')
+    expect(out).toContain('now')
+  }
+  // Ordinary text with colons and times survives.
+  expect(output).toContain('at 12:30:45')
+  expect(redact('ss_client_core::state ratio 16:9')).toBe('ss_client_core::state ratio 16:9')
+})
 it('allows only semantic events for the selected server', () => {
   const r = begin('device-recovery', {}, {})
   r.serverId = 'test'

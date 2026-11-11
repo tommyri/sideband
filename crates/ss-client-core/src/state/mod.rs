@@ -2,8 +2,8 @@
 
 mod messages;
 use crate::{ClientEvent, ConnectionState, Error};
-pub use messages::MessageCache;
-pub(crate) use messages::Span;
+pub(crate) use messages::{Fetch, Span};
+pub use messages::{MessageCache, Segment};
 use parking_lot::{RwLock, RwLockReadGuard};
 use ss_core::{Id, Permissions};
 use ss_proto::{
@@ -49,7 +49,9 @@ pub struct State {
     pub invites: BTreeMap<Id, v1::Invite>,
     /// Session generation, advanced only when a Welcome snapshot is installed.
     pub generation: u64,
-    /// Monotonic local revision; protects HTTP pages against concurrent events.
+    /// Monotonic local revision, advanced by every change. A history page
+    /// fetched at one revision is refused only when a live event changed
+    /// that channel's messages since (see [`MessageCache`]).
     pub revision: u64,
 }
 
@@ -148,6 +150,13 @@ impl State {
             .effective_permissions
             .map(Permissions::from_bits_truncate)
     }
+}
+
+/// Where a history fetch started: the snapshot and the revision.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ticket {
+    generation: u64,
+    revision: u64,
 }
 
 /// Cloneable read handle. Callers cannot mutate the mirror.
@@ -263,23 +272,57 @@ impl StateStore {
         let mut state = self.0.write();
         let event = state.apply(message)?;
         state.revision = state.revision.wrapping_add(1);
+        // Only a change to this channel's messages can make a history page
+        // for it stale; typing, presence and voice cannot.
+        if let ClientEvent::MessagesChanged { channel } = &event {
+            let revision = state.revision;
+            if let Some(cache) = state.messages.get_mut(channel) {
+                cache.changed = revision;
+            }
+        }
         Ok(event)
     }
 
+    /// Note where a history fetch starts, for [`Self::history`].
+    pub(crate) fn ticket(&self) -> Result<Ticket, Error> {
+        let state = self.0.read();
+        if state.connection != ConnectionState::Connected {
+            return Err(Error::Disconnected);
+        }
+        Ok(Ticket {
+            generation: state.generation,
+            revision: state.revision,
+        })
+    }
+
+    /// Merge a history page fetched since `ticket`. Refused when a new
+    /// snapshot was installed or a live event changed this channel's
+    /// messages meanwhile: the page might bring back a deleted message or
+    /// an old text. Events about anything else do not matter.
     pub(crate) fn history(
         &self,
         channel: Id,
-        revision: u64,
+        ticket: Ticket,
+        fetch: Fetch,
         page: Vec<v1::Message>,
     ) -> Result<(), Error> {
         let mut state = self.0.write();
-        if state.revision != revision || state.connection != ConnectionState::Connected {
+        if state.generation != ticket.generation
+            || state.connection != ConnectionState::Connected
+            || (!state.channels.contains_key(&channel)
+                && !state.direct_messages.contains_key(&channel))
+            || state
+                .messages
+                .get(&channel)
+                .is_some_and(|cache| cache.changed > ticket.revision)
+        {
             return Err(Error::StateChanged);
         }
-        if !state.channels.contains_key(&channel) && !state.direct_messages.contains_key(&channel) {
-            return Err(Error::StateChanged);
-        }
-        state.messages.entry(channel).or_default().load(page)?;
+        state
+            .messages
+            .entry(channel)
+            .or_default()
+            .load(page, fetch)?;
         state.revision = state.revision.wrapping_add(1);
         Ok(())
     }
@@ -707,7 +750,9 @@ mod tests {
         let cache = state.messages.get_mut(&channel).unwrap();
         assert_eq!(cache.deleted().len(), 1);
         assert_eq!(cache.deleted()[0].content, "");
-        cache.load(vec![message.clone()]).unwrap();
+        cache
+            .load(vec![message.clone()], Fetch::Before(None))
+            .unwrap();
         assert_eq!(cache.ordered().len(), 0);
         let mut other = message;
         other.id = wire(Id::generate());
@@ -776,11 +821,12 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(store.read().messages[&channel].recent_len(), 200);
-        let revision = store.read().revision;
+        let ticket = store.ticket().unwrap();
         store
             .history(
                 channel,
-                revision,
+                ticket,
+                Fetch::Before(Some(keys[10])),
                 keys[..10]
                     .iter()
                     .map(|key| message(*key, channel, "history"))
@@ -817,7 +863,12 @@ mod tests {
             .unwrap();
         assert_eq!(store.read().messages[&channel].ordered().len(), 204);
         assert!(matches!(
-            store.history(channel, revision, vec![message(first, channel, "stale")]),
+            store.history(
+                channel,
+                ticket,
+                Fetch::Before(None),
+                vec![message(first, channel, "stale")]
+            ),
             Err(Error::StateChanged)
         ));
     }
@@ -1054,6 +1105,226 @@ mod tests {
             )
             .unwrap();
         assert_eq!(contents(), ["final", "live", "missed"]);
+    }
+    #[test]
+    fn history_loads_while_unrelated_events_arrive_continuously() {
+        let (store, channel, user) = store();
+        let other = Id::generate();
+        store
+            .apply(Msg::ChannelCreated(v1::ChannelCreated {
+                channel: Some(channel_with(other)),
+            }))
+            .unwrap();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let applied = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let spammer = std::thread::spawn({
+            let (store, running, applied) = (store.clone(), running.clone(), applied.clone());
+            move || {
+                use std::sync::atomic::Ordering::Relaxed;
+                let conn = Id::generate();
+                while running.load(Relaxed) {
+                    for event in [
+                        Msg::TypingStarted(v1::TypingStarted {
+                            channel_id: wire(channel),
+                            user_id: wire(user),
+                        }),
+                        Msg::PresenceUpdated(v1::PresenceUpdated {
+                            user_id: wire(user),
+                            status: v1::PresenceStatus::Idle.into(),
+                            activity: String::new(),
+                        }),
+                        Msg::VoiceStateUpdated(v1::VoiceStateUpdated {
+                            user_id: wire(user),
+                            conn_id: wire(conn),
+                            channel_id: Some(wire(other)),
+                            ..Default::default()
+                        }),
+                        // Messages in another channel are unrelated too.
+                        Msg::MessageCreated(v1::MessageCreated {
+                            message: Some(message(Id::generate(), other, "elsewhere")),
+                            nonce: None,
+                        }),
+                    ] {
+                        store.apply(event).unwrap();
+                        applied.fetch_add(1, Relaxed);
+                    }
+                }
+            }
+        });
+        let mut keys: Vec<_> = (0..120).map(|_| Id::generate()).collect();
+        keys.sort();
+        let mut before = None;
+        for page in keys.rchunks(50) {
+            let ticket = store.ticket().unwrap();
+            // The HTTPS request is in flight while events keep arriving.
+            let seen = applied.load(std::sync::atomic::Ordering::Relaxed);
+            while applied.load(std::sync::atomic::Ordering::Relaxed) < seen + 8 {
+                std::thread::yield_now();
+            }
+            let page = page.iter().map(|k| message(*k, channel, "old")).collect();
+            store
+                .history(channel, ticket, Fetch::Before(before), page)
+                .unwrap();
+            before = store.read().messages[&channel]
+                .ordered()
+                .first()
+                .map(|m| id(&m.id).unwrap());
+        }
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        spammer.join().unwrap();
+        let state = store.read();
+        let segment = state.messages[&channel].segment(None);
+        assert_eq!(segment.messages.len(), 120);
+        assert!(segment.start && segment.latest);
+        // A change to this channel's own messages still refuses the page.
+        drop(state);
+        let ticket = store.ticket().unwrap();
+        store
+            .apply(Msg::MessageDeleted(v1::MessageDeleted {
+                message: Some(message(keys[0], channel, "")),
+                nonce: None,
+            }))
+            .unwrap();
+        assert!(matches!(
+            store.history(
+                channel,
+                ticket,
+                Fetch::Around(keys[0]),
+                vec![message(keys[0], channel, "deleted meanwhile")]
+            ),
+            Err(Error::StateChanged)
+        ));
+        // So does a new snapshot.
+        let ticket = store.ticket().unwrap();
+        let welcome = v1::Welcome {
+            user: store.read().own_user.clone(),
+            snapshot: Some(v1::Snapshot {
+                channels: vec![channel_with(channel)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        store.welcome(&welcome).unwrap();
+        assert!(matches!(
+            store.history(channel, ticket, Fetch::Before(None), Vec::new()),
+            Err(Error::StateChanged)
+        ));
+    }
+    fn channel_with(key: Id) -> v1::Channel {
+        channel(key, 0)
+    }
+    /// A server's history for one channel: `all` ascending.
+    fn serve(all: &[Id], channel: Id, fetch: Fetch) -> Vec<v1::Message> {
+        let index = |key: Id| all.partition_point(|k| *k < key);
+        let range = match fetch {
+            Fetch::Before(before) => {
+                let end = before.map_or(all.len(), index);
+                end.saturating_sub(50)..end
+            }
+            Fetch::After(after) => {
+                let start = all.partition_point(|k| *k <= after);
+                start..(start + 50).min(all.len())
+            }
+            Fetch::Around(around) => {
+                let at = index(around);
+                let start = at.saturating_sub(24).min(all.len().saturating_sub(50));
+                start..(start + 50).min(all.len())
+            }
+        };
+        all[range]
+            .iter()
+            .map(|k| message(*k, channel, "history"))
+            .collect()
+    }
+    fn fetch(store: &StateStore, all: &[Id], channel: Id, fetch: Fetch) -> usize {
+        let ticket = store.ticket().unwrap();
+        let page = serve(all, channel, fetch);
+        let len = page.len();
+        store.history(channel, ticket, fetch, page).unwrap();
+        len
+    }
+    fn shown(store: &StateStore, channel: Id, anchor: Option<Id>) -> (Vec<Id>, bool, bool) {
+        let state = store.read();
+        let segment = state.messages[&channel].segment(anchor);
+        (
+            segment
+                .messages
+                .iter()
+                .map(|m| id(&m.id).unwrap())
+                .collect(),
+            segment.start,
+            segment.latest,
+        )
+    }
+    #[test]
+    fn after_a_jump_every_message_up_to_the_newest_can_be_loaded() {
+        let (store, channel, _) = store();
+        let mut all: Vec<_> = (0..400).map(|_| Id::generate()).collect();
+        all.sort();
+        fetch(&store, &all, channel, Fetch::Before(None));
+        let target = all[100];
+        fetch(&store, &all, channel, Fetch::Around(target));
+        // The newest run stays as it was; the jump shows its own run, which
+        // does not reach the newest messages.
+        let (latest, _, at_latest) = shown(&store, channel, None);
+        assert_eq!(latest, all[350..]);
+        assert!(at_latest);
+        let (around, start, at_latest) = shown(&store, channel, Some(target));
+        assert_eq!(around, all[76..126]);
+        assert!(!start && !at_latest);
+        // Load newer from the end of the jump's run until it joins the newest.
+        loop {
+            let (run, _, at_latest) = shown(&store, channel, Some(target));
+            if at_latest {
+                break;
+            }
+            fetch(&store, &all, channel, Fetch::After(*run.last().unwrap()));
+        }
+        let (run, _, _) = shown(&store, channel, Some(target));
+        assert_eq!(run, all[76..]);
+        assert_eq!(shown(&store, channel, None).0, all[76..]);
+        // Load older from the top reaches the channel's first message.
+        while !shown(&store, channel, None).1 {
+            let top = shown(&store, channel, None).0[0];
+            fetch(&store, &all, channel, Fetch::Before(Some(top)));
+        }
+        assert_eq!(shown(&store, channel, None).0, all);
+    }
+    #[test]
+    fn loading_older_from_the_newest_run_joins_a_jumped_to_run() {
+        let (store, channel, _) = store();
+        let mut all: Vec<_> = (0..200).map(|_| Id::generate()).collect();
+        all.sort();
+        fetch(&store, &all, channel, Fetch::Before(None));
+        fetch(&store, &all, channel, Fetch::Around(all[60]));
+        fetch(&store, &all, channel, Fetch::Before(Some(all[150])));
+        assert_eq!(shown(&store, channel, None).0, all[100..]);
+        fetch(&store, &all, channel, Fetch::Before(Some(all[100])));
+        // The page reached the jump's run (36..86): one run, nothing missing.
+        assert_eq!(shown(&store, channel, None).0, all[36..]);
+        assert_eq!(shown(&store, channel, Some(all[60])).0, all[36..]);
+    }
+    #[test]
+    fn live_messages_evicted_unseen_leave_a_loadable_gap() {
+        let (store, channel, _) = store();
+        let mut all: Vec<_> = (0..300).map(|_| Id::generate()).collect();
+        all.sort();
+        // The channel was open: its newest 50 were loaded.
+        fetch(&store, &all[..50], channel, Fetch::Before(None));
+        // Then 250 arrive while another channel is shown; the live window
+        // keeps 200, so 50 are no longer cached.
+        for key in &all[50..] {
+            store
+                .apply(Msg::MessageCreated(v1::MessageCreated {
+                    message: Some(message(*key, channel, "live")),
+                    nonce: None,
+                }))
+                .unwrap();
+        }
+        assert_eq!(shown(&store, channel, None).0, all[100..]);
+        assert_eq!(shown(&store, channel, Some(all[10])).0, all[..50]);
+        fetch(&store, &all, channel, Fetch::Before(Some(all[100])));
+        assert_eq!(shown(&store, channel, None).0, all);
     }
     #[test]
     fn own_profile_presence_roles_and_voice_sessions_reduce_independently() {

@@ -58,12 +58,16 @@ export async function refreshVoice(server: string) {
         },
       },
     }))
-  } catch {
+  } catch (error) {
     if (revisions[server] !== revision) return
+    // The shell ends a voice session before it drops the server's client, so
+    // only `disconnected` means the session is gone. Any other failure keeps
+    // the dock (mute, leave, stop sharing) while the native session runs.
+    const gone = (error as Partial<ApiError> | null)?.code === 'disconnected'
     useVoiceStore.setState((s) => {
       const views = { ...s.views }
       delete views[server]
-      return { views, active: s.active?.serverId === server ? null : s.active }
+      return { views, active: gone && s.active?.serverId === server ? null : s.active }
     })
   }
 }

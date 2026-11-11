@@ -80,6 +80,7 @@ pub fn run() {
             chat::chat_snapshot,
             chat::chat_action,
             chat::message_context,
+            chat::load_newer,
             chat::open_chat_link,
             admin::invite_page,
             moderation_admin::get_moderation_page,

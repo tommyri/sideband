@@ -8,6 +8,7 @@ import { refreshShortcuts, type Snapshot as InputSnapshot } from '../settings/sh
 import { context, missing, type Json } from '../testing/report'
 import schema from '../testing/report.schema.json'
 import { graphPaths, metrics, report, retain, type Sample } from './model'
+import { errorText } from '../../lib/errors'
 export function DiagnosticsPanel() {
   const active = useVoiceStore((s) => s.active?.serverId)
   const selected = useAppStore((s) => s.selectedServerId)
@@ -144,8 +145,8 @@ function Panel({ close, server }: { close: () => void; server: string | undefine
         false,
       )
       setStatus(`Saved locally: ${path}`)
-    } catch {
-      setStatus('Could not save the bundle. Check that Downloads is writable.')
+    } catch (e) {
+      setStatus(`Could not save the bundle: ${errorText(e, 'check that Downloads is writable.')}`)
     } finally {
       setBusy(false)
     }

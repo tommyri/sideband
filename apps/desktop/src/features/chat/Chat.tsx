@@ -25,7 +25,13 @@ export function Chat({
   name: string
   connected: boolean
 }) {
-  const { view, error, setError, loading, hasOlder, load, refresh } = useChat(server, channel)
+  const { view, error, setError, loading, hasOlder, load, loadNewer, show, refresh } = useChat(
+    server,
+    channel,
+  )
+  // After a jump the view is the run around the target, which may not reach
+  // the newest message: newer pages then load below it.
+  const latest = view?.latest ?? true
   const messages = view?.messages ?? empty
   const serverView = useVoiceStore((s) => s.views[server])
   const own = view?.ownUserId ?? serverView?.ownUserId ?? null
@@ -60,7 +66,8 @@ export function Chat({
     estimateSize: () => 120,
     overscan: 6,
     anchorTo: 'end',
-    followOnAppend: true,
+    // Loading newer pages below a jumped-to message must not scroll past them.
+    followOnAppend: latest,
     scrollEndThreshold: 8,
   })
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages])
@@ -83,6 +90,7 @@ export function Chat({
     const last = [...messages].reverse().find((m) => !m.deleted)?.id
     if (
       !connected ||
+      !latest ||
       !last ||
       !scroll.current ||
       !atBottom(scroll.current) ||
@@ -102,7 +110,7 @@ export function Chat({
     } finally {
       readBusy.current = false
     }
-  }, [messages, connected, server, channel, view?.lastRead, setError])
+  }, [messages, connected, latest, server, channel, view?.lastRead, setError])
   useEffect(() => {
     const timer = window.setInterval(() => {
       void markRead()
@@ -140,14 +148,20 @@ export function Chat({
       if (messages.some((m) => m.id === id)) return
       try {
         await messageContext(server, channel, id)
-        await refresh()
+        // Show the run around the target, not the newest run.
+        await show(id)
       } catch (e) {
         setError(errorText(e))
         setPendingJump(null)
       }
     },
-    [messages, server, channel, refresh, setError],
+    [messages, server, channel, show, setError],
   )
+  const toLatest = () =>
+    void show(null).then(() => {
+      virtual.scrollToEnd()
+      setBottom(true)
+    })
   useEffect(() => {
     if (navigation?.server === server && navigation.channel === channel)
       void jump(navigation.message)
@@ -203,14 +217,8 @@ export function Chat({
               ? 'Load older messages'
               : 'Beginning of conversation'}
         </button>
-        {!bottom && (
-          <button
-            className="button secondary"
-            onClick={() => {
-              virtual.scrollToEnd()
-              setBottom(true)
-            }}
-          >
+        {(!bottom || !latest) && (
+          <button className="button secondary" onClick={toLatest}>
             Jump to latest
           </button>
         )}
@@ -388,6 +396,18 @@ export function Chat({
             )
           })}
         </div>
+        {view && !latest && (
+          <div className="chat-gap">
+            <p>Newer messages are not loaded yet.</p>
+            <button
+              className="button secondary"
+              disabled={loading || !connected || !messages.length}
+              onClick={() => void loadNewer(messages.at(-1)!.id)}
+            >
+              {loading ? 'Loading messages…' : 'Load newer messages'}
+            </button>
+          </div>
+        )}
       </div>
       {deleting && (
         <div className="chat-delete" role="group" aria-label="Confirm message deletion">
@@ -440,11 +460,7 @@ export function Chat({
           setTarget(null)
           requestAnimationFrame(focusComposer)
         }}
-        sent={() => {
-          void refresh()
-          virtual.scrollToEnd()
-          setBottom(true)
-        }}
+        sent={toLatest}
       />
     </section>
   )
