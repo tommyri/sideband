@@ -4,6 +4,7 @@ use ss_client_core::{
     State, TalkGate, VoiceSession,
     storage::{MemoryStorage, Storage},
     v1,
+    voice::Membership,
 };
 use ss_core::{Id, Permissions};
 use ss_net::{
@@ -671,6 +672,176 @@ async fn a_moved_member_rejoins_the_channel_it_was_moved_to_after_a_restart() {
     })
     .await;
     assert_eq!(seats(&guest.state().read(), user)[0].1, wire(other));
+}
+
+/// Polls the call's reconcile step until it reports something other than
+/// [`Membership::Seated`].
+async fn changed(session: &VoiceSession) -> Membership {
+    timeout(WAIT, async {
+        loop {
+            match session.reconcile() {
+                Membership::Seated => tokio::time::sleep(Duration::from_millis(10)).await,
+                other => break other,
+            }
+        }
+    })
+    .await
+    .expect("the call stayed seated")
+}
+
+/// A moderator moves a member. The call reports the move, and following it
+/// restarts the call muted in the destination with that channel's profile,
+/// as every host does.
+#[tokio::test]
+async fn a_moved_member_follows_muted_into_the_new_channel_and_its_profile() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let user = own_id(&guest);
+    let general = named(&owner.state().read(), "General", v1::ChannelKind::Voice);
+    let mut events = guest.subscribe();
+    let stage = owner
+        .create_channel(v1::CreateChannel {
+            name: "Stage".into(),
+            kind: v1::ChannelKind::Voice.into(),
+            voice: Some(v1::VoiceSettings {
+                profile: v1::VoiceProfile::Music.into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Channel diffs are debounced: the guest must know the destination.
+    until(&guest, &mut events, |s| s.channels.contains_key(&stage)).await;
+    let session = Arc::new(VoiceSession::start(&guest, general, tone()).await.unwrap());
+    assert_eq!(session.reconcile(), Membership::Seated);
+    assert!(!session.self_muted());
+
+    owner
+        .move_user(v1::MoveUser {
+            user_id: wire(user),
+            channel_id: wire(stage),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        changed(&session).await,
+        Membership::Follow { channel: stage }
+    );
+    let session = session.follow(&guest, stage, tone()).await.unwrap();
+    assert_eq!(session.channel(), stage);
+    assert!(session.self_muted(), "a moved member follows muted");
+    assert_eq!(session.reconcile(), Membership::Seated);
+    until(&guest, &mut events, |s| {
+        s.voice_states
+            .values()
+            .any(|v| v.user_id == wire(user) && v.channel_id == Some(wire(stage)) && v.self_mute)
+    })
+    .await;
+    // The music profile's default bitrate, not the voice profile's 80 kb/s.
+    timeout(WAIT, async {
+        while session.stats().encoder_bitrate != 128_000 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("encoder at {}", session.stats().encoder_bitrate));
+    assert_transmission_stopped(&session, user).await;
+    session.leave().await.unwrap();
+}
+
+/// The call ends when its seat goes while the connection stays up (the
+/// account joined on another device), and when its client stops.
+#[tokio::test]
+async fn a_call_ends_when_its_seat_or_its_client_is_gone() {
+    let world = World::new().await;
+    let phone = world.owner().await;
+    let laptop = second_device(&world).await;
+    let general = named(&phone.state().read(), "General", v1::ChannelKind::Voice);
+    let phone_voice = VoiceSession::start(&phone, general, silent())
+        .await
+        .unwrap();
+    assert_eq!(phone_voice.reconcile(), Membership::Seated);
+    let laptop_voice = VoiceSession::start(&laptop, general, silent())
+        .await
+        .unwrap();
+    assert_eq!(changed(&phone_voice).await, Membership::Ended);
+    assert_eq!(phone.state().read().connection, ConnectionState::Connected);
+
+    // A host that stops a client may still share it, so its store can still
+    // say connected. The call ends anyway.
+    assert_eq!(laptop_voice.reconcile(), Membership::Seated);
+    laptop.abort();
+    assert_eq!(changed(&laptop_voice).await, Membership::Ended);
+}
+
+/// While the connection retries, the call releases push-to-talk, so a key
+/// held through the outage does not transmit after it. A reconnect that lost
+/// its lease has a new connection id; the call follows it and stays seated.
+#[tokio::test]
+async fn retrying_releases_ptt_and_a_new_connection_id_keeps_the_call() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let own = own_id(&owner);
+    let mut events = owner.subscribe();
+    let general = named(&owner.state().read(), "General", v1::ChannelKind::Voice);
+    let session = VoiceSession::start(
+        &owner,
+        general,
+        AudioConfig {
+            source: AudioSource::Test,
+            ..AudioConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let first = session.connection();
+    assert_eq!(owner.state().read().own_conn, Some(first));
+    let talking = |expected: bool, within: Duration| {
+        let session = &session;
+        async move {
+            timeout(within, async {
+                while session.speaking_users().contains(&own) != expected {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("talking never became {expected}"));
+        }
+    };
+    session.set_ptt(true);
+    talking(true, WAIT).await;
+
+    drop_without_lease(&world, first);
+    until(&owner, &mut events, |s| {
+        matches!(s.connection, ConnectionState::Reconnecting { .. })
+    })
+    .await;
+    assert_eq!(session.reconcile(), Membership::Retrying);
+    // Released at once, without the release tail.
+    talking(false, Duration::from_millis(100)).await;
+
+    until(&owner, &mut events, |s| {
+        s.connection == ConnectionState::Connected
+    })
+    .await;
+    assert_eq!(session.reconcile(), Membership::Seated);
+    let second = session.connection();
+    assert_ne!(second, first, "the lease was gone, so the id is new");
+    assert_eq!(owner.state().read().own_conn, Some(second));
+    assert_eq!(
+        seats(&owner.state().read(), own),
+        [(wire(second), wire(general))]
+    );
+    for _ in 0..25 {
+        assert!(
+            !session.speaking_users().contains(&own),
+            "the key held through the outage transmits"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    session.leave().await.unwrap();
 }
 
 #[tokio::test]

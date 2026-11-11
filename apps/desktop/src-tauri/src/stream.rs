@@ -165,7 +165,7 @@ pub async fn screen_snapshot(
     let channel = active
         .as_ref()
         .filter(|v| v.server == server)
-        .map(|v| (v.session.channel(), v.connection));
+        .map(|v| (v.session.channel(), v.connection()));
     drop(active);
     let snapshot = store.read();
     let can_share =
@@ -285,7 +285,7 @@ pub async fn start_screen_share(
         voice
             .as_ref()
             .filter(|v| v.server == server && v.session.channel() == channel)
-            .map(|v| v.connection)
+            .map(crate::voice::ActiveVoice::connection)
             .ok_or_else(|| error("Join this voice channel before sharing."))?
     };
     let (handle, store) = {
