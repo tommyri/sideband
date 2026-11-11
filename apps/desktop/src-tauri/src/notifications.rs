@@ -1,14 +1,22 @@
-//! Local notification policy. No message contents or activation links are persisted.
+//! Desktop notifications, the badge and cue playback. What alerts, which
+//! cue plays and what the badge counts is decided by
+//! [`ss_client_core::notifications`]; this module shows the result. No
+//! message contents or activation links are persisted.
 use crate::{
     commands::{api_error, parse_server_id},
     state::{AppState, lock},
     types::ApiError,
 };
-use serde::{Deserialize, Serialize};
-use ss_client_core::{ClientEvent, ConnectionState, StateStore, v1, voice::Cue};
-use ss_core::{Id, Permissions};
+use serde::Serialize;
+use ss_client_core::{
+    ClientEvent, ConnectionState, StateStore,
+    notifications::{self as policy, Preferences, Tracker},
+    v1,
+    voice::Cue,
+};
+use ss_core::Id;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -17,43 +25,6 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum Level {
-    All,
-    #[default]
-    Mentions,
-    None,
-}
-#[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Preferences {
-    pub desktop: bool,
-    pub previews: bool,
-    pub dnd: bool,
-    pub muted_servers: BTreeSet<String>,
-    pub channels: BTreeMap<String, Level>,
-}
-impl Preferences {
-    fn allows(&self, server: &str, channel: &str, mentioned: bool, dm: bool) -> bool {
-        if self.dnd || self.muted_servers.contains(server) {
-            return false;
-        }
-        match self
-            .channels
-            .get(&format!("{server}/{channel}"))
-            .copied()
-            .unwrap_or_default()
-        {
-            Level::All => true,
-            Level::Mentions => mentioned || dm,
-            Level::None => false,
-        }
-    }
-    pub fn sounds(&self, server: &str) -> bool {
-        !self.dnd && !self.muted_servers.contains(server)
-    }
-}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Target {
@@ -66,9 +37,7 @@ struct Runtime {
     idle_playing: Arc<AtomicBool>,
     next: i32,
     targets: BTreeMap<i32, Target>,
-    counts: BTreeMap<String, i64>,
-    voices: BTreeMap<String, (Id, BTreeSet<Id>)>,
-    seen: BTreeSet<(String, Id)>,
+    tracker: Tracker,
 }
 
 fn runtime(app: &AppHandle) -> std::sync::MutexGuard<'_, Runtime> {
@@ -97,7 +66,7 @@ pub fn init(app: &AppHandle) {
             let Some(store) = state.client(&server).map(|client| client.state()) else {
                 return;
             };
-            if !accessible(&store, channel) {
+            if !policy::can_open(&store.read(), channel) {
                 return;
             }
             if let Some(window) = app.get_webview_window("main") {
@@ -108,13 +77,6 @@ pub fn init(app: &AppHandle) {
             let _ = app.emit("ss://notification-activate", target);
         });
     });
-}
-fn accessible(store: &StateStore, channel: Id) -> bool {
-    let view = store.read();
-    view.connection == ConnectionState::Connected
-        && view
-            .permissions(channel)
-            .is_some_and(|p| p.contains(Permissions::VIEW_CHANNEL))
 }
 #[tauri::command]
 #[allow(
@@ -131,10 +93,7 @@ pub async fn save_notification_preferences(
     preferences: Preferences,
 ) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
-    if preferences.channels.len() > 10000
-        || preferences.muted_servers.len() > 1000
-        || preferences.channels.keys().any(|k| k.len() > 512)
-    {
+    if !preferences.within_limits() {
         return Err(ApiError::new(
             "invalid",
             "Too many notification preferences.",
@@ -180,7 +139,7 @@ pub async fn save_notification_preferences(
 )]
 pub fn test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<(), ApiError> {
     let prefs = state.storage.notifications();
-    if !prefs.desktop || prefs.dnd {
+    if !prefs.desktop_enabled() {
         return Err(ApiError::new(
             "disabled",
             "Enable desktop notifications and turn off Do not disturb first.",
@@ -201,17 +160,11 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
     let state = app.state::<AppState>();
     let prefs = state.storage.notifications();
     update_badge(app, server, store);
-    if matches!(event, ClientEvent::Resynced)
-        && prefs.dnd
+    if let Some(presence) = policy::presence_after(event, &prefs)
         && let Ok(id) = parse_server_id(server)
         && let Some(client) = state.client(&id)
     {
-        let _ = client
-            .set_presence(v1::SetPresence {
-                status: v1::PresenceStatus::Dnd as i32,
-                activity: String::new(),
-            })
-            .await;
+        let _ = client.set_presence(presence).await;
     }
     voice_cues(app, &state, server, store, event, &prefs).await;
     let ClientEvent::MessageReceived {
@@ -228,39 +181,24 @@ pub async fn observe(app: &AppHandle, server: &str, store: &StateStore, event: &
 /// Refresh this server's mention count, drop activation targets the user can
 /// no longer open, and show the total on the dock or taskbar badge.
 fn update_badge(app: &AppHandle, server: &str, store: &StateStore) {
-    let connected = store.read().connection == ConnectionState::Connected;
-    let count = {
+    // Held across the badge call so concurrent servers set it in order.
+    let mut runtime = runtime(app);
+    let badge = {
         let view = store.read();
-        if connected {
-            view.read_states
-                .iter()
-                .filter(|(channel, _)| {
-                    view.permissions(**channel)
-                        .is_some_and(|p| p.contains(Permissions::VIEW_CHANNEL))
-                })
-                .map(|(_, r)| i64::from(r.mention_count))
-                .sum()
-        } else {
-            0
-        }
-    };
-    {
-        let mut runtime = runtime(app);
-        runtime.counts.insert(server.to_owned(), count);
         runtime.targets.retain(|_, t| {
             t.server != server
                 || t.channel
                     .parse()
-                    .is_ok_and(|channel| accessible(store, channel))
+                    .is_ok_and(|channel| policy::can_open(&view, channel))
         });
-        if let Some(window) = app.get_webview_window("main") {
-            let total = runtime.counts.values().sum::<i64>();
-            let _ = window.set_badge_count((total > 0).then_some(total));
-        }
+        runtime.tracker.badge(server, &view)
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_badge_count(badge);
     }
 }
 
-/// Join, leave, lost and restored cues for the call on this server.
+/// Play the join, leave, lost or restored cue for the call on this server.
 async fn voice_cues(
     app: &AppHandle,
     state: &AppState,
@@ -269,54 +207,19 @@ async fn voice_cues(
     event: &ClientEvent,
     prefs: &Preferences,
 ) {
-    if let Some(active) = state
-        .voice
-        .lock()
-        .await
-        .as_ref()
-        .filter(|v| v.server.as_str() == server)
-    {
-        let members = {
-            let view = store.read();
-            view.voice_states
-                .values()
-                .filter(|v| {
-                    v.channel_id.as_deref().and_then(|id| Id::try_from(id).ok())
-                        == Some(active.session.channel())
-                })
-                .filter_map(|v| Id::try_from(v.user_id.as_ref()).ok())
-                .collect::<BTreeSet<_>>()
-        };
-        let previous = runtime(app)
-            .voices
-            .insert(server.into(), (active.session.channel(), members.clone()));
-        if prefs.sounds(server) {
-            if matches!(event, ClientEvent::VoiceChanged)
-                && let Some((_, previous)) =
-                    previous.filter(|(channel, _)| *channel == active.session.channel())
-            {
-                if members.difference(&previous).next().is_some() {
-                    active.session.play_cue(Cue::Join);
-                } else if previous.difference(&members).next().is_some() {
-                    active.session.play_cue(Cue::Leave);
-                }
-            }
-            if matches!(
-                event,
-                ClientEvent::Connection(ConnectionState::Reconnecting { attempt: 1, .. })
-            ) {
-                active.session.play_cue(Cue::Lost);
-            }
-            if matches!(event, ClientEvent::Resynced) {
-                active.session.play_cue(Cue::Restored);
-            }
-        }
-    } else {
-        runtime(app).voices.remove(server);
+    let voice = state.voice.lock().await;
+    let active = voice.as_ref().filter(|v| v.server.as_str() == server);
+    let call = active.map(|v| v.session.channel());
+    let cue = runtime(app)
+        .tracker
+        .voice_cue(server, call, &store.read(), event, prefs);
+    if let Some((active, cue)) = active.zip(cue) {
+        active.session.play_cue(cue);
     }
 }
 
-/// Alert for, and possibly show a desktop notification of, one new message.
+/// Play the alert for, and possibly show a desktop notification of, one new
+/// message.
 async fn notify_message(
     app: &AppHandle,
     state: &AppState,
@@ -325,63 +228,30 @@ async fn notify_message(
     channel: Id,
     message_id: Id,
 ) {
-    if !accessible(store, channel) {
-        return;
-    }
+    if !runtime(app)
+        .tracker
+        .first_sighting(&store.read(), server, channel, message_id)
     {
-        let mut runtime = runtime(app);
-        if !runtime.seen.insert((server.into(), message_id)) {
-            return;
-        }
-        if runtime.seen.len() > 512 {
-            runtime.seen.pop_first();
-        }
+        return;
     }
+    let focused = app
+        .get_webview_window("main")
+        .is_some_and(|w| w.is_focused().unwrap_or(true));
     let active = state.voice.lock().await;
-    if !accessible(store, channel) {
-        return;
-    }
     let prefs = state.storage.notifications();
-    // A queued event may lag an edit, deletion, or visibility change. Project
-    // the current cache rather than exposing its earlier body.
-    let Some(message) = store.read().messages.get(&channel).and_then(|cache| {
-        cache
-            .ordered()
-            .into_iter()
-            .find(|m| Id::try_from(m.id.as_ref()).ok() == Some(message_id))
-            .cloned()
-    }) else {
+    let Some(alert) = policy::alert(&store.read(), &prefs, server, channel, message_id, focused)
+    else {
         return;
     };
-    let mentioned = store.read().mentions_me(&message);
-    let dm = {
-        let view = store.read();
-        if message.author.as_ref().is_some_and(|author| {
-            view.own_user
-                .as_ref()
-                .is_some_and(|own| own.id == author.id)
-        }) {
-            return;
-        }
-        view.direct_messages.contains_key(&channel)
-    };
-    if !prefs.allows(server, &channel.to_string(), mentioned, dm) {
-        return;
-    }
-    let cue = if dm { Cue::DirectMessage } else { Cue::Mention };
     if let Some(active) = active.as_ref() {
-        active.session.play_alert(cue);
+        active.session.play_alert(alert.cue);
     } else {
-        play_idle(app, server, cue);
+        play_idle(app, server, alert.cue);
     }
     drop(active);
-    if !prefs.desktop
-        || app
-            .get_webview_window("main")
-            .is_some_and(|w| w.is_focused().unwrap_or(true))
-    {
+    let Some(body) = alert.desktop else {
         return;
-    }
+    };
     let id = {
         let mut runtime = runtime(app);
         runtime.next = runtime.next.checked_add(1).unwrap_or(1);
@@ -400,18 +270,6 @@ async fn notify_message(
             },
         );
         id
-    };
-    let body: String = if prefs.previews {
-        message
-            .content
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(180)
-            .collect()
-    } else if dm {
-        "You received a direct message.".into()
-    } else {
-        "You have a new channel message.".into()
     };
     let _ = app
         .notification()
@@ -493,28 +351,13 @@ fn play_idle(app: &AppHandle, server: &str, cue: Cue) {
 }
 
 pub fn presence(store: &StateStore, dnd: bool) -> v1::SetPresence {
-    let view = store.read();
-    let activity = view
-        .own_user
-        .as_ref()
-        .and_then(|own| Id::try_from(own.id.as_ref()).ok())
-        .and_then(|id| view.members.get(&id))
-        .and_then(|m| m.presence.as_ref())
-        .map(|p| p.activity.clone())
-        .unwrap_or_default();
-    v1::SetPresence {
-        status: if dnd {
-            v1::PresenceStatus::Dnd
-        } else {
-            v1::PresenceStatus::Online
-        } as i32,
-        activity,
-    }
+    policy::presence(&store.read(), dnd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ss_client_core::notifications::Level;
     #[test]
     fn preferences_survive_restart_without_message_content() {
         let dir = tempfile::tempdir().unwrap();
@@ -532,21 +375,5 @@ mod tests {
             .notifications();
         assert!(restored.dnd);
         assert_eq!(restored.channels["s/c"], Level::None);
-    }
-    #[test]
-    fn policy_honors_defaults_overrides_and_suppression() {
-        let mut p = Preferences::default();
-        assert!(!p.allows("s", "c", false, false));
-        assert!(p.allows("s", "c", true, false));
-        assert!(p.allows("s", "c", false, true));
-        p.channels.insert("s/c".into(), Level::None);
-        assert!(!p.allows("s", "c", true, true));
-        p.channels.insert("s/c".into(), Level::All);
-        assert!(p.allows("s", "c", false, false));
-        p.muted_servers.insert("s".into());
-        assert!(!p.allows("s", "c", true, true));
-        p.muted_servers.clear();
-        p.dnd = true;
-        assert!(!p.allows("s", "c", true, true));
     }
 }
