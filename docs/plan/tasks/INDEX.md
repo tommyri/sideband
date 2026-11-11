@@ -38,8 +38,9 @@ before it is merged:
 3. T-084, T-097, then T-089 and T-095 in the free slots
 4. T-088, T-092, T-094, T-098, T-101 (five at once: their files barely
    overlap; T-092 and T-098 share only `deploy/`)
-5. T-099, once wave 4 is merged, since it reconciles the plan with the
-   decisions T-094 and T-101 make; then T-096 and T-102 to T-105
+5. T-099, T-096, T-102, T-103 (T-099 reconciles the plan with what waves
+   1 to 4 decided)
+6. T-104 and T-105, which depend on T-096
 
 T-087 needs Linux and Windows machines and T-100 blocks only T-074.
 
