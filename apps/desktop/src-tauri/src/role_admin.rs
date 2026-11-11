@@ -5,7 +5,7 @@ use crate::{
     types::ApiError,
 };
 use serde::{Deserialize, Serialize};
-use ss_client_core::{ConnectionState, v1};
+use ss_client_core::{ConnectionState, authority::Authority, v1};
 use ss_core::{Id, Permissions};
 use tauri::State;
 use ts_rs::TS;
@@ -122,37 +122,18 @@ fn snapshot(state: &ss_client_core::State) -> Result<RoleSnapshot, ApiError> {
     if state.connection != ConnectionState::Connected {
         return Err(invalid("Server is disconnected"));
     }
-    let own = state
-        .own_user
-        .as_ref()
-        .ok_or_else(|| invalid("Missing account"))?;
-    let own_id = Id::try_from(own.id.as_ref()).map_err(|_| invalid("Invalid account"))?;
-    let assigned = |user: Id| {
-        state.roles.values().filter(move |r| {
-            r.is_default
-                || state
-                    .members
-                    .get(&user)
-                    .is_some_and(|m| m.roles.contains(&r.id))
-        })
-    };
-    let own_roles = assigned(own_id).collect::<Vec<_>>();
-    let bits = own_roles
-        .iter()
-        .fold(0, |bits, role| bits | role.permissions);
-    let administrator = bits & Permissions::ADMINISTRATOR.bits() != 0;
-    let manage_roles = administrator || bits & Permissions::MANAGE_ROLES.bits() != 0;
-    let manage_channels = administrator || bits & Permissions::MANAGE_CHANNELS.bits() != 0;
+    if state.own_user.is_none() {
+        return Err(invalid("Missing account"));
+    }
+    let authority = Authority::own(state).ok_or_else(|| invalid("Invalid account"))?;
+    let administrator = authority.is_administrator();
+    let manage_roles = authority.allows(Permissions::MANAGE_ROLES);
+    let manage_channels = authority.can_manage_channels();
     if !manage_roles && !manage_channels {
         return Err(invalid(
             "Manage roles or manage channels permission is required",
         ));
     }
-    let highest = own_roles
-        .iter()
-        .map(|r| r.position)
-        .max()
-        .unwrap_or(i32::MIN);
     let mut roles = state
         .roles
         .values()
@@ -164,7 +145,7 @@ fn snapshot(state: &ss_client_core::State) -> Result<RoleSnapshot, ApiError> {
                 permissions: r.permissions.to_string(),
                 position: r.position,
                 is_default: r.is_default,
-                editable: administrator || (r.position < highest && r.permissions & 1 == 0),
+                editable: authority.can_edit_role(r),
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -186,9 +167,7 @@ fn snapshot(state: &ss_client_core::State) -> Result<RoleSnapshot, ApiError> {
                     .iter()
                     .map(|r| display(r))
                     .collect::<Result<_, _>>()?,
-                editable: manage_roles
-                    && (administrator
-                        || assigned(*id).map(|r| r.position).max().unwrap_or(i32::MIN) < highest),
+                editable: authority.can_set_roles_of(state, *id),
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -203,11 +182,7 @@ fn snapshot(state: &ss_client_core::State) -> Result<RoleSnapshot, ApiError> {
             .server
             .as_ref()
             .is_some_and(|s| s.features.iter().any(|f| f == "role-management-v2")),
-        create_position: if administrator {
-            Some(0)
-        } else {
-            highest.checked_sub(1)
-        },
+        create_position: authority.new_role_position(),
     })
 }
 #[tauri::command]

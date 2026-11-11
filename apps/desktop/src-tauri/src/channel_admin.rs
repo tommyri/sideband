@@ -3,10 +3,9 @@ use crate::{
     commands::{api_error, parse_server_id},
     state::AppState,
     types::ApiError,
-    voice_view,
 };
 use serde::{Deserialize, Serialize};
-use ss_client_core::{Client, ConnectionState, v1};
+use ss_client_core::{Client, ConnectionState, authority::Authority, v1};
 use ss_core::{Id, VoiceProfile};
 use tauri::State;
 use ts_rs::TS;
@@ -126,17 +125,15 @@ fn profiles() -> Vec<ChannelProfile> {
     })
     .collect()
 }
-fn authorize(
-    client: &Client,
-    state: &AppState,
-    server: &ss_net::pins::ServerId,
-) -> Result<(), ApiError> {
+fn authorize(client: &Client) -> Result<(), ApiError> {
     let store = client.state();
     let snapshot = store.read();
     if snapshot.connection != ConnectionState::Connected {
         return Err(ApiError::new("disconnected", "Server is disconnected"));
     }
-    if !voice_view::snapshot(&snapshot, server, state.storage.as_ref(), None)?.can_manage_channels {
+    let authority =
+        Authority::own(&snapshot).ok_or_else(|| ApiError::new("disconnected", "Not logged in."))?;
+    if !authority.can_manage_channels() {
         return Err(ApiError::new(
             "forbidden",
             "Manage channels permission is required",
@@ -153,7 +150,7 @@ pub async fn channel_admin_snapshot(
     let client = state
         .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
-    authorize(&client, &state, &server)?;
+    authorize(&client)?;
     let channels = client
         .state()
         .read()
@@ -228,7 +225,7 @@ async fn perform(
     let client = state
         .client(&server)
         .ok_or_else(|| invalid("Server is disconnected"))?;
-    authorize(&client, state, &server)?;
+    authorize(&client)?;
     match action {
         ChannelAdminAction::Create {
             channel_kind,

@@ -6,10 +6,13 @@ use crate::{
 };
 use serde::Serialize;
 use ss_client_core::{
+    authority::can_publish,
     media::{ScreenShareHandle, ScreenShareSession},
     v1,
 };
-use ss_core::{Id, Permissions};
+use ss_core::Id;
+#[cfg(test)]
+use ss_core::Permissions;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -47,16 +50,6 @@ pub struct Sharing {
 }
 fn error(e: impl std::fmt::Display) -> ApiError {
     ApiError::new("screen_share", e.to_string())
-}
-fn can_publish(state: &ss_client_core::State, channel: Id, connection: Id) -> bool {
-    state.connection == ss_client_core::ConnectionState::Connected
-        && state
-            .voice_states
-            .get(&connection)
-            .is_some_and(|v| v.channel_id.as_deref() == Some(channel.as_bytes().as_slice()))
-        && state.permissions(channel).is_some_and(|p| {
-            p.contains(Permissions::STREAM | Permissions::CONNECT | Permissions::VIEW_CHANNEL)
-        })
 }
 // Construct and poll the !Send capture future on the same thread.
 async fn native<T, F, Fut>(work: F) -> Result<T, ApiError>
