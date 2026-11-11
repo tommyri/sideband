@@ -1122,6 +1122,187 @@ async fn edits_and_deletes_made_during_an_outage_show_after_resume() {
     https_task.abort();
 }
 
+/// The resync after a resume is refused once with `429` and
+/// `Retry-After: 1`. It waits the stated second, plus up to a quarter more,
+/// and then reads the page: the edit made while away shows, and no
+/// "resync deferred" notice is raised.
+#[tokio::test]
+async fn a_rate_limited_resync_waits_as_told_and_then_catches_up() {
+    let mut world = World::new().await;
+    let throttle = Arc::new(Throttle::default());
+    let (https_port, https_task) = https_with(&world, false, Some(throttle.clone())).await;
+    world.address.https_port = https_port;
+    let client = world.owner().await;
+    let mut events = client.subscribe();
+    let mut notices = client.subscribe();
+    let general = named(&client.state().read(), "general", v1::ChannelKind::Text);
+    let kept = client
+        .send_message(post(general, "first draft"))
+        .await
+        .unwrap();
+    until(&client, &mut events, |s| {
+        s.messages
+            .get(&general)
+            .is_some_and(|cache| cache.ordered().len() == 1)
+    })
+    .await;
+    let pool = world.pool.clone();
+    let offline = async {
+        until(&client, &mut events, |s| {
+            matches!(s.connection, ConnectionState::Reconnecting { .. })
+        })
+        .await;
+        throttle
+            .refuse
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let mut conn = pool.write().await;
+        db::messages::edit(
+            &mut conn,
+            kept,
+            "edited while away",
+            &[],
+            false,
+            ss_core::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    };
+    tokio::join!(world.restart_after(Duration::from_millis(300)), offline);
+    until(&client, &mut events, |s| {
+        s.connection == ConnectionState::Connected
+            && s.messages.get(&general).is_some_and(|cache| {
+                cache
+                    .ordered()
+                    .iter()
+                    .any(|message| message.content == "edited while away")
+            })
+    })
+    .await;
+    let log = throttle.log.lock().clone();
+    assert_eq!(
+        log.iter().map(|(_, status)| *status).collect::<Vec<_>>(),
+        [429, 200]
+    );
+    let waited = log[1].0 - log[0].0;
+    assert!(
+        waited >= Duration::from_secs(1) && waited < Duration::from_secs(3),
+        "retried after {waited:?}"
+    );
+    loop {
+        match notices.try_recv() {
+            Ok(ClientEvent::Notice(text)) => {
+                assert!(!text.contains("deferred"), "notice: {text}");
+            }
+            Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => break,
+        }
+    }
+    https_task.abort();
+}
+
+/// The server subscribes a session to the event bus before it builds the
+/// snapshot. A mention stored in between is counted in the snapshot's
+/// `mention_count` and again when its `MessageCreated` arrives. Every session
+/// that signs in while mentions stream in ends up above the count a session
+/// that signs in afterwards reads from the database (21 to 23 for 20).
+///
+/// The client cannot tell those events apart: the snapshot carries no
+/// message horizon for guild channels, and there is no read-state query. The
+/// fix belongs on the server (T-107 notes).
+#[tokio::test]
+#[ignore = "server defect, reproduced by T-107: bus subscription precedes the snapshot"]
+async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
+    const SENDERS: usize = 4;
+    // Each account may send five messages per five seconds.
+    const EACH: usize = 5;
+    const SESSIONS: u64 = 12;
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let general = named(&owner.state().read(), "general", v1::ChannelKind::Text);
+    let mut senders = Vec::new();
+    for index in 0..SENDERS {
+        let invite = owner
+            .create_invite(v1::CreateInvite {
+                max_uses: Some(1),
+                expires_at: None,
+            })
+            .await
+            .unwrap();
+        let credentials = Credentials::Register(v1::Register {
+            invite_code: invite.code,
+            username: format!("sender{index}"),
+            password: "test-password".into(),
+        });
+        senders.push(
+            Client::connect(world.address.clone(), credentials, world.pins.clone())
+                .await
+                .unwrap(),
+        );
+    }
+    let read = owner.send_message(post(general, "read")).await.unwrap();
+    owner
+        .mark_read(v1::MarkRead {
+            channel_id: wire(general),
+            message_id: wire(read),
+        })
+        .await
+        .unwrap();
+    let mention = format!("<@{}>", own_id(&owner));
+    let saved = || {
+        Client::connect_with_storage(
+            world.address.clone(),
+            Credentials::Saved,
+            world.pins.clone(),
+            world.storage.clone(),
+        )
+    };
+    let flood = futures::future::join_all(senders.iter().enumerate().map(|(who, sender)| {
+        let mention = &mention;
+        async move {
+            let mut ids = Vec::new();
+            for index in 0..EACH {
+                let content = format!("{mention} ping {who}.{index}");
+                ids.push(sender.send_message(post(general, &content)).await.unwrap());
+                tokio::time::sleep(Duration::from_millis(3)).await;
+            }
+            ids
+        }
+    }));
+    let sign_ins = futures::future::join_all((0..SESSIONS).map(|index| async move {
+        tokio::time::sleep(Duration::from_millis(4 * index)).await;
+        saved().await.unwrap()
+    }));
+    let (ids, sessions) = tokio::join!(flood, sign_ins);
+    let ids: Vec<_> = ids.into_iter().flatten().map(wire).collect();
+    for session in &sessions {
+        let mut events = session.subscribe();
+        // A session that signed in after a message only knows it from the
+        // snapshot count; wait for the newest live one.
+        let newest = ids.iter().max().unwrap().clone();
+        until(session, &mut events, |s| {
+            s.messages
+                .get(&general)
+                .is_some_and(|cache| cache.ordered().iter().any(|m| m.id == newest))
+        })
+        .await;
+    }
+    let count = |client: &Client| {
+        client
+            .state()
+            .read()
+            .read_states
+            .get(&general)
+            .map(|read| read.mention_count)
+    };
+    let truth = count(&saved().await.unwrap());
+    assert_eq!(truth, Some(u32::try_from(ids.len()).unwrap()));
+    let counts: Vec<_> = sessions.iter().map(count).collect();
+    assert!(
+        counts.iter().all(|count| *count == truth),
+        "{counts:?}, the database says {truth:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "two-minute CI chaos test"]
 async fn two_minute_random_outages_leave_no_stuck_client_or_voice_tracks() {
@@ -1224,6 +1405,32 @@ async fn ban_stops_automatic_reconnect_and_new_pins_require_approval() {
 // A small HTTPS adapter for the actual production Axum history router. The
 // deployed server uses a TLS reverse proxy; this fixture supplies that boundary.
 async fn https(world: &World, wrong_certificate: bool) -> (u16, JoinHandle<()>) {
+    https_with(world, wrong_certificate, None).await
+}
+/// Refuses the next `refuse` history requests with `429` and `Retry-After: 1`,
+/// as `ss-server`'s per-address limiter answers, and logs every history
+/// request's status with the time it arrived.
+#[derive(Default)]
+struct Throttle {
+    refuse: std::sync::atomic::AtomicUsize,
+    log: parking_lot::Mutex<Vec<(std::time::Instant, u16)>>,
+}
+impl Throttle {
+    fn refused(&self) -> bool {
+        self.refuse
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| left.checked_sub(1),
+            )
+            .is_ok()
+    }
+}
+async fn https_with(
+    world: &World,
+    wrong_certificate: bool,
+    throttle: Option<Arc<Throttle>>,
+) -> (u16, JoinHandle<()>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
     let other = tempfile::tempdir().unwrap();
@@ -1250,7 +1457,7 @@ async fn https(world: &World, wrong_certificate: bool) -> (u16, JoinHandle<()>) 
         loop {
             tokio::select! {
                 accepted = listener.accept() => {
-                    let (socket, _) = accepted.unwrap(); let acceptor = acceptor.clone(); let app = app.clone();
+                    let (socket, _) = accepted.unwrap(); let acceptor = acceptor.clone(); let app = app.clone(); let throttle = throttle.clone();
                     peers.spawn(async move {
                         let Ok(mut stream) = acceptor.accept(socket).await else { return; };
                         let mut header = Vec::new(); let mut byte = [0];
@@ -1268,9 +1475,16 @@ async fn https(world: &World, wrong_certificate: bool) -> (u16, JoinHandle<()>) 
                         } }
                         assert!(length <= 4 * 1024 * 1024);
                         let mut body = vec![0; length]; stream.read_exact(&mut body).await.unwrap();
-                        let response = app.oneshot(request.body(axum::body::Body::from(body)).unwrap()).await.unwrap();
-                        let status = response.status(); let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap();
-                        let header = format!("HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", status.as_u16(), body.len());
+                        let history = path.contains("/messages");
+                        let (status, retry, body) = if history && throttle.as_ref().is_some_and(|t| t.refused()) {
+                            (429, "Retry-After: 1\r\n".to_owned(), axum::body::Bytes::from_static(b"rate limited"))
+                        } else {
+                            let response = app.oneshot(request.body(axum::body::Body::from(body)).unwrap()).await.unwrap();
+                            let retry = response.headers().get(axum::http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).map(|v| format!("Retry-After: {v}\r\n")).unwrap_or_default();
+                            (response.status().as_u16(), retry, axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap())
+                        };
+                        if let Some(throttle) = throttle.as_ref().filter(|_| history) { throttle.log.lock().push((std::time::Instant::now(), status)); }
+                        let header = format!("HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n{retry}Connection: close\r\n\r\n", body.len());
                         let _ = stream.write_all(header.as_bytes()).await; let _ = stream.write_all(&body).await; let _ = stream.shutdown().await;
                     });
                 }

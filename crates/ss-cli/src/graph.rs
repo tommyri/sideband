@@ -61,6 +61,8 @@ pub struct VoiceGraph {
     timestamp: u32,
     track_id: u32,
     gate: bool,
+    /// Whether the frame being filled holds an open quantum.
+    voiced: bool,
     talking: bool,
     click_due: bool,
     frame_has_click: bool,
@@ -95,6 +97,7 @@ impl VoiceGraph {
             timestamp: 0,
             track_id,
             gate: false,
+            voiced: false,
             talking: false,
             click_due: false,
             frame_has_click: false,
@@ -145,9 +148,11 @@ impl VoiceGraph {
 
     /// Encode available frames from one 10 ms capture quantum.
     ///
-    /// `gate` is push-to-talk, voice activation, or open mic. A measurement
-    /// click is sent even when the gate is closed. Returns whether this call
-    /// injected a click.
+    /// `gate` is push-to-talk, voice activation, or open mic. A closed
+    /// quantum is never transmitted: inside a burst it goes in as silence, so
+    /// the burst's `TALK_END` frame carries none of what the microphone heard
+    /// after the gate closed. A measurement click is sent even when the gate
+    /// is closed, on silence. Returns whether this call injected a click.
     pub fn push_capture(&mut self, input: &[f32], gate: bool) -> Result<bool, GraphError> {
         if input.len() != self.quantum {
             return Err(GraphError::Frame);
@@ -161,7 +166,12 @@ impl VoiceGraph {
         }
         let inject = self.click_due && self.pending.is_empty();
         let start = self.pending.len();
-        self.pending.extend_from_slice(input);
+        if gate {
+            self.pending.extend_from_slice(input);
+            self.voiced = true;
+        } else {
+            self.pending.resize(start + self.quantum, 0.0);
+        }
         if inject {
             mix_click(&mut self.pending[start..], self.channels);
             self.frame_has_click = true;
@@ -240,12 +250,14 @@ impl VoiceGraph {
         self.frame
             .copy_from_slice(&self.pending[..self.frame_samples]);
         self.pending.drain(..self.frame_samples);
-        let click = self.frame_has_click;
-        self.frame_has_click = false;
+        let click = std::mem::take(&mut self.frame_has_click);
+        let voiced = std::mem::take(&mut self.voiced);
         let open = self.gate || click;
         let timestamp = self.timestamp;
         self.timestamp = self.timestamp.wrapping_add(self.samples_per_channel);
-        if !open && !self.talking {
+        // A frame that holds gated audio is sent even when its last quantum
+        // closed the gate: then it both starts and ends the burst.
+        if !open && !self.talking && !voiced {
             return Ok(None);
         }
         let mut flags = 0_u8;
@@ -350,6 +362,56 @@ mod tests {
         }
         assert!(total > 0.5, "mixed energy {total}");
         assert!(receiver.snapshot().accepted > 0);
+    }
+
+    /// After the gate closes the microphone still hears speech; none of it
+    /// may go out. The burst's last frame (`TALK_END`) holds silence where
+    /// the closed quanta are, as in `ss-client-core` (T-082).
+    #[test]
+    fn closing_quantum_is_zeroed_even_when_the_microphone_still_hears_speech() {
+        for profile in [VoiceProfile::Voice, VoiceProfile::LowLatency] {
+            // One quantum: `a_one_quantum_burst_on_a_frame_boundary_is_sent`.
+            for open in [2, 3, 4] {
+                let mut graph = VoiceGraph::new(profile, 1).unwrap();
+                let speech = vec![0.1; graph.quantum()];
+                for _ in 0..open {
+                    graph.push_capture(&speech, true).unwrap();
+                }
+                let mut closed = 0;
+                while graph.talking || !graph.pending.is_empty() {
+                    graph.push_capture(&speech, false).unwrap();
+                    closed += 1;
+                    assert!(
+                        closed < 10,
+                        "{profile:?} open {open}: the burst never ended"
+                    );
+                }
+                let packets = graph.pop_outgoing();
+                let last = DatagramHeader::parse(packets.last().unwrap()).unwrap().0;
+                assert_ne!(last.flags & TALK_END, 0, "{profile:?} open {open}");
+                let tail = (closed * graph.quantum()).min(graph.frame_samples);
+                let frame = &graph.frame[graph.frame_samples - tail..];
+                assert!(
+                    frame.iter().all(|s| *s == 0.0),
+                    "{profile:?} open {open}: captured audio after the gate closed"
+                );
+            }
+        }
+    }
+
+    /// A one-quantum burst that starts a 20 ms frame is still sent, as one
+    /// packet that starts and ends the burst.
+    #[test]
+    fn a_one_quantum_burst_on_a_frame_boundary_is_sent() {
+        let mut graph = VoiceGraph::new(VoiceProfile::Voice, 1).unwrap();
+        let speech = vec![0.1; graph.quantum()];
+        graph.push_capture(&speech, true).unwrap();
+        graph.push_capture(&speech, false).unwrap();
+        let packets = graph.pop_outgoing();
+        assert_eq!(packets.len(), 1);
+        let header = DatagramHeader::parse(&packets[0]).unwrap().0;
+        assert_eq!(header.flags, TALK_START | TALK_END);
+        assert!(!graph.talking);
     }
 
     #[test]
