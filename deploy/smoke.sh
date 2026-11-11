@@ -10,12 +10,29 @@ health_port="${SMOKE_HEALTH_PORT:-19101}"
 quic_port="${SMOKE_QUIC_PORT:-4443}"
 spike_port="${SMOKE_SPIKE_PORT:-4433}"
 
-docker build -f deploy/Dockerfile -t "$image" .
-docker rm -f socialspeak-smoke socialspeak-spike >/dev/null 2>&1 || true
+compose_health_port="${SMOKE_COMPOSE_HEALTH_PORT:-19102}"
+compose_port="${SMOKE_COMPOSE_PORT:-4444}"
+compose_project=sideband-smoke
+log=""
+tls_dir=""
 
+docker build -f deploy/Dockerfile -t "$image" .
+
+# Every run starts from empty volumes and leaves nothing behind: no
+# containers, no volumes, no log file.
+compose_down() {
+  for file in docker-compose.yml docker-compose.nginx.yml; do
+    docker compose -p "$compose_project" -f "deploy/$file" down -v --remove-orphans >/dev/null 2>&1 || true
+  done
+}
 cleanup() {
   docker rm -f socialspeak-smoke socialspeak-spike >/dev/null 2>&1 || true
+  docker volume rm -f socialspeak-smoke socialspeak-spike >/dev/null 2>&1 || true
+  compose_down
+  if [[ -n "$log" ]]; then rm -f "$log"; fi
+  if [[ -n "$tls_dir" ]]; then rm -rf "$tls_dir"; fi
 }
+cleanup
 trap cleanup EXIT
 
 docker run -d --name socialspeak-smoke \
@@ -108,3 +125,57 @@ if ! grep -q "speakers=2" "$log"; then
   echo "the two bots did not become audible" >&2
   exit 1
 fi
+
+# Both Compose files as shipped: no capabilities, read-only root, the
+# healthcheck, and the non-root bind of 443 inside the container. Only the
+# host ports (and, for NGINX, the certificate directory) are replaced, and
+# the healthcheck interval is shortened so `--wait` returns quickly.
+compose_up() {
+  local file="$1" override="$2"
+  SIDEBAND_IMAGE="$image" docker compose -p "$compose_project" \
+    -f "deploy/$file" -f - up -d --wait --wait-timeout 120 <<<"$override" || {
+    SIDEBAND_IMAGE="$image" docker compose -p "$compose_project" -f "deploy/$file" logs >&2 || true
+    echo "$file did not become healthy" >&2
+    exit 1
+  }
+}
+compose_check() {
+  local file="$1"
+  curl -fsS --retry 5 --retry-all-errors --retry-delay 1 \
+    "http://127.0.0.1:${compose_health_port}/healthz" >/dev/null
+  curl -kfsS --retry 5 --retry-all-errors --retry-delay 1 \
+    "https://127.0.0.1:${compose_port}/api/v1/server" >/dev/null
+  # The command in deploy/grafana/README.md, inside the container.
+  SIDEBAND_IMAGE="$image" docker compose -p "$compose_project" -f "deploy/$file" \
+    exec -T socialspeak /ss-server conn list --data-dir /data >/dev/null
+  echo "$file: healthy, HTTPS and conn list ok"
+  SIDEBAND_IMAGE="$image" docker compose -p "$compose_project" -f "deploy/$file" down -v >/dev/null 2>&1
+}
+
+compose_up docker-compose.yml "services:
+  socialspeak:
+    healthcheck: { interval: 2s }
+    ports: !override
+      - \"127.0.0.1:${compose_port}:443/udp\"
+      - \"127.0.0.1:${compose_port}:443/tcp\"
+      - \"127.0.0.1:${compose_health_port}:9101\""
+compose_check docker-compose.yml
+
+tls_dir="$(mktemp -d)"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+  -subj /CN=localhost -addext subjectAltName=DNS:localhost \
+  -keyout "$tls_dir/key.pem" -out "$tls_dir/cert.pem" 2>/dev/null
+cat "$tls_dir/cert.pem" "$tls_dir/key.pem" >"$tls_dir/bundle.pem"
+chmod 0755 "$tls_dir"
+chmod 0644 "$tls_dir/bundle.pem"
+compose_up docker-compose.nginx.yml "services:
+  socialspeak:
+    healthcheck: { interval: 2s }
+    ports: !override
+      - \"127.0.0.1:${compose_port}:443/udp\"
+      - \"127.0.0.1:${compose_port}:443/tcp\"
+      - \"127.0.0.1:${compose_health_port}:9101/tcp\"
+    volumes: !override
+      - socialspeak:/data
+      - ${tls_dir}:/certificates:ro"
+compose_check docker-compose.nginx.yml

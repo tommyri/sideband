@@ -119,6 +119,8 @@ mod tests {
         p.reset();
         assert_eq!(p.timing(99, now, None), Timing::Present);
     }
+    // Needs the OpenH264 encoder; without `software` nothing can encode H.264 here.
+    #[cfg(feature = "software")]
     #[test]
     fn software_roundtrip_recovers_after_decoder_reset() {
         use moq_video::{Size, Surface, encode};

@@ -4,6 +4,8 @@ pub mod decode;
 #[cfg(feature = "render")]
 pub use moq_video::render;
 pub use moq_video::{Frame, Size};
+// Keyframe detection for the publisher; nothing else reads H.264 NAL units.
+#[cfg(feature = "capture")]
 mod h264;
 mod preset;
 #[cfg(feature = "capture")]

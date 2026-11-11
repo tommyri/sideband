@@ -23,6 +23,8 @@ jobs:
           node-version: 26.13.0
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Node and pnpm match apps/desktop/package.json
+        run: node scripts/check-desktop-toolchain.mjs
       - name: Frontend dependencies
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
@@ -30,4 +32,4 @@ jobs:
         working-directory: apps/desktop
         run: pnpm check && pnpm build
       - name: Packaging script tests
-        run: node --test scripts/build-test-desktop.test.mjs scripts/release-desktop.test.mjs
+        run: node --test scripts/build-test-desktop.test.mjs scripts/release-desktop.test.mjs scripts/check-desktop-toolchain.test.mjs

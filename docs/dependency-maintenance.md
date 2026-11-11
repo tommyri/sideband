@@ -1,6 +1,6 @@
 # Dependency maintenance
 
-Last reviewed: 2026-11-06.
+Last reviewed: 2026-11-11 (workflow and toolchain sections, T-098).
 
 GitHub workflows remain manually triggered. Dependency maintenance must not add
 push, pull-request, or scheduled CI runs. Dependabot may propose updates; merge
@@ -11,11 +11,17 @@ only after reviewing compatibility and running the relevant checks.
 - Rust stable is pinned in `rust-toolchain.toml` and aligned with workflow inputs.
 - Desktop development uses Node 26.13.0 and pnpm 12.18.0. The desktop package
   records its Node engine and package-manager version; CI uses matching versions.
+  `scripts/check-desktop-toolchain.mjs` (run by `just check-desktop` and the
+  frontend workflow) fails when either differs. Prettier ignores
+  `pnpm-lock.yaml`: the lockfile is committed exactly as pnpm 12.18.0 writes it.
 - GitHub Actions use immutable commit SHAs, annotated with their release versions.
   Resolve updated SHAs from each official action repository, and review migration
   notes before changing major versions.
 - Apple Silicon builds use `macos-15`; optional Intel builds use `macos-15-intel`.
   The retired macOS 14 runners cannot build new releases.
+- Runner images are pinned: `ubuntu-24.04` (and `ubuntu-24.04-arm` for the aarch64
+  server), `macos-15`, `windows-2025`. Move a label deliberately, not through a
+  `*-latest` alias. `fuzz.yml` still names `ubuntu-latest`; T-101 owns that file.
 
 ## Frontend compatibility
 
@@ -43,7 +49,10 @@ than an unused parallel 0.6 copy. The reqwest and ACME features explicitly retai
 ring TLS provider. Existing Argon2 PHC hashes remain valid; a regression test uses
 a reference hash from the previous Argon2 version.
 
-`cargo deny check` enforces the repository's license and advisory policy. Scoped
+`cargo deny check` enforces the repository's license and advisory policy. It
+checks the graph with every feature enabled (`[graph] all-features` in
+`deny.toml`); before 2026-11-11 the optional VA-API and NVENC crates were never
+checked. Scoped
 maintenance-only exceptions remain for unmaintained transitive helpers that have
 no safe upstream upgrade. These are recorded in `deny.toml`; they do not disable
 vulnerability checks generally.
@@ -72,7 +81,8 @@ seven days; published release assets are unaffected.
 
 Linux setup uses `scripts/install-linux-deps.sh`: two network retries, 30-second
 network timeouts, bounded package-lock waits, and separate update/install deadlines.
-Job limits prevent stalled runs consuming the default six hours. A slow mirror now
+Every job sets `timeout-minutes` (a job that calls a reusable workflow gets the
+called jobs' limits), so a stalled run does not consume the default six hours. A slow mirror now
 fails explicitly instead of occupying a runner indefinitely; rerun only failed jobs
 for transient infrastructure errors. Cold builds still take longer after dependency
 or toolchain upgrades, and cache hits do not eliminate native linking or packaging.

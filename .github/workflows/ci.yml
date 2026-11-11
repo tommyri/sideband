@@ -41,7 +41,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +86,10 @@ jobs:
       - name: Opus frame budget
         if: inputs.benchmarks
         run: cargo bench -p ss-audio --bench codec
+      - name: Optional AEC alone
+        run: cargo test -p ss-audio --features aec
+      - name: Optional AEC alone lints
+        run: cargo clippy -p ss-audio --all-targets --features aec -- -D warnings
       - name: Optional processing chain (AEC, RNNoise, AGC)
         run: cargo test -p ss-audio --all-features
       - name: Optional processing chain lints
@@ -100,13 +104,25 @@ jobs:
       - name: Wayland PipeWire capture build
         if: runner.os == 'Linux'
         run: cargo clippy -p ss-video --all-targets --features pipewire -- -D warnings
+      # Their native code is Linux-only; elsewhere the features add nothing.
+      # Compiled and linted only: no runner has a VA-API or NVENC device.
+      - name: VA-API and NVENC encoder build
+        if: runner.os == 'Linux'
+        run: cargo clippy -p ss-video --all-targets --features vaapi,nvidia -- -D warnings
+      - name: Video without default features
+        run: |
+          cargo test -p ss-video --no-default-features
+          cargo clippy -p ss-video --all-targets --no-default-features -- -D warnings
       - name: Dependency graph
         if: runner.os == 'Linux'
-        run: bash scripts/check-deps.sh
+        run: |
+          bash scripts/check-deps.test.sh
+          bash scripts/check-deps.sh
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-deny
         if: runner.os == 'Linux'
+      # deny.toml sets graph.all-features, so optional backends are checked too.
       - name: cargo deny
         if: runner.os == 'Linux'
         run: cargo deny check

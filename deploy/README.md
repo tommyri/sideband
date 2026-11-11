@@ -60,6 +60,16 @@ publishes the metrics port only on `127.0.0.1:9101`. The data volume is
 `/data` inside the container. `docker logs` shows the owner invite and
 the fingerprint.
 
+Both Compose files drop every capability, set `no-new-privileges`, and run
+with a read-only root filesystem; only the `/data` volume and a `/tmp` tmpfs
+are writable. Port 443 still binds without `NET_BIND_SERVICE`, because Docker
+sets `net.ipv4.ip_unprivileged_port_start=0` inside containers (Docker 20.10
+and later, not with `network_mode: host`). The healthcheck runs
+`/ss-server conn list` in the container, which fails unless the internal
+listener answers; `docker compose ps` shows the result and
+`docker compose up --wait` waits for it. Docker does not restart an unhealthy
+container on its own.
+
 For an optional local source build:
 
 ```sh
@@ -109,7 +119,10 @@ the existing `deploy_socialspeak` volume. Do not use `down -v` during migration.
    container group 65532 can read it. The directory is mounted read-only; do not
    mount the entire Let's Encrypt directory or make private keys world-readable.
    Sideband's file watcher reloads new identities without dropping existing calls.
-   The hook reloads NGINX after validating its configuration. On renewal failure,
+   The bundle is installed before `nginx -t` runs, so a broken unrelated NGINX
+   site does not hold back the QUIC certificate; the hook then fails without
+   reloading NGINX. The hostname check compares OpenSSL's verdict text, because
+   OpenSSL 3.0 `x509 -checkhost` exits 0 on a mismatch. On renewal failure,
    investigate Certbot/hook logs; existing certificates still have an expiry date.
 4. Start the container and install the additional NGINX site:
 
@@ -139,9 +152,17 @@ and need updating; changing the Docker image alone does not change client trust.
 NGINX and QUIC may present different valid certificates for the same hostname to
 updated public-trust clients. This example shares one certificate for operational
 simplicity. Self-signed/pinned deployments still require the same leaf on both
-transports. HTTP traffic reaches Sideband from the proxy address: existing
-server-side per-IP limits are shared across proxied clients; forwarded headers
-are not treated as trusted client identities.
+transports.
+
+HTTP traffic reaches Sideband from the proxy address, so the server's per-address
+limits (a 200-request burst refilled at 50 per second, 64 open connections) are
+one budget shared by every proxied client; forwarded headers are not treated as
+trusted client identities. The sample site therefore limits each client address
+itself (10 requests per second with a burst of 40, 16 connections; NGINX answers
+429 past that) and keeps a pool of reused upstream connections capped below the
+server's connection limit. The shared budget remains the ceiling for all clients
+together: a busy group can still see 429 from Sideband. Raise the NGINX limits
+only together with that in mind.
 
 ## Firewall rules
 
@@ -216,39 +237,82 @@ issued leaf is used by both QUIC and HTTPS.
 ## Backup and restore
 
 `ss-server backup` is consistent while the server is running. The tar
-contains `socialspeak.db` and `attachments/`. The dynamic user owns
-`/var/lib/socialspeak`, so run the backup with that identity and write
-the tar inside the state directory, then copy it off the machine:
+contains `socialspeak.db` and `attachments/`. It does not contain
+`config.toml` or `tls/` (the identity pinned clients trust); keep copies of
+those with the tar.
+
+### systemd
+
+The unit's dynamic user is named after the unit, `socialspeak`, and owns
+`/var/lib/socialspeak` (really `/var/lib/private/socialspeak`). Run backup
+and restore as that same user with `systemd-run`, so they share the running
+server's UID:
 
 ```sh
 sudo systemd-run --wait --pipe --collect \
+  --property=User=socialspeak \
   --property=DynamicUser=yes \
   --property=StateDirectory=socialspeak \
   --property=UMask=0077 \
   /usr/local/bin/ss-server backup /var/lib/socialspeak/socialspeak.tar \
   --data-dir /var/lib/socialspeak
+sudo cat /var/lib/socialspeak/socialspeak.tar > socialspeak.tar
+sudo rm /var/lib/socialspeak/socialspeak.tar
 ```
 
-Restore only while the process is stopped, and delete the WAL files so
-SQLite does not replay them over the snapshot:
+`User=socialspeak` matters. Without it the transient unit gets its own
+dynamic user, named after `run-u….service`, and systemd changes the owner of
+a `StateDirectory=` to the unit's user when the unit starts: the whole state
+directory would be chowned to that transient UID under the running server.
+If you renamed the unit file, use its name instead of `socialspeak`.
+
+Restore only while the server is stopped. The tar is streamed on standard
+input, and `tar` runs as the service user, so every restored file belongs to
+it (a root `tar` would leave `socialspeak.db` owned by root, and the server
+could not write it). The WAL files are removed first so SQLite does not
+replay them over the snapshot:
 
 ```sh
 sudo systemctl stop socialspeak
-sudo tar -C /var/lib/socialspeak -xf /var/lib/socialspeak/socialspeak.tar
-sudo rm -f /var/lib/socialspeak/socialspeak.db-wal /var/lib/socialspeak/socialspeak.db-shm
+sudo systemd-run --wait --pipe --collect \
+  --property=User=socialspeak \
+  --property=DynamicUser=yes \
+  --property=StateDirectory=socialspeak \
+  --property=UMask=0077 \
+  /bin/sh -c 'cd /var/lib/socialspeak && rm -f socialspeak.db-wal socialspeak.db-shm && exec tar -xf -' \
+  < socialspeak.tar
 sudo systemctl start socialspeak
 ```
 
-Docker, while the container is up:
+If a restore was already extracted as root, give the files back to the
+directory's owner while the server is stopped:
+`sudo chown -R --reference=/var/lib/private/socialspeak /var/lib/private/socialspeak`.
+
+### Docker
+
+While the container is up:
 
 ```sh
 docker compose -f deploy/docker-compose.yml exec socialspeak \
   /ss-server backup /data/socialspeak.tar --data-dir /data
+docker compose -f deploy/docker-compose.yml cp socialspeak:/data/socialspeak.tar ./socialspeak.tar
 ```
 
-Copy that tar out of the volume. To restore, stop the container, extract
-the tar into the volume, delete any `socialspeak.db-wal` and
-`socialspeak.db-shm`, and start again.
+The copy in the volume stays until the next backup replaces it. The image
+has no shell or `tar`, so restore through a throwaway container that mounts
+the same volume and runs as the server's uid 65532:
+
+```sh
+docker compose -f deploy/docker-compose.yml stop socialspeak
+docker run --rm -i --network none --user 65532:65532 \
+  --volumes-from "$(docker compose -f deploy/docker-compose.yml ps -aq socialspeak)" \
+  alpine:3.22 \
+  sh -c 'cd /data && rm -f socialspeak.db-wal socialspeak.db-shm && exec tar -xf -' \
+  < socialspeak.tar
+docker compose -f deploy/docker-compose.yml start socialspeak
+```
+
+Use `-f deploy/docker-compose.nginx.yml` throughout for the NGINX variant.
 
 ## Upgrade
 
@@ -278,3 +342,12 @@ public endpoint answers HTTPS and refuses plaintext HTTP, then runs
 same image with no subcommand. That entrypoint is the unauthenticated
 voice spike. `ss-cli` still speaks that spike; it does not log into
 `ss-server run`.
+
+It then starts `docker-compose.yml` and `docker-compose.nginx.yml` as
+shipped, replacing only the host ports and (for NGINX) the certificate
+directory with a throwaway self-signed bundle. Each must become healthy,
+answer `/healthz` and HTTPS, and run `ss-server conn list` in the container.
+Every run starts from new volumes and removes its containers, volumes and
+log afterwards. Override the host ports with `SMOKE_HEALTH_PORT`,
+`SMOKE_QUIC_PORT`, `SMOKE_SPIKE_PORT`, `SMOKE_COMPOSE_HEALTH_PORT` and
+`SMOKE_COMPOSE_PORT` when the defaults are taken.

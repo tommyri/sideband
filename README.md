@@ -75,14 +75,32 @@ Native prerequisites:
 - **macOS:** Xcode Command Line Tools and CMake; deployment target macOS 13+.
 - **Windows:** Visual Studio C++ build tools, CMake and WebView2.
 - **Linux:** ALSA/PipeWire development headers, Clang, CMake, WebKitGTK 4.1,
-  appindicator and the other packages listed in [desktop CI](.github/workflows/test-desktop.yml).
+  appindicator and the other packages that
+  [`scripts/install-linux-deps.sh desktop`](scripts/install-linux-deps.sh) installs.
   Current Linux test packages target Ubuntu 24.04; older-distribution portability
   has not been established.
 
+`just check-desktop` stops first, with the reason, unless Node and pnpm match
+`apps/desktop/package.json`; another pnpm rewrites the lockfile.
+
 The standard-library Python repository checks run with
 `python3 scripts/check-public-repo.py`. The public repository workflow also scans
-Git history with Gitleaks. All GitHub Actions workflows are manual-only for now
-to control usage; pushes and pull requests do not automatically run CI.
+Git history with Gitleaks.
+
+### CI runs only when dispatched
+
+Every GitHub Actions workflow is started by hand; pushes and pull requests run
+nothing (maintainer decision, 2026-11-11). The routine gate is local: `just check`,
+plus `just check-desktop` for desktop or frontend changes. A Mac does not see
+Windows or Linux breakage or leaked secrets, so dispatch:
+
+- **CI** (`ci.yml`) on the branch before merging changes to platform code, feature
+  flags, dependencies, `deploy/` or workflows: Ubuntu, macOS and Windows checks,
+  the container and Compose smoke test, `check-deps` and `cargo deny`. The release
+  workflows also run it for the commit they publish.
+- **Public repository checks** (`public-repo.yml`) before pushing to the public
+  repository and before every release: tracked-file hygiene and the Gitleaks scan.
+- **Desktop test builds** after packaging changes, and **Fuzz** after parser changes.
 
 ## Run a server
 

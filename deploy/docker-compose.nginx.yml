@@ -5,6 +5,24 @@ services:
     image: ${SIDEBAND_IMAGE:-ghcr.io/tommyri/sideband-server:0.0.1}
     restart: unless-stopped
     command: ["run", "--data-dir", "/data"]
+    # No capabilities: Docker lets containers bind ports below 1024 without
+    # NET_BIND_SERVICE (net.ipv4.ip_unprivileged_port_start=0), and the
+    # server runs as uid 65532. Only /data (the volume) and /tmp are writable.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # `conn list` reads the internal listener over loopback; it fails when the
+    # server is not serving. The image has no shell or curl for /healthz.
+    healthcheck:
+      test: ["CMD", "/ss-server", "conn", "list", "--data-dir", "/data"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     environment:
       SS_BIND_QUIC: 0.0.0.0:443
       SS_BIND_HTTP: 0.0.0.0:443
@@ -19,7 +37,5 @@ services:
     volumes:
       - socialspeak:/data
       - /etc/sideband/tls:/certificates:ro
-    cap_add:
-      - NET_BIND_SERVICE
 volumes:
   socialspeak:
