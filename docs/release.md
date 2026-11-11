@@ -38,13 +38,18 @@ and are not fixed by any workflow file:
   background process, a changed script or a PATH shim behind for later steps of
   the same job. This is why the updater key and all Apple credentials are used
   only in jobs on fresh runners that run no build output. Windows code signing
-  is the exception: Tauri signs the app, the NSIS uninstaller and both
-  installers while bundling, so the certificate is imported into the Windows
-  build job's user store, before any dependency code runs. A build script there
-  cannot read the PFX or its password, but it can sign with the key, and the
-  runner user is an administrator. Moving Windows signing out of the build
-  (build unsigned, then sign the binary and rebundle, or sign with a remote
-  signing service) is a recorded follow-up.
+  is the exception. Tauri signs the app, the NSIS plugins and uninstaller,
+  and both installers while bundling, so the certificate is imported into the
+  Windows build job's current-user store first, before any dependency code
+  runs. No dependency step gets the PFX or its password. But every later step
+  of that job runs with the key in the store: `pnpm install` with its install
+  scripts, `cargo test -p socialspeak-desktop`, and `tauri build` (the
+  frontend build, build scripts and proc macros). Code in any of them runs as
+  the runner user, an administrator, and can sign any file with the key until
+  the job ends. The key is imported non-exportable, but that flag is enforced
+  inside the Windows crypto libraries, and code running as the same
+  administrator user can bypass it, so assume it can export the key too. See
+  [Windows](#windows) for the planned fix.
 
 ### One-time GitHub setup (repository admin)
 
@@ -364,6 +369,22 @@ with the imported key in the store; see [release gates](#release-gates). Packagi
 uses SHA-256 with a timestamp service. Hardware-token/cloud signing is not wired
 by this PFX path. Without a certificate, document/expect SmartScreen warnings;
 updater signatures do not establish Windows publisher reputation.
+
+Planned fix (not implemented; recorded in T-110): build without the
+certificate (`tauri build --no-bundle`), then bundle in a separate
+`windows-signing` job on a fresh runner. That job would get the unsigned
+executable as its only build output, install the locked Tauri CLI with
+`--ignore-scripts`, check the executable against `build-info.json`, import
+the certificate, and run `tauri bundle --bundles nsis,msi` with the
+thumbprint. Tauri 2.12.4's `bundle` command compiles nothing. It signs the
+executable, the NSIS plugins, the uninstaller and both installers. It runs
+`cargo metadata` (no build scripts) and the NSIS and WiX tools it downloads.
+Signing only the finished installers afterwards is not enough: NSIS writes
+the uninstaller while compiling the installer and signs it then
+(`!uninstfinalize`), and the executable inside both installers would stay
+unsigned. A remote signing service does not fix this on its own: from the
+build job it is still a signing service that build scripts can call. It would
+only remove the key file from the runner.
 
 ### Linux
 

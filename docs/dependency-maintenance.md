@@ -1,6 +1,6 @@
 # Dependency maintenance
 
-Last reviewed: 2026-11-11 (workflow and toolchain sections, T-098).
+Last reviewed: 2026-11-11 (workflow and toolchain sections, T-098 and T-110).
 
 GitHub workflows remain manually triggered. Dependency maintenance must not add
 push, pull-request, or scheduled CI runs. Dependabot may propose updates; merge
@@ -21,7 +21,14 @@ only after reviewing compatibility and running the relevant checks.
   The retired macOS 14 runners cannot build new releases.
 - Runner images are pinned: `ubuntu-24.04` (and `ubuntu-24.04-arm` for the aarch64
   server), `macos-15`, `windows-2025`. Move a label deliberately, not through a
-  `*-latest` alias. `fuzz.yml` still names `ubuntu-latest`; T-101 owns that file.
+  `*-latest` alias. Dependabot does not update runner labels.
+- Dependabot covers the actions (by commit, including `dtolnay/rust-toolchain`,
+  whose `v1` tag every workflow pins), the Docker base images in `deploy/`, the
+  BuildKit image of the server release (`.github/buildkit/Dockerfile`, read by
+  `release-server.yml`), and both Cargo lockfiles. It does not cover the Rust
+  version, the fuzzing nightly, or the tools `taiki-e/install-action` installs
+  (`cargo-deny`, `cargo-fuzz`: newest at run time). `fuzz/Cargo.lock` is
+  refreshed from the workspace lockfile; see `fuzz/README.md`.
 
 ## Frontend compatibility
 
@@ -55,7 +62,9 @@ checks the graph with every feature enabled (`[graph] all-features` in
 checked. Scoped
 maintenance-only exceptions remain for unmaintained transitive helpers that have
 no safe upstream upgrade. These are recorded in `deny.toml`; they do not disable
-vulnerability checks generally.
+vulnerability checks generally. One vulnerability is ignored, by id and with a
+review date: RUSTSEC-2026-0459 (bundled SQLite), until an sqlx release allows
+`libsqlite3-sys` 0.39. Its exposure is in `docs/security.md` §11.
 
 Before publishing a dependency refresh, run frontend checks and production build,
 workspace tests and strict Clippy, packaging-script tests, npm audit, and cargo
