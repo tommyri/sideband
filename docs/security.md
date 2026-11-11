@@ -461,9 +461,8 @@ Sideband's certificate.
 
 - Fuzz targets have not yet run the 1 h each that T-061 asks for, and
   `fuzz.yml` has never been dispatched. Tracked as T-067.
-- Files saved from chat carry no download mark (`com.apple.quarantine`,
-  Windows `Zone.Identifier`), so Gatekeeper and SmartScreen do not check a
-  received executable. T-104.
+- Files saved from chat carry no download mark on Linux, which has no
+  equivalent. macOS and Windows mark them (T-104).
 - The guided-test evidence export can contain server addresses. T-096.
 - Some desktop shell modules still derive "may the user do this" hints
   themselves instead of from `ss_client_core::authority`; the server
@@ -494,7 +493,7 @@ that changed a guarantee this document states:
 | T-097 | Any branch could publish a signed update; signing secrets were in the whole build's environment; server images were not tied to a tested commit | Fixed in the workflows (`docs/release.md`) except Windows signing (T-110) | merged; needs GitHub environments and a first real run |
 | T-098 | `check-deps.sh` passed when `cargo tree` failed; the public-repo check missed `*pins.json`; the sample Compose ran without dropped capabilities or limits | Fixed in `deploy/` | merged; VPS backup/restore open |
 | T-101 | The fuzz targets did not exercise the parsers that run; the router rejected messages the protocol allows | Fixed, section 10 | done |
-| T-104 | Saved files carry no download mark | Open, section 12 | todo |
+| T-104 | Saved files carry no download mark | `com.apple.quarantine` and `Zone.Identifier` on every saved file; Linux noted in section 12 | merged; Gatekeeper, SmartScreen and Windows CI checks open |
 | T-105 | Shell permission hints are derived in several places | Open, section 12 | todo |
 
 Hands-on checks for these tasks are in

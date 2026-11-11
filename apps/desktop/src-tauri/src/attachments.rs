@@ -58,11 +58,54 @@ fn save_file(folder: &Path, filename: &str, data: &[u8]) -> Result<String, ApiEr
         .create_new(true)
         .open(&path)
         .map_err(error)?;
-    if let Err(e) = file.write_all(data) {
+    // Marked before the first byte, so no complete unmarked copy ever exists.
+    // A file that cannot be marked is removed rather than left unchecked.
+    let written = mark_downloaded(&path, &file)
+        .map_err(|e| error(format!("Could not mark the file as downloaded: {e}")))
+        .and_then(|()| file.write_all(data).map_err(error));
+    if let Err(e) = written {
         let _ = std::fs::remove_file(&path);
-        return Err(error(e));
+        return Err(e);
     }
     Ok(path.to_string_lossy().into_owned())
+}
+/// Sets `com.apple.quarantine` in the format Apple's downloaders use, so
+/// Gatekeeper checks the file when it is opened. Per file rather than
+/// `LSFileQuarantineEnabled`, which would also quarantine the app's own
+/// storage and the updater's files, and does not apply to unbundled builds.
+#[cfg(target_os = "macos")]
+fn mark_downloaded(_path: &Path, file: &std::fs::File) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    use xattr::FileExt;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_secs();
+    // Flags 0x83, as on browser downloads. The event id is a
+    // fresh ULID in UUID form; no Launch Services event record is written.
+    let mut value = format!("0083;{now:08x};Sideband;");
+    for (i, byte) in Id::generate().as_bytes().iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            value.push('-');
+        }
+        let _ = write!(value, "{byte:02X}");
+    }
+    file.set_xattr("com.apple.quarantine", value.as_bytes())
+}
+/// Writes the Mark of the Web (Internet zone), which SmartScreen and the
+/// "downloaded from the internet" prompt read. First written on a Mac
+/// without a Windows target, so it was not compiled there (T-104).
+#[cfg(windows)]
+fn mark_downloaded(path: &Path, _file: &std::fs::File) -> std::io::Result<()> {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    std::fs::write(stream, b"[ZoneTransfer]\r\nZoneId=3\r\n")
+}
+/// Linux has no download mark that the desktop checks before running a file.
+#[cfg(not(any(target_os = "macos", windows)))]
+#[allow(clippy::unnecessary_wraps)] // Same signature as the macOS and Windows marks.
+fn mark_downloaded(_path: &Path, _file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
 }
 #[tauri::command]
 pub async fn attachment_transfer(
@@ -254,6 +297,45 @@ mod tests {
         assert_eq!(Path::new(&first).parent(), Some(dir.path()));
         assert_eq!(std::fs::read(first).unwrap(), b"first");
         assert_eq!(safe_filename("..."), "file");
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saved_downloads_carry_the_quarantine_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = save_file(dir.path(), "run me.command", b"#!/bin/sh\n").unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let value = xattr::get(&path, "com.apple.quarantine")
+            .unwrap()
+            .expect("a saved download has com.apple.quarantine");
+        let value = String::from_utf8(value).unwrap();
+        let fields: Vec<&str> = value.split(';').collect();
+        assert_eq!(fields.len(), 4, "{value}");
+        assert_eq!(fields[0], "0083", "{value}");
+        let at = u64::from_str_radix(fields[1], 16).unwrap();
+        assert!(at <= now && now - at < 60, "{value}");
+        assert_eq!(fields[1], format!("{at:08x}"), "{value}");
+        assert_eq!(fields[2], "Sideband", "{value}");
+        let groups: Vec<usize> = fields[3].split('-').map(str::len).collect();
+        assert_eq!(groups, [8, 4, 4, 4, 12], "{value}");
+        assert!(
+            fields[3]
+                .chars()
+                .all(|c| c == '-' || c.is_ascii_digit() || c.is_ascii_uppercase()),
+            "{value}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"#!/bin/sh\n");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn saved_downloads_carry_the_mark_of_the_web() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = save_file(dir.path(), "setup.exe", b"MZ").unwrap();
+        let stream = std::fs::read(format!("{path}:Zone.Identifier")).unwrap();
+        assert_eq!(stream, b"[ZoneTransfer]\r\nZoneId=3\r\n");
+        assert_eq!(std::fs::read(&path).unwrap(), b"MZ");
     }
     #[tokio::test]
     async fn preview_images_reject_credentials_schemes_and_private_hosts() {

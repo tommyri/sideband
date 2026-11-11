@@ -6929,6 +6929,7 @@ dependencies = [
  "tokio",
  "ts-rs",
  "wgpu",
+ "xattr",
 ]
 
 [[package]]
