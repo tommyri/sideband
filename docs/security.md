@@ -369,16 +369,23 @@ reveal their own address to that site.
 
 | Target | Input | Checks |
 |---|---|---|
-| `control_frames` | control frames, chunked reads, both envelope types | no panic, round-trip equality, oversize prefixes rejected |
+| `control_frames` | one control frame, both envelope types | protobuf decode: no panic, round-trip equality |
+| `control_stream` | a control stream in arbitrary chunks, both envelope types | `ss_net::control::FrameDecoder`, the parser both peers run: same messages and outcome as a whole-buffer reference parse, never reads past a frame, oversize prefixes rejected, errors sticky, round-trip equality |
+| `video_group` | a video group stream in arbitrary chunks | `ss_net::media::stream::GroupParser` (behind `read_header` and `GroupReader`): same items as one whole-stream feed, items re-encode to exactly the bytes consumed, frame limits hold, errors sticky |
 | `media_headers` | datagram and video stream headers | byte-exact re-encode |
 | `mentions` | message bodies | mention parser and preview URL extractor invariants |
 | `preview_html` | fetched HTML plus oEmbed JSON | terminates, clipped fields, http(s)-only URLs |
 | `multipart_upload` | upload request bodies | size cap, file-name normalization |
 
+Until T-101, `control_frames` read its chunks through `ss_proto::read_frame`,
+which only tests call; the production readers had no target. Both stream
+parsers are now sans-IO state machines that the QUIC readers drive, so the
+targets exercise the code that runs.
+
 There is no Markdown parser on the server; it stores raw text. `.github/
-workflows/fuzz.yml` runs every target for 10 minutes nightly. The first run
-of `preview_html` found a hang: a non-name byte inside a tag stalled the
-attribute loop forever (fixed in `previews::parse`, regression test added).
+workflows/fuzz.yml` runs every target for 10 minutes on manual dispatch. The
+first run of `preview_html` found a hang: a non-name byte inside a tag stalled
+the attribute loop forever (fixed in `previews::parse`, regression test added).
 
 ## 11. Dependencies
 

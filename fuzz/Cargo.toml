@@ -55,3 +55,17 @@ path = "fuzz_targets/multipart_upload.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "control_stream"
+path = "fuzz_targets/control_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "video_group"
+path = "fuzz_targets/video_group.rs"
+test = false
+doc = false
+bench = false

@@ -332,6 +332,39 @@ async fn request_router_correlates_out_of_order_replies_and_events() {
 }
 
 #[tokio::test]
+async fn router_delivers_unsolicited_errors_and_skips_unknown_events() {
+    let mut server = Server::new().await;
+    let (client, stream, _peer, mut peer_stream) = server.pair().await;
+    let (router, mut events) = ClientControl::start(stream);
+    // An event from a newer server: an unknown `msg` variant decodes to none,
+    // and re-encodes to exactly this envelope.
+    let future = ServerEnvelope {
+        request_id: 0,
+        msg: None,
+    };
+    let limited = ServerEnvelope::rate_limited(0, "media bitrate exceeded", Duration::from_secs(2));
+    within(async {
+        peer_stream.send(&limited).await.unwrap();
+        peer_stream.send(&future).await.unwrap();
+        peer_stream.send(&notice("after")).await.unwrap();
+        assert_eq!(events.recv().await.unwrap(), limited);
+        assert_eq!(events.recv().await.unwrap(), notice("after"));
+        // Requests still work after both.
+        let request = async { router.call(ping(1)).await.unwrap() };
+        let reply = async {
+            let request = peer_stream.recv().await.unwrap();
+            peer_stream.send(&ack(request.request_id)).await.unwrap();
+        };
+        let (reply, ()) = tokio::join!(request, reply);
+        assert!(matches!(reply, Reply::Ack(_)));
+    })
+    .await;
+    assert_eq!(router.unknown_messages(), 1);
+    assert!(router.terminal_error().is_none());
+    assert!(client.quic().close_reason().is_none());
+}
+
+#[tokio::test]
 async fn rebinding_the_client_socket_preserves_the_control_session() {
     let mut server = Server::new().await;
     let (client, mut stream, _peer, mut peer_stream) = server.pair().await;

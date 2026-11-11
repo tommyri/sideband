@@ -440,7 +440,22 @@ for 60 s or open for 10 minutes is closed, so clients must reconnect.
 PROTOCOL_VERSION` with `min`/`max`. Protobuf fields are only ever added; never
 renumbered. Datagram header version bits allow one future header change.
 Clients ignore fields they do not know, such as `Welcome.conn_id` on builds
-older than it.
+older than it. The server has no client capability signal, so this holds for
+every addition:
+
+- A server event (request id 0) whose `msg` variant the client does not know
+  decodes with no message. The client skips and counts it
+  (`ClientControl::unknown_messages`). A reply in an unknown shape still ends
+  its own request, with an error for that request only.
+- An `Error` with request id 0 is an unsolicited notice, for example the
+  `RATE_LIMITED` sent before a media rate-limit close. It reaches the
+  application as `ClientEvent::ServerError` with its `retry_after_ms`; the
+  connection stays up until the server closes it.
+- Permission masks keep bits the client has no name for. The mirrored
+  `Channel` and `Role` hold the raw mask; `State::permissions` returns only
+  the known bits, so an unknown grant enables nothing.
+- The server answers a command variant it does not know `INVALID`
+  ("unsupported command") and keeps the connection.
 
 ### Role management compatibility
 
