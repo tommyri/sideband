@@ -36,11 +36,12 @@ before it is merged:
 1. T-082, T-081, T-085, T-090
 2. T-083, T-086, T-091, T-093
 3. T-084, T-097, then T-089 and T-095 in the free slots
+4. T-088, T-092, T-094, T-098, T-101 (five at once: their files barely
+   overlap; T-092 and T-098 share only `deploy/`)
+5. T-099, once wave 4 is merged, since it reconciles the plan with the
+   decisions T-094 and T-101 make; then T-096 and T-102 to T-105
 
-T-097 edits only workflows and release docs. Move it earlier if a release
-will be published before wave 3. After these: T-088, T-092, T-094, T-098,
-T-101, with T-099 in any free slot. T-087 needs Linux and Windows machines
-and T-100 blocks only T-074.
+T-087 needs Linux and Windows machines and T-100 blocks only T-074.
 
 ## Phase 0 — Foundations
 
