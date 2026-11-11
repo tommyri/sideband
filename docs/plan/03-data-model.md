@@ -1,7 +1,7 @@
 # Data model
 
 SQLite, WAL mode, `sqlx` with embedded migrations in
-`crates/ss-server/migrations/` (0001 to 0006; the listing below is the schema
+`crates/ss-server/migrations/` (0001 to 0007; the listing below is the schema
 after all of them). All ids are ULIDs stored as 16-byte BLOBs
 (`ss_core::Id`). Timestamps are `INTEGER` Unix milliseconds. Soft deletes only
 where history matters (messages).
@@ -63,7 +63,9 @@ server_settings  (key PK, value TEXT)  -- name, description, icon, registration_
 Indexes: `messages(channel_id, id DESC)`, `messages(author_id)`,
 `attachments(message_id)`, `sessions(user_id)`, `bans(user_id, lifted_at)`,
 `audit_log(created_at)`, `link_previews(expires_at)`,
-`message_nonces(created_at)`.
+`message_nonces(created_at)`, `channel_members(user_id, channel_id)`
+(migration 0007, T-109: the DM page and the group-DM count look members up
+by user).
 
 Nonces are kept 5 minutes after the message was stored (`02-protocol.md`
 §1.2). Message search (T-065, migration 0006) is an FTS5 external-content

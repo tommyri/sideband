@@ -1698,16 +1698,25 @@ async fn webhook_management_lists_metadata_and_revokes_the_created_url() {
             .starts_with(&format!("/api/v1/webhooks/{}/", created.id))
     );
     let second = owner.create_webhook_url(command).await.unwrap();
+    // The list is newest id first. Two webhooks made in the same millisecond
+    // get ULIDs whose random part sorts either way, so compare the page as a
+    // set and page from whichever came first.
     let rows = owner.list_webhooks(None).await.unwrap();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].id, second.id);
-    assert_eq!(rows[1].id, created.id);
-    assert_eq!(rows[0].name, "Builds");
-    assert_eq!(rows[0].channel_id, channel);
-    assert!(rows[0].revoked_at.is_none());
-    let older = owner.list_webhooks(Some(second.id)).await.unwrap();
+    let mut listed: Vec<_> = rows.iter().map(|row| row.id).collect();
+    listed.sort_unstable();
+    let mut made = vec![created.id, second.id];
+    made.sort_unstable();
+    assert_eq!(listed, made);
+    assert!(rows[0].id > rows[1].id, "the list is not newest id first");
+    for row in &rows {
+        assert_eq!(row.name, "Builds");
+        assert_eq!(row.channel_id, channel);
+        assert!(row.revoked_at.is_none());
+    }
+    let older = owner.list_webhooks(Some(rows[0].id)).await.unwrap();
     assert_eq!(older.len(), 1);
-    assert_eq!(older[0].id, created.id);
+    assert_eq!(older[0].id, rows[1].id);
     assert_webhook_metadata(&world, &url).await;
     assert_webhook_post(&world, url.path(), axum::http::StatusCode::OK).await;
     assert!(

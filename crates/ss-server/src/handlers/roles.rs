@@ -8,7 +8,8 @@
 //! `allow` bits the actor holds in that channel. Only an administrator holds
 //! `ADMINISTRATOR`, so only an administrator can grant it. The seeded Admin
 //! role cannot be deleted and keeps `ADMINISTRATOR`, so `user grant-admin`
-//! always has a role to grant.
+//! always has a role to grant. A server holds at most [`limits::MAX_ROLES`]
+//! roles, counting `@everyone` and Admin.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -24,6 +25,7 @@ use crate::{
         self, ADMIN_ROLE_ID, EVERYONE_ROLE_ID, NewAuditEntry, NewRole, RoleUpdate, audit_log,
         channels, roles, users,
     },
+    limits,
     perms::PermissionService,
 };
 
@@ -144,6 +146,12 @@ impl Roles {
         let role = {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
+            // Counted under the writer, so concurrent creates cannot pass it.
+            if roles::list(&mut tx).await?.len() >= limits::MAX_ROLES {
+                return Err(Error::Forbidden(
+                    "the server already has the maximum number of roles",
+                ));
+            }
             let role = roles::insert(
                 &mut tx,
                 NewRole {

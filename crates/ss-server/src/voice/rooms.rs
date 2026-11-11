@@ -106,12 +106,15 @@ impl Rooms {
     }
 
     pub(crate) fn allocate_track(&mut self) -> Option<u32> {
-        let next = self
-            .next_track
-            .checked_add(1)
-            .filter(|id| *id <= ss_net::media::MAX_TRACK_ID)?;
+        let next = self.peek_track()?;
         self.next_track = next;
         Some(next)
+    }
+
+    fn peek_track(&self) -> Option<u32> {
+        self.next_track
+            .checked_add(1)
+            .filter(|id| *id <= ss_net::media::MAX_TRACK_ID)
     }
 
     pub(crate) fn attach(&mut self, conn: Id, user: Id, connection: quinn::Connection) {
@@ -208,7 +211,9 @@ impl Rooms {
     }
 
     /// Move `plan.conn` into `plan.channel`, or update mute flags in place.
-    /// A second connection for the same user is removed from voice first.
+    /// A second connection for the same user is removed from voice first,
+    /// and that seat does not count against the channel's limit. A refused
+    /// join (`Full`, `TracksExhausted`) changes no seat.
     pub(crate) fn join(&mut self, plan: JoinPlan) -> Result<JoinEvents, JoinError> {
         let JoinPlan {
             conn,
@@ -224,27 +229,41 @@ impl Rooms {
         let Some(user) = self.peers.get(&conn).map(|peer| peer.user) else {
             return Err(JoinError::NotAttached);
         };
-        let mut broadcast = Vec::new();
-        if let Some(other) = self
+        let other = self
             .by_user
             .get(&user)
             .copied()
-            .filter(|other| *other != conn)
-        {
-            broadcast.extend(self.leave(other));
-        }
-        if self.seat(conn).is_some_and(|seat| seat.channel != channel) {
-            broadcast.extend(self.leave(conn));
-        }
-        if self.seat(conn).is_some_and(|seat| seat.channel == channel) {
-            return Ok(self.retune(conn, self_mute, self_deaf));
-        }
-        if let Some(limit) = limit.filter(|limit| *limit > 0) {
-            let occupied = self.members(channel).map_or(0, HashSet::len);
-            if i64::try_from(occupied).unwrap_or(i64::MAX) >= limit {
-                return Err(JoinError::Full);
+            .filter(|other| *other != conn);
+        let staying = self.seat(conn).is_some_and(|seat| seat.channel == channel);
+        // Every refusal is decided before any seat moves: a refused join keeps
+        // both of the user's seats, so there is no leave to publish.
+        if !staying {
+            if let Some(limit) = limit.filter(|limit| *limit > 0) {
+                let occupied = self.members(channel).map_or(0, |members| {
+                    members
+                        .iter()
+                        .filter(|member| Some(**member) != other)
+                        .count()
+                });
+                if i64::try_from(occupied).unwrap_or(i64::MAX) >= limit {
+                    return Err(JoinError::Full);
+                }
+            }
+            if self.peek_track().is_none() {
+                return Err(JoinError::TracksExhausted);
             }
         }
+        let mut broadcast = Vec::new();
+        if let Some(other) = other {
+            broadcast.extend(self.leave(other));
+        }
+        if staying {
+            let mut events = self.retune(conn, self_mute, self_deaf);
+            broadcast.append(&mut events.broadcast);
+            events.broadcast = broadcast;
+            return Ok(events);
+        }
+        broadcast.extend(self.leave(conn));
         let track = self.allocate_track().ok_or(JoinError::TracksExhausted)?;
         let server_mute = self.server_mute.contains(&user);
         let seat = Seat {

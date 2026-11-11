@@ -282,6 +282,7 @@ channels) closed every other session. Each has a test in
 | Channel and group-DM name | 1–64, same rules |
 | Channel topic | ≤ 1024 |
 | Role name | 1–100, same rules |
+| Roles | ≤ 250 per server, counting `@everyone` and Admin (`limits::MAX_ROLES`); `CreateRole` at the cap fails with `FORBIDDEN` |
 | Webhook name and `username` override | 1–80, same rules |
 | Message body | 1–4000 after trimming; webhook bodies ≤ 2000 |
 | Mentions per message | ≤ 50 distinct `<@ULID>` |
@@ -315,6 +316,39 @@ there is no duplicate check to run under NFKC. A display name can still
 imitate another member's name. The protocol always includes the immutable
 username in each `User` carried by snapshots and member/message events, and
 the voice and text UI tasks require rendering it beside every display name.
+
+**`Welcome` size.** Apart from DMs, a `Welcome` is sent in full: every
+guild channel the member can see, every role, every member, every voice seat.
+`tests/welcome_bound.rs` measures it with the snapshot builder and the
+protobuf encoder. "Longest" puts every string at its longest allowed length
+in four-byte characters, with an avatar on every member; "typical" uses
+ASCII names of about 11 characters, no topic, avatar or activity.
+
+| Item | Longest | Typical |
+|---|---|---|
+| Member (with the `@everyone` id) | 359 B | 70 B |
+| Activity of an online member (at most 256, one per connection) | +516 B | 0 |
+| Role | 435 B | 43 B |
+| Role a member holds, besides `@everyone` | 18 B | 18 B |
+| Guild channel (voice, every setting, full topic) | 4,440 B | 85 B |
+| Read state, one per channel at most | 44 B | 44 B |
+| Voice seat (state and track), one per connection at most | 138 B | 138 B |
+| User, server info, token | about 2 KB | about 2 KB |
+
+The bound that holds, with M members, R roles, G role grants and C channels:
+with longest strings and all 256 connections online with a full activity and
+a voice seat, a `Welcome` fits one 1 MiB frame while
+359·M + 435·R + 18·G + 4,484·C ≤ 870,000 bytes (1 MiB less 132 KB of
+activities, 35 KB of seats, and the fixed part). With typical strings the
+same holds for 70·M + 43·R + 18·G + 129·C ≤ 1,000,000. Measured examples,
+each at the role cap (`@everyone`, Admin and 248 more): 50 channels and
+1,000 members holding five roles each, all longest, is 913 KB; 200 channels
+and 8,000 members holding two roles each, all typical, is 883 KB. The role cap holds roles to 109 KB at
+most. Members, channels and grants are not capped: past the bound, every
+`Hello` is refused with "welcome response is too large" (and logged) until
+the guild shrinks. Paging members would lift that; it is a protocol change
+and is not made. DMs never cause the refusal: they are halved until the
+frame fits.
 
 ## 8. Transport and HTTP hardening
 

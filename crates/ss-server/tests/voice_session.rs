@@ -317,6 +317,109 @@ async fn over_bitrate_sender_is_disconnected_without_stopping_other_audio() {
     assert_eq!(heard, packet(bea_track));
 }
 
+/// A join refused as full must not have taken the joiner's other seat: the
+/// seat removal used to run before the limit check, and its leave was dropped
+/// with the error.
+#[tokio::test]
+async fn a_second_device_refused_by_a_full_channel_leaves_the_first_seat_in_place() {
+    let world = World::new().await;
+    let (admin_id, admin_login) = register_owner(&world, "ada").await;
+    let (_admin_conn, mut admin_stream) = world.connect().await;
+    let admin = hello(&mut admin_stream, admin_login).await;
+    let general = voice_named(admin.snapshot.as_ref().unwrap(), "General");
+    let (_bea_desk, mut bea_desk_stream) = world.connect().await;
+    let bea = hello(&mut bea_desk_stream, invite(&world, admin_id, "bea").await).await;
+    let bea_id = user_id(&bea);
+    let (_cyd_conn, mut cyd_stream) = world.connect().await;
+    hello(&mut cyd_stream, invite(&world, admin_id, "cyd").await).await;
+    let other = voice_channel(&mut admin_stream, &mut bea_desk_stream, "other").await;
+    limit_to_one(&mut admin_stream, &general).await;
+
+    let seated = command(&mut bea_desk_stream, 2, join(&other, false, false)).await;
+    assert!(matches!(seated.msg, Some(Event::Ack(_))), "{seated:?}");
+    let filled = command(&mut cyd_stream, 2, join(&general, false, false)).await;
+    assert!(matches!(filled.msg, Some(Event::Ack(_))), "{filled:?}");
+    drain(&mut admin_stream).await;
+
+    let (_bea_phone, mut bea_phone_stream) = world.connect().await;
+    hello(&mut bea_phone_stream, login("bea", "phone")).await;
+    let refused = command(&mut bea_phone_stream, 2, join(&general, false, false)).await;
+    assert_eq!(error_message(&refused), "voice channel is full");
+    let states = voice_states_for(&mut admin_stream, bea_id).await;
+    assert!(
+        states.is_empty(),
+        "a refused join changed bea's seat: {states:?}"
+    );
+
+    assert_eq!(
+        seated_channel(&world, bea_id).await.as_deref(),
+        Some(other.as_ref()),
+        "the refused join removed bea's first seat"
+    );
+}
+
+/// The seat a join moves away from is not counted against the limit: a member
+/// switching devices inside a full channel keeps it full, not over.
+#[tokio::test]
+async fn a_member_switches_devices_inside_a_full_channel() {
+    let world = World::new().await;
+    let (admin_id, admin_login) = register_owner(&world, "ada").await;
+    let (_admin_conn, mut admin_stream) = world.connect().await;
+    let admin = hello(&mut admin_stream, admin_login).await;
+    let general = voice_named(admin.snapshot.as_ref().unwrap(), "General");
+    let (_bea_desk, mut bea_desk_stream) = world.connect().await;
+    let bea = hello(&mut bea_desk_stream, invite(&world, admin_id, "bea").await).await;
+    let bea_id = user_id(&bea);
+    limit_to_one(&mut admin_stream, &general).await;
+    let seated = command(&mut bea_desk_stream, 2, join(&general, false, false)).await;
+    assert!(matches!(seated.msg, Some(Event::Ack(_))), "{seated:?}");
+    drain(&mut admin_stream).await;
+
+    let (_bea_phone, mut bea_phone_stream) = world.connect().await;
+    hello(&mut bea_phone_stream, login("bea", "phone")).await;
+    let moved = command(&mut bea_phone_stream, 2, join(&general, false, false)).await;
+    assert!(matches!(moved.msg, Some(Event::Ack(_))), "{moved:?}");
+    let states = voice_states_for(&mut admin_stream, bea_id).await;
+    assert_eq!(states.len(), 2);
+    assert!(states[0].channel_id.is_none());
+    assert_eq!(states[1].channel_id.as_deref(), Some(general.as_ref()));
+}
+
+/// Joining a full channel from another channel keeps the joiner where it was.
+#[tokio::test]
+async fn a_member_refused_by_a_full_channel_stays_in_their_current_one() {
+    let world = World::new().await;
+    let (admin_id, admin_login) = register_owner(&world, "ada").await;
+    let (_admin_conn, mut admin_stream) = world.connect().await;
+    let admin = hello(&mut admin_stream, admin_login).await;
+    let general = voice_named(admin.snapshot.as_ref().unwrap(), "General");
+    let (_bea_conn, mut bea_stream) = world.connect().await;
+    let bea = hello(&mut bea_stream, invite(&world, admin_id, "bea").await).await;
+    let bea_id = user_id(&bea);
+    let (_cyd_conn, mut cyd_stream) = world.connect().await;
+    hello(&mut cyd_stream, invite(&world, admin_id, "cyd").await).await;
+    let other = voice_channel(&mut admin_stream, &mut bea_stream, "other").await;
+    limit_to_one(&mut admin_stream, &general).await;
+    let seated = command(&mut bea_stream, 2, join(&other, false, false)).await;
+    assert!(matches!(seated.msg, Some(Event::Ack(_))), "{seated:?}");
+    let filled = command(&mut cyd_stream, 2, join(&general, false, false)).await;
+    assert!(matches!(filled.msg, Some(Event::Ack(_))), "{filled:?}");
+    drain(&mut admin_stream).await;
+
+    let refused = command(&mut bea_stream, 3, join(&general, false, false)).await;
+    assert_eq!(error_message(&refused), "voice channel is full");
+    let states = voice_states_for(&mut admin_stream, bea_id).await;
+    assert!(
+        states.is_empty(),
+        "a refused join changed bea's seat: {states:?}"
+    );
+    assert_eq!(
+        seated_channel(&world, bea_id).await.as_deref(),
+        Some(other.as_ref()),
+        "the refused join removed bea's seat"
+    );
+}
+
 #[tokio::test]
 async fn welcome_includes_voice_and_a_second_connection_moves_the_user() {
     let world = World::new().await;
@@ -714,6 +817,70 @@ fn voice_named(snapshot: &v1::Snapshot, name: &str) -> Bytes {
         .unwrap_or_else(|| panic!("missing voice channel {name}"))
         .id
         .clone()
+}
+
+/// The channel `user` is seated in, as a fresh `Welcome` for the owner lists it.
+async fn seated_channel(world: &World, user: Id) -> Option<Bytes> {
+    let (_conn, mut stream) = world.connect().await;
+    let welcome = hello(&mut stream, login("ada", "observer")).await;
+    welcome
+        .snapshot
+        .unwrap()
+        .voice_states
+        .into_iter()
+        .find(|state| state.user_id.as_ref() == id_to_bytes(user).as_ref())
+        .and_then(|state| state.channel_id)
+}
+
+/// Creates a voice channel and waits until `member` has seen it, past the
+/// channel-diff debounce.
+async fn voice_channel(
+    admin: &mut ss_net::control::ClientStream,
+    member: &mut ss_net::control::ClientStream,
+    name: &str,
+) -> Bytes {
+    let created = command(
+        admin,
+        90,
+        Msg::CreateChannel(v1::CreateChannel {
+            kind: i32::from(v1::ChannelKind::Voice),
+            name: name.into(),
+            position: 5,
+            voice: Some(v1::VoiceSettings {
+                profile: i32::from(v1::VoiceProfile::Voice),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let channel = ack_channel(&created);
+    loop {
+        let frame = timeout(DEADLINE, member.recv()).await.unwrap().unwrap();
+        if let Some(Event::ChannelCreated(event)) = frame.msg
+            && event.channel.is_some_and(|created| created.id == channel)
+        {
+            return channel;
+        }
+    }
+}
+
+async fn limit_to_one(admin: &mut ss_net::control::ClientStream, channel: &Bytes) {
+    let limited = command(
+        admin,
+        91,
+        Msg::UpdateChannel(v1::UpdateChannel {
+            channel_id: channel.clone(),
+            voice: Some(v1::VoiceSettings {
+                profile: i32::from(v1::VoiceProfile::Voice),
+                user_limit: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert!(matches!(limited.msg, Some(Event::Ack(_))), "{limited:?}");
 }
 
 fn ack_channel(envelope: &v1::ServerEnvelope) -> Bytes {

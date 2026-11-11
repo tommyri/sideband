@@ -1126,6 +1126,44 @@ async fn create_role_keeps_the_requested_position_and_color() {
     assert_eq!(position(&mut conn, world.manager_role).await, 3);
 }
 
+/// Every `Welcome` carries every role, so their number is capped
+/// (`docs/security.md` section 7).
+#[tokio::test]
+async fn creating_a_role_past_the_cap_is_refused() {
+    let world = world().await;
+    {
+        let mut conn = world.pool.write().await;
+        let existing = roles::list(&mut conn).await.unwrap().len();
+        for n in existing..ss_server::limits::MAX_ROLES - 1 {
+            let _ = insert_role(&mut conn, &format!("filler {n}"), Permissions::empty(), 1).await;
+        }
+    }
+    let create = v1::CreateRole {
+        name: "last".into(),
+        color: None,
+        permissions: 0,
+        position: 2,
+    };
+    world
+        .roles_handler
+        .create(world.admin, &create)
+        .await
+        .expect("the cap itself is allowed");
+    let refused = world.roles_handler.create(world.admin, &create).await;
+    let Err(handlers::Error::Forbidden(message)) = refused else {
+        panic!("expected the role cap, got {refused:?}");
+    };
+    assert_eq!(
+        message,
+        "the server already has the maximum number of roles"
+    );
+    let mut conn = world.pool.write().await;
+    assert_eq!(
+        roles::list(&mut conn).await.unwrap().len(),
+        ss_server::limits::MAX_ROLES
+    );
+}
+
 #[tokio::test]
 async fn granting_a_role_cannot_hand_out_bits_the_actor_lacks() {
     let world = world().await;
