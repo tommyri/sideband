@@ -46,6 +46,11 @@ moq-net.workspace = true
 tempfile.workspace = true
 ss-server = { path = "../../../crates/ss-server", version = "0.1.0" }
 
+# Sets `com.apple.quarantine` on saved downloads (T-104). Already in the graph
+# through `tar`.
+[target.'cfg(target_os = "macos")'.dependencies]
+xattr = { version = "1.7.0", default-features = false }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ss-video = { workspace = true, features = ["pipewire"] }
 

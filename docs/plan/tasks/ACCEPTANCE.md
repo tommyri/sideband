@@ -82,6 +82,7 @@ with the server on the VPS.
 | Every cue heard (DM outside voice, output device, zero volume, deafen, lost/restored); trigger to onset under 50 ms | [T-055](T-055-notifications-sounds.md) | open | open | open | – |
 | Chat, rings, level meter and notifications still update with no ACL denial; window size and position survive restart; packaged build has no event inspector | [T-095](T-095-desktop-shell-hardening.md) | open | open | open | – |
 | Dropping a file on the composer attaches it; middle-clicking a link opens no window | [T-095](T-095-desktop-shell-hardening.md) | – | open | – | – |
+| A received `.command` and a zipped `.app` show the Gatekeeper prompt when opened; a `.bat` and an `.exe` from a received `.zip` show SmartScreen or the "downloaded from the internet" warning | [T-104](T-104-download-provenance-marks.md) | open | open | – | – |
 | Fresh install of a labelled test build; downloaded-artifact Gatekeeper result; AppImage on older distributions | [T-075](T-075-installable-test-builds.md) | open | open | open | – |
 | Guided test run and evidence export without a terminal, with a second participant (focus, device, sleep, reconnect) | [T-076](T-076-guided-voice-testing.md) | part | open | open | – |
 
@@ -111,6 +112,7 @@ with the server on the VPS.
 |---|---|---|---|---|---|
 | Regenerate `pnpm-lock.yaml` with the pinned Node and pnpm; `pnpm install --frozen-lockfile` and `pnpm check` leave git clean | [T-098](T-098-deploy-ci-hygiene.md), [T-095](T-095-desktop-shell-hardening.md) | open | – | – | – |
 | Dispatch `ci.yml` (first Linux run of the feature steps and Compose smoke, first `windows-2025`) and `public-repo.yml` with Gitleaks | [T-098](T-098-deploy-ci-hygiene.md) | – | – | – | GitHub open |
+| Dispatch `ci.yml`: the uncompiled Windows Mark of the Web code builds and `saved_downloads_carry_the_mark_of_the_web` passes | [T-104](T-104-download-provenance-marks.md) | – | open | – | GitHub |
 | Dispatch `fuzz.yml` with every target | [T-101](T-101-router-tolerance-parser-fuzzing.md), [T-067](T-067-security-acceptance.md) | – | – | – | GitHub open |
 | Environments `desktop-release`, `desktop-signing`, `server-release` with secrets moved in; rulesets for `main` and `server-v*` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
 | Desktop release from a non-main branch fails; `server-v0.1.0` dry run, re-dispatch without `force` fails; first update-enabled release with no signing variables in the log and `gh attestation verify` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
