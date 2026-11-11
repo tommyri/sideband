@@ -102,6 +102,13 @@ fails).
   Every allowed download is now attributable, so there is no address or
   global bucket. Test: `signed_downloads_through_one_proxy_count_against_their_signer`
   (red: 429 for the second member).
+- **Signed downloads use their own pool** (merge follow-up on main, second
+  review). Charging them to the signer's account let readers of a leaked URL
+  (valid 10 minutes) hold all 16 of the uploader's slots and lock them out of
+  their own uploads and downloads. Signed downloads now enter a separate
+  per-signer gate of the same size. Test:
+  `a_leaked_signed_url_cannot_lock_its_signer_out` (red: the signer's bearer
+  download got 429).
 - **Deadline independent of polling** (review follow-up). A download's file
   and slot belong to a spawned task that reads into a one-slot channel and
   stops when the last chunk is queued, the body is dropped, or

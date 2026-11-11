@@ -9,9 +9,11 @@
 //! download.
 //!
 //! Each account may have [`crate::storage::UploadPolicy::transfers_per_account`]
-//! uploads and downloads open at once. A signed-URL download counts against
-//! the account that signed it (the token binds the signer), never the client
-//! address, which behind a reverse proxy is the proxy's. A download's file and
+//! uploads and downloads open at once. Signed-URL downloads have a pool of the
+//! same size per signer (the token binds the signer), never per client
+//! address, which behind a reverse proxy is the proxy's. That pool is separate
+//! from the signer's own, so readers of a leaked URL cannot lock the uploader
+//! out of their own uploads and downloads. A download's file and
 //! slot belong to a task that ends when the body is sent, dropped, or
 //! [`crate::storage::UploadPolicy::transfer_timeout`] passes, whether or not
 //! the client is reading.
@@ -57,14 +59,17 @@ pub struct FilesState {
     pub files: Store,
     /// Uploads per account, ahead of the daily byte quota.
     uploads: Arc<KeyedLimiter<Id>>,
-    /// Open uploads and downloads per account.
+    /// Open uploads and bearer downloads per account.
     transfers: Arc<TransferGate>,
+    /// Open signed-URL downloads per signer, apart from `transfers`.
+    signed: Arc<TransferGate>,
 }
 
 /// Upload and download routes. Mount them on the public HTTPS listener.
 pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> Router {
     let limit = files.body_limit();
     let transfers = Arc::new(TransferGate::new(files.transfers_per_account()));
+    let signed = Arc::new(TransferGate::new(files.transfers_per_account()));
     Router::new()
         .route("/api/v1/attachments", post(upload))
         .route(
@@ -78,6 +83,7 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> R
             files,
             uploads: Arc::new(KeyedLimiter::new(quota(UPLOAD_BURST, UPLOAD_PERIOD))),
             transfers,
+            signed,
         })
 }
 
@@ -132,7 +138,7 @@ async fn download(
         if let Some(message_id) = file.message_id {
             live_message(&state, message_id).await?;
         }
-        return serve(&state, &file, &headers, signer).await;
+        return serve(&state, &state.signed, &file, &headers, signer).await;
     }
     let user = caller(&state.auth, &headers).await?;
     let file = load_file(&state, id).await?;
@@ -140,7 +146,7 @@ async fn download(
         return Err(HttpError::NotFound);
     }
     may_read(&state, user, &file).await?;
-    serve(&state, &file, &headers, user).await
+    serve(&state, &state.transfers, &file, &headers, user).await
 }
 
 /// The message a file is attached to, unless it is missing or deleted.
@@ -254,6 +260,7 @@ async fn load_file(state: &FilesState, id: Id) -> Result<db::Attachment, HttpErr
 
 async fn serve(
     state: &FilesState,
+    gate: &Arc<TransferGate>,
     file: &db::Attachment,
     headers: &HeaderMap,
     who: Id,
@@ -270,7 +277,7 @@ async fn serve(
             .body(Body::empty())
             .map_err(|_| HttpError::Internal);
     }
-    let permit = state.transfers.enter(who)?;
+    let permit = gate.enter(who)?;
     let (blob, len) = match state.files.open_blob(&file.storage_path).await {
         Ok(opened) => opened,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -349,7 +356,8 @@ async fn pump(
     }
 }
 
-/// Open transfers per account: the bearer, or a signed URL's signer. A key
+/// Open transfers per account: the bearer, or (in its own gate) a signed
+/// URL's signer. A key
 /// leaves the map with its last transfer, so the map is as large as the set
 /// of accounts with a transfer open.
 struct TransferGate {

@@ -295,6 +295,33 @@ async fn signed_downloads_through_one_proxy_count_against_their_signer() {
 }
 
 #[tokio::test]
+async fn a_leaked_signed_url_cannot_lock_its_signer_out() {
+    let rig = Rig::open().await;
+    let (file, _) = rig.posted("big.bin", &vec![4_u8; BIG]).await;
+    let signed = rig.store.download_url(file, "big.bin", rig.owner);
+    let bearer = format!("/api/v1/attachments/{file}/big.bin");
+    let router = rig.router();
+    let cap = UploadPolicy::default().transfers_per_account;
+    let mut stalled = Vec::new();
+    for _ in 0..cap {
+        let response = get(&router, None, &signed).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        stalled.push(response);
+    }
+    assert_eq!(
+        get(&router, None, &signed).await.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "signed downloads keep a per-signer cap"
+    );
+    assert_eq!(
+        get(&router, Some(&rig.owner_token), &bearer).await.status(),
+        StatusCode::OK,
+        "readers of a signed URL used up the signer's own transfers"
+    );
+    drop(stalled);
+}
+
+#[tokio::test]
 async fn a_download_nobody_reads_frees_its_slot_at_the_deadline() {
     let rig = Rig::open_with(UploadPolicy {
         transfers_per_account: 1,

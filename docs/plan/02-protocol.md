@@ -438,8 +438,9 @@ closed, so clients must reconnect.
 An upload form must send `channel_id` before `file` (`400` otherwise): upload
 permission is checked before any file byte is read, and the file streams to
 disk. Downloads stream from disk. One account may have 16 uploads and downloads
-open at once; more get `429` with `Retry-After: 1`. A signed-URL download counts
-against the account that signed it, never the client address. A download is cut
+open at once; more get `429` with `Retry-After: 1`. Signed-URL downloads have
+their own pool of 16 per signer, never per client address, separate from the
+signer's own transfers, so a leaked URL cannot lock the uploader out. A download is cut
 off 300 s after it starts even if the client has stopped reading, which frees
 its slot. A deleted message's attachments return `404`, signed URLs included,
 and their files are deleted by the next cleanup pass.
