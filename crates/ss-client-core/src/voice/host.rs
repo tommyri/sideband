@@ -253,6 +253,8 @@ pub(super) mod mock {
         pub device_output: Option<Consumer<f32>>,
         /// The device side of the open capture ring.
         pub device_input: Option<Producer<f32>>,
+        /// What the last capture open asked for.
+        pub capture_config: Option<GraphConfig>,
         /// The open duplex unit's stop flag.
         pub duplex: Option<Arc<AtomicBool>>,
     }
@@ -479,6 +481,7 @@ pub(super) mod mock {
                 .ok_or(device::Error::NoDevice)?;
             let (producer, consumer) = RingBuffer::new(config.samples_per_frame() * 25);
             world.device_input = Some(producer);
+            world.capture_config = Some(config);
             Ok((Box::new(Stream { id }), consumer))
         }
 

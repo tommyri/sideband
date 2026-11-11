@@ -173,7 +173,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-085](T-085-mute-fail-closed-shortcuts.md) | Mute fails closed; global shortcuts are never dropped | M | T-041, T-058 | in-progress |
 | [T-086](T-086-connection-identity-track-reuse.md) | Own connection id in Welcome; receivers survive track id reuse | M | T-081, T-082 | in-progress |
 | [T-087](T-087-input-stuck-key-reconcile.md) | PTT cannot stick: XI 2.1 and physical-state reconcile | S | T-049, T-050 | todo |
-| [T-088](T-088-capture-channel-voiceio-frames.md) | Capture channel selection and whole-frame ring transfers | S | T-010, T-054 | todo |
+| [T-088](T-088-capture-channel-voiceio-frames.md) | Capture channel selection and whole-frame ring transfers | S | T-010, T-054 | in-progress |
 | [T-089](T-089-reconnect-policy.md) | Reconnect policy: retryable errors, address fallback, backoff, stale cache | M | T-060, T-081, T-086 | in-progress |
 | [T-090](T-090-authorization-gaps.md) | Authorization gaps: overrides, role edits, voice seats, owner | M | T-022, T-025, T-030, T-061 | in-progress |
 | [T-091](T-091-dm-welcome-fanout-limits.md) | Bound DMs, Welcome size and fan-out | M | T-028, T-024, T-061 | in-progress |

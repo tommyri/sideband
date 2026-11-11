@@ -11,7 +11,11 @@ use std::{
 };
 
 use parking_lot::{Mutex, RwLock};
-use ss_audio::{device::DeviceId, processing::ProcessingConfig, vad};
+use ss_audio::{
+    device::{CaptureChannel, DeviceId},
+    processing::ProcessingConfig,
+    vad,
+};
 use ss_core::{Id, VoiceProfile};
 use ss_proto::{v1, validate::id_to_bytes};
 use tokio::{
@@ -82,6 +86,9 @@ pub struct AudioConfig {
     pub source: AudioSource,
     /// Input device; None follows the system default.
     pub input_device: Option<DeviceId>,
+    /// Which inputs of the device make up mono capture. Default: the first.
+    /// Apple's VoiceProcessingIO picks its own.
+    pub input_channel: CaptureChannel,
     /// Output device; None follows the system default.
     pub output_device: Option<DeviceId>,
     /// Portable devices or Apple's full-duplex voice-processing path.
@@ -113,6 +120,7 @@ impl Default for AudioConfig {
         Self {
             source: AudioSource::Device,
             input_device: None,
+            input_channel: CaptureChannel::FIRST,
             output_device: None,
             device_backend: DeviceBackend::Portable,
             gate: TalkGate::PushToTalk,

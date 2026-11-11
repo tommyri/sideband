@@ -15,7 +15,12 @@ deepfilter = []
 dred = ["opusic-c/dred"]
 # Apple's full-duplex echo-cancelling Audio Unit. macOS only; enabling the
 # feature on another target keeps the portable device backend unchanged.
-macos-voiceio = ["dep:block2", "dep:coreaudio", "dep:objc2-audio-toolbox"]
+macos-voiceio = [
+  "dep:block2",
+  "dep:coreaudio",
+  "dep:objc2-audio-toolbox",
+  "dep:objc2-core-audio-types",
+]
 rnnoise = ["dep:nnnoiseless"]
 
 [dependencies]
@@ -37,6 +42,7 @@ block2 = { workspace = true, optional = true }
 coreaudio = { workspace = true, optional = true }
 objc2.workspace = true
 objc2-audio-toolbox = { workspace = true, optional = true }
+objc2-core-audio-types = { workspace = true, optional = true }
 objc2-avf-audio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

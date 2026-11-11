@@ -18,7 +18,9 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::{
     DeviceId, Error, SAMPLES_PER_CHANNEL,
-    convert::{Framer, note_signal, pull_playback, push_capture, push_unframed, push_whole},
+    convert::{
+        CaptureLayout, Framer, note_signal, pull_playback, push_capture, push_unframed, push_whole,
+    },
     select::{GraphConfig, choose_format},
 };
 use crate::resample::{GRAPH_RATE, RateConverter};
@@ -160,6 +162,11 @@ impl CaptureStream {
         let direct = chosen.sample_rate == GRAPH_RATE;
         let graph_channels = usize::from(config.channels);
         let device_channels = usize::from(chosen.channels);
+        let layout = CaptureLayout {
+            device: device_channels,
+            graph: graph_channels,
+            input: config.input.resolve(device_channels),
+        };
         let (graph_tx, graph_rx) = RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels, RING));
         let counters = Arc::new(Counters::default());
         counters.resampler_active.store(!direct, Ordering::Relaxed);
@@ -175,8 +182,7 @@ impl CaptureStream {
             let stream = build_capture(CaptureBuild {
                 device,
                 chosen: &chosen,
-                device_channels,
-                graph_channels,
+                layout,
                 whole_frames: true,
                 output: graph_tx,
                 endpoint: endpoint.clone_arcs(),
@@ -188,8 +194,7 @@ impl CaptureStream {
             let stream = build_capture(CaptureBuild {
                 device,
                 chosen: &chosen,
-                device_channels,
-                graph_channels,
+                layout,
                 whole_frames: false,
                 output: device_tx,
                 endpoint: endpoint.clone_arcs(),
@@ -212,6 +217,9 @@ impl CaptureStream {
             device = %device_id,
             rate = chosen.sample_rate,
             channels = chosen.channels,
+            // 1-based like interface labels; 0 averages every input.
+            input = layout.input.map_or(0, |input| input + 1),
+            requested = ?config.input,
             resample = !direct,
             "opened capture"
         );
@@ -547,8 +555,7 @@ impl Endpoint {
 struct CaptureBuild<'a> {
     device: &'a cpal::Device,
     chosen: &'a Chosen,
-    device_channels: usize,
-    graph_channels: usize,
+    layout: CaptureLayout,
     whole_frames: bool,
     output: Producer<f32>,
     endpoint: Endpoint,
@@ -585,8 +592,7 @@ where
     let CaptureBuild {
         device,
         chosen,
-        device_channels,
-        graph_channels,
+        layout,
         whole_frames,
         mut output,
         endpoint,
@@ -595,7 +601,7 @@ where
     let counters_err = Arc::clone(&endpoint.counters);
     let counters = endpoint.counters;
     let clock = endpoint.clock;
-    let mut pending = Framer::new(graph_channels * SAMPLES_PER_CHANNEL);
+    let mut pending = Framer::new(layout.graph * SAMPLES_PER_CHANNEL);
     let mut signal = false;
     device
         .build_input_stream::<T, _, _>(
@@ -607,22 +613,9 @@ where
                     signal = note_signal(data, &counters);
                 }
                 if whole_frames {
-                    push_capture(
-                        data,
-                        device_channels,
-                        graph_channels,
-                        &mut output,
-                        &mut pending,
-                        &counters,
-                    );
+                    push_capture(data, layout, &mut output, &mut pending, &counters);
                 } else {
-                    push_unframed(
-                        data,
-                        device_channels,
-                        graph_channels,
-                        &mut output,
-                        &counters,
-                    );
+                    push_unframed(data, layout, &mut output, &counters);
                 }
             },
             move |error| on_stream_error(&error, &lost, &counters_err, true),
