@@ -61,6 +61,38 @@ fn backup_contains_the_database() {
     );
 }
 
+#[test]
+fn no_subcommand_prints_usage_and_exits_non_zero() {
+    // Without the fix this would start the voice spike, so run it somewhere
+    // harmless and kill it if it does not exit by itself.
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ss-server"))
+        .current_dir(dir.path())
+        .env_remove("XDG_DATA_HOME")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ss-server with no arguments kept running");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success(), "{:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Usage:"), "{stderr}");
+    assert!(stderr.contains("spike"), "{stderr}");
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "nothing is written without a subcommand"
+    );
+}
+
 #[tokio::test]
 async fn run_serves_metrics_and_shuts_down_with_a_client() {
     let dir = tempfile::tempdir().unwrap();

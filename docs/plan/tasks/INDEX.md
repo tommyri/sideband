@@ -177,7 +177,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-089](T-089-reconnect-policy.md) | Reconnect policy: retryable errors, address fallback, backoff, stale cache | M | T-060, T-081, T-086 | in-progress |
 | [T-090](T-090-authorization-gaps.md) | Authorization gaps: overrides, role edits, voice seats, owner | M | T-022, T-025, T-030, T-061 | in-progress |
 | [T-091](T-091-dm-welcome-fanout-limits.md) | Bound DMs, Welcome size and fan-out | M | T-028, T-024, T-061 | in-progress |
-| [T-092](T-092-transfer-listener-limits.md) | Stream attachments, bound listeners, retire the spike default | M | T-027, T-033, T-066 | todo |
+| [T-092](T-092-transfer-listener-limits.md) | Stream attachments, bound listeners, retire the spike default | M | T-027, T-033, T-066 | in-progress |
 | [T-093](T-093-session-revocation.md) | Session revocation, logout and expiry | S | T-021, T-061 | in-progress |
 | [T-094](T-094-server-event-correctness.md) | Member events, deleted content, cache races, media lock | M | T-024, T-025, T-026, T-029, T-091 | todo |
 | [T-095](T-095-desktop-shell-hardening.md) | Desktop shell: capabilities, lints, locks, scaffold leftovers | M | T-042, T-085 | in-progress |

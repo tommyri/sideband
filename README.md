@@ -95,8 +95,9 @@ cargo run -p ss-server -- run --data-dir ./data
 
 `init` prints an owner invitation and certificate fingerprint. Keep the invitation
 private and compare the fingerprint independently when connecting a client.
-Use the explicit `run` subcommand: running `ss-server` without a subcommand starts
-the legacy **unauthenticated voice spike**, not the normal authenticated server.
+`ss-server` needs a subcommand; with none it prints usage and exits. The legacy
+**unauthenticated voice spike** that `ss-cli` speaks is the explicit `spike`
+subcommand (loopback `127.0.0.1:4433` by default); never expose it.
 
 See [deployment](deploy/README.md) for systemd/Docker and
 [server diagnostics](deploy/grafana/README.md) for metrics and live connection

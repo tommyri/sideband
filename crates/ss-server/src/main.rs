@@ -1,5 +1,7 @@
-//! Command-line host. The default listener is the unauthenticated voice spike.
-//! Authenticated Hello is [`ss_server::connection::Server`].
+//! Command-line host. A subcommand is required: with none, it prints usage
+//! and exits non-zero. `run` is the authenticated server
+//! ([`ss_server::connection::Server`]); `spike` is the unauthenticated voice
+//! spike that `ss-cli` speaks.
 
 use clap::{Parser, Subcommand};
 use ss_net::{server::Endpoint, tls};
@@ -8,22 +10,12 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Sideband server. The default listener is the unauthenticated voice spike.",
-    args_conflicts_with_subcommands = true
+    about = "Sideband server. Use `run` for the authenticated server.",
+    arg_required_else_help = true
 )]
 struct Args {
     #[command(subcommand)]
-    command: Option<Command>,
-    /// Directory containing the database and the persistent TLS identity.
-    #[arg(long, default_value_os_t = default_data_dir())]
-    data_dir: PathBuf,
-    /// UDP socket address for QUIC.
-    #[arg(long, default_value = "0.0.0.0:443")]
-    bind: SocketAddr,
-    /// Exit after checking that `data-dir/socialspeak.db` already has every
-    /// embedded migration. Does not apply SQL and does not listen.
-    #[arg(long)]
-    check_migrations: bool,
+    command: Command,
 }
 
 #[derive(Subcommand)]
@@ -89,6 +81,22 @@ enum Command {
     Role {
         #[command(subcommand)]
         action: RoleAction,
+    },
+    /// Start the UNAUTHENTICATED voice spike: any username joins. For
+    /// `ss-cli` tests only; never expose it.
+    Spike {
+        /// Directory containing the database and the persistent TLS identity.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+        /// UDP socket address for QUIC.
+        #[arg(long, default_value = "127.0.0.1:4433")]
+        bind: SocketAddr,
+    },
+    /// Exit non-zero unless `data-dir/socialspeak.db` already has every
+    /// embedded migration. Does not apply SQL and does not listen.
+    CheckMigrations {
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
     },
 }
 
@@ -247,17 +255,16 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn start() -> anyhow::Result<()> {
-    let args = Args::parse();
-    match args.command {
-        Some(Command::ReindexSearch { data_dir }) => {
+    match Args::parse().command {
+        Command::ReindexSearch { data_dir } => {
             let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
             let mut writer = pool.write().await;
             ss_server::db::search::reindex(&mut writer).await?;
             println!("message search index rebuilt");
         }
-        Some(Command::Conn {
+        Command::Conn {
             action: ConnAction::List { data_dir },
-        }) => {
+        } => {
             let config = ss_server::config::load(&data_dir)?;
             anyhow::ensure!(
                 config.internal.bind.ip().is_loopback(),
@@ -275,74 +282,75 @@ async fn start() -> anyhow::Result<()> {
             let rows: Vec<serde_json::Value> = serde_json::from_slice(&response.bytes().await?)?;
             println!("{}", serde_json::to_string_pretty(&rows)?);
         }
-        Some(Command::Init { data_dir }) => ss_server::serve::init(data_dir).await?,
-        Some(Command::Run { data_dir }) => ss_server::serve::run(data_dir).await?,
-        Some(Command::CheckConfig { data_dir }) => {
+        Command::Init { data_dir } => ss_server::serve::init(data_dir).await?,
+        Command::Run { data_dir } => ss_server::serve::run(data_dir).await?,
+        Command::CheckConfig { data_dir } => {
             ss_server::serve::check(&data_dir)?;
             println!("config ok");
         }
-        Some(Command::Fingerprint { data_dir }) => ss_server::serve::fingerprint(data_dir).await?,
-        Some(Command::Tls {
+        Command::Fingerprint { data_dir } => ss_server::serve::fingerprint(data_dir).await?,
+        Command::Tls {
             action: TlsAction::Rotate { data_dir },
-        }) => ss_server::serve::rotate(data_dir).await?,
-        Some(Command::Backup { path, data_dir }) => {
+        } => ss_server::serve::rotate(data_dir).await?,
+        Command::Backup { path, data_dir } => {
             ss_server::serve::backup(data_dir, path).await?;
         }
-        other => {
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| "info".into()),
-                )
-                .with_writer(std::io::stderr)
-                .init();
-            match other {
-                Some(Command::Invite {
-                    action: InviteAction::Create { owner, data_dir },
-                }) => create_owner_invite(owner, data_dir).await?,
-                Some(Command::User {
-                    action: UserAction::List { data_dir },
-                }) => list_users(data_dir).await?,
-                Some(Command::User {
-                    action:
-                        UserAction::SetPassword {
-                            username,
-                            password,
-                            data_dir,
-                        },
-                }) => reset_password(data_dir, &username, &password).await?,
-                Some(Command::User {
-                    action:
-                        UserAction::Ban {
-                            username,
-                            reason,
-                            data_dir,
-                        },
-                }) => ban_user(data_dir, &username, reason).await?,
-                Some(Command::User {
-                    action: UserAction::Unban { username, data_dir },
-                }) => unban_user(data_dir, &username).await?,
-                Some(Command::User {
-                    action: UserAction::Sessions { action },
-                }) => user_sessions(action).await?,
-                Some(Command::Role {
-                    action: RoleAction::GrantAdmin { username, data_dir },
-                }) => grant_admin(data_dir, &username).await?,
-                Some(
-                    Command::Conn { .. }
-                    | Command::Init { .. }
-                    | Command::Run { .. }
-                    | Command::CheckConfig { .. }
-                    | Command::Fingerprint { .. }
-                    | Command::ReindexSearch { .. }
-                    | Command::Backup { .. }
-                    | Command::Tls { .. },
-                )
-                | None => serve(args.data_dir, args.bind, args.check_migrations).await?,
-            }
+        Command::Spike { data_dir, bind } => {
+            stderr_logs();
+            spike(data_dir, bind).await?;
+        }
+        Command::CheckMigrations { data_dir } => {
+            stderr_logs();
+            let database_path = data_dir.join("socialspeak.db");
+            ss_server::db::check(&database_path).await?;
+            tracing::info!(path = %database_path.display(), "migrations are current");
+        }
+        Command::Invite {
+            action: InviteAction::Create { owner, data_dir },
+        } => {
+            stderr_logs();
+            create_owner_invite(owner, data_dir).await?;
+        }
+        Command::User { action } => {
+            stderr_logs();
+            user(action).await?;
+        }
+        Command::Role {
+            action: RoleAction::GrantAdmin { username, data_dir },
+        } => {
+            stderr_logs();
+            grant_admin(data_dir, &username).await?;
         }
     }
     Ok(())
+}
+
+/// `tracing` to stderr, filtered by `RUST_LOG` (default `info`).
+fn stderr_logs() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+}
+
+async fn user(action: UserAction) -> anyhow::Result<()> {
+    match action {
+        UserAction::List { data_dir } => list_users(data_dir).await,
+        UserAction::SetPassword {
+            username,
+            password,
+            data_dir,
+        } => reset_password(data_dir, &username, &password).await,
+        UserAction::Ban {
+            username,
+            reason,
+            data_dir,
+        } => ban_user(data_dir, &username, reason).await,
+        UserAction::Unban { username, data_dir } => unban_user(data_dir, &username).await,
+        UserAction::Sessions { action } => user_sessions(action).await,
+    }
 }
 
 async fn list_users(data_dir: PathBuf) -> anyhow::Result<()> {
@@ -486,13 +494,9 @@ fn utc(at: ss_core::Timestamp) -> String {
     )
 }
 
-async fn serve(data_dir: PathBuf, bind: SocketAddr, check_migrations: bool) -> anyhow::Result<()> {
+/// The unauthenticated T-016 voice spike, until Ctrl-C.
+async fn spike(data_dir: PathBuf, bind: SocketAddr) -> anyhow::Result<()> {
     let database_path = data_dir.join("socialspeak.db");
-    if check_migrations {
-        ss_server::db::check(&database_path).await?;
-        tracing::info!(path = %database_path.display(), "migrations are current");
-        return Ok(());
-    }
     let database = ss_server::db::Pool::open(&database_path).await?;
     tracing::info!(path = %database.path().display(), "database ready");
     if let Some(code) = ss_server::auth::ensure_owner_invite(&database).await? {

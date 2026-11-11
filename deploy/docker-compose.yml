@@ -18,6 +18,10 @@ services:
       - socialspeak:/data
     cap_add:
       - NET_BIND_SERVICE
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
 volumes:
   socialspeak:

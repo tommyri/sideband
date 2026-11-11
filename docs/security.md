@@ -35,14 +35,15 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Boundary | Who is on the other side | What they can do before any check | Main controls |
 |---|---|---|---|
 | Internet → QUIC | Anyone | Complete a handshake, send one `Hello` | Stateless Retry before any slot, 256 sessions total, 32 per validated address, 10 s handshake and Hello deadlines, Hello and password quotas, 1 MiB frames |
-| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers |
+| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers, attachments streamed from and to disk with 16 open transfers per account |
 | Members → server | Authenticated accounts | Every control command and REST call | `PermissionService::check` per command, role hierarchy, per-account quotas, input limits |
 | Moderators and admins → server | Accounts with management bits | Kick, ban, mute, move, roles, channels, webhooks, invites | Bits plus strict hierarchy (`can_act_on`); only `ADMINISTRATOR` grants `ADMINISTRATOR`; audit log |
-| Server → previewed sites | Arbitrary web servers | Return any bytes to the preview fetcher | SSRF address filter after DNS, pinned socket address, 3 redirects re-checked, 5 s, 1 MiB, fuzzed parser |
+| Server → previewed sites | Arbitrary web servers | Return any bytes to the preview fetcher | SSRF address filter after DNS, pinned socket address, proxy variables ignored, 3 redirects re-checked, 5 s, 1 MiB, fuzzed parser |
 | Operator → server | Whoever has shell on the host | Everything | Out of scope. The data dir is the trust root |
 
-The unauthenticated voice spike (`ss-server` with no subcommand) accepts any
-username. It binds `127.0.0.1:4433` by default and must not be exposed.
+The unauthenticated voice spike (`ss-server spike`) accepts any username. It
+binds `127.0.0.1:4433` by default and must not be exposed. `ss-server` with no
+subcommand prints usage and exits; it never starts a listener.
 
 ## 3. TOFU: what it protects and what it does not
 
@@ -346,13 +347,16 @@ attachment requests and do not follow redirects. Plain HTTP on that port is
 closed during the TLS handshake. The internal `127.0.0.1:9101` health and
 metrics listener remains plain HTTP and must stay private. ACME HTTP-01 uses a
 separate TCP 80 listener for challenges and redirects all other paths to the
-configured HTTPS port.
+configured HTTPS port. The TLS-ALPN-01 listener has the same per-address cap
+and 10 s handshake deadline as the HTTPS listener and closes each connection
+after its handshake. `tls/acme/`, which holds the issued key, is created `0700`.
 
 ## 9. Link previews (SSRF)
 
 The fetcher resolves the host, drops every non-public address, and pins the
 socket to the first permitted one, so DNS rebinding cannot switch targets
-between the check and the connect. Each redirect hop is re-checked; userinfo
+between the check and the connect. `HTTP_PROXY`-style variables are ignored:
+a proxy would resolve the name itself and bypass the pin. Each redirect hop is re-checked; userinfo
 URLs are refused. Rejected ranges: IPv4 0/8, 10/8, 100.64/10, 127/8,
 169.254/16, 172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16,
 198.18/15, 198.51.100/24, 203.0.113/24, 224/4, 240/4, broadcast; IPv6 `::`,

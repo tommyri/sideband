@@ -431,8 +431,16 @@ Every public response carries `X-Content-Type-Options: nosniff`,
 quota is `429` with `Retry-After` (seconds). Bodies are capped at 64 KiB
 except uploads; webhook posts need `Content-Type: application/json` (`415`
 otherwise). A request has 10 s to send its head and 30 s to finish (300 s for
-attachment transfers). At most 64 connections per address; a connection idle
-for 60 s or open for 10 minutes is closed, so clients must reconnect.
+attachment transfers, including sending a download body). At most 64
+connections per address; a connection idle for 60 s or open for 10 minutes is
+closed, so clients must reconnect.
+
+An upload form must send `channel_id` before `file` (`400` otherwise): upload
+permission is checked before any file byte is read, and the file streams to
+disk. Downloads stream from disk. One account may have 16 uploads and downloads
+open at once (a signed-URL download counts against the client address); more
+get `429` with `Retry-After: 1`. A deleted message's attachments return `404`,
+signed URLs included, and their files are deleted by the next cleanup pass.
 
 ## 7. Versioning
 

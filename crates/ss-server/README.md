@@ -12,10 +12,11 @@ cover sessions, datagrams, slow-consumer kicks, messages, and SQLite lock time.
 and SIGTERM notice clients, close them, and checkpoint SQLite. `check-config`
 rejects an unknown key. `backup` tars the database and attachments.
 
-With no subcommand, `--data-dir ./data --bind 127.0.0.1:4433` is still the
-unauthenticated spike. `invite create --owner`, `user list`, `user set-password`,
+A subcommand is required; with none, usage is printed and the exit code is 2.
+`spike --data-dir ./data --bind 127.0.0.1:4433` is the unauthenticated spike.
+`invite create --owner`, `user list`, `user set-password`,
 `user ban`, `user unban`, `role grant-admin`, `fingerprint`, and `tls rotate` recover an account.
-`--check-migrations` exits without listening. The data dir is
+`check-migrations` exits without listening. The data dir is
 `$XDG_DATA_HOME/socialspeak` when that variable is set, otherwise `./data`.
 
 One audio track is assigned per joined connection. Joins announce existing
