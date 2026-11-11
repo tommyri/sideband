@@ -50,7 +50,10 @@ before it is merged:
    overlap; T-092 and T-098 share only `deploy/`)
 5. T-099, T-096, T-102, T-103 (T-099 reconciles the plan with what waves
    1 to 4 decided)
-6. T-104 and T-105, which depend on T-096
+6. T-104, T-105, T-107, T-109, T-110 (T-104 and T-105 needed T-096; the
+   other three are T-099's follow-ups and touch none of their files)
+7. T-108, which needs T-105; T-106 is the maintainer's decisions, not
+   agent work
 7. T-106 (maintainer decisions), T-107, T-109, T-110; then T-108, which
    waits for T-096 and T-105
 
