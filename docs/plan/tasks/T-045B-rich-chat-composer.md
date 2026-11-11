@@ -1,6 +1,6 @@
 # T-045B — Rich text and composer completion
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-045A

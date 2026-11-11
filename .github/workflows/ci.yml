@@ -113,6 +113,13 @@ jobs:
         run: |
           cargo test -p ss-video --no-default-features
           cargo clippy -p ss-video --all-targets --no-default-features -- -D warnings
+      - name: Plan index and protocol document
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/plan-index.test.py
+          python3 scripts/check-protocol-doc.test.py
+          python3 scripts/plan-index.py --check
+          python3 scripts/check-protocol-doc.py
       - name: Dependency graph
         if: runner.os == 'Linux'
         run: |

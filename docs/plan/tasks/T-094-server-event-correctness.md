@@ -1,6 +1,6 @@
 # T-094 — Server event correctness: member events, deleted content, cache races, media lock
 
-Status: in-progress
+Status: done
 Phase: 4
 Size: M
 Depends on: T-024, T-025, T-026, T-029, T-091

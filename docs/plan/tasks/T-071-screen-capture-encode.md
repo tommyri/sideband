@@ -1,6 +1,6 @@
 # T-071 — Client: screen/window capture and hardware H.264 encode
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 5
 Size: L
 Depends on: T-070, T-041

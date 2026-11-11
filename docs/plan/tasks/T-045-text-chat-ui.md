@@ -1,6 +1,6 @@
 # T-045 — Text chat UI
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: L
 Depends on: T-042, T-027, T-029

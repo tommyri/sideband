@@ -1,6 +1,6 @@
 # T-075 — Installable test builds and build identity
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-042

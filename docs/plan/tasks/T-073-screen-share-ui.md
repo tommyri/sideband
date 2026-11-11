@@ -1,6 +1,6 @@
 # T-073 — Screen share UI integration
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 5
 Size: S
 Depends on: T-071, T-072, T-044

@@ -2,42 +2,39 @@
 
 Headless, UI-independent connections and live server state. Hosts supply a
 Tokio runtime, certificate `PinStore`, and optionally a session `Storage`.
+`Client::connect` authenticates and applies Welcome before returning;
+`connect_with_storage` also saves the session token and last server wherever
+the host chooses. Unknown or changed certificates return an actionable error;
+only the host can approve.
 
-`Client::connect` authenticates and applies Welcome before returning.
-`connect_with_storage` also saves the session token and last server; the
-host decides whether those live in a keychain, file, or memory. Unknown or
-changed certificates return an actionable error; only the host can approve.
-
-Subscribe to `ClientEvent`, then read `client.state()`. Notifications describe
-already-applied changes. On broadcast lag, read the state again. Do not hold
-a state read guard across await. `channel_tree()` supplies stable tree order;
+Subscribe to `ClientEvent`, then read `client.state()`: events describe
+applied changes, so on broadcast lag read the state again, and never hold a
+read guard across await. `channel_tree()` gives stable order;
 `permissions(channel)` returns server-resolved bits or None for older peers.
 
-Typed commands return resources or errors. During reconnect commands fail;
-mutations are never replayed. A timeout may mean the server already acted.
-Session resume backs off from 1 to 30 seconds with jitter, replaces the full
-snapshot, and rejoins requested voice membership. Kick/ban and trust/auth
-failures stop retries. Drop closes the connection; `close().await` also waits
-for the owning worker to stop. `ClientSet` owns independent server clients.
+Typed commands return resources or errors; a timeout may mean the server
+already acted. While reconnecting, only `SendMessage` waits (queue of 100) and
+is replayed with its nonce; other commands fail. Resume follows
+`02-protocol.md` §1.2 (backoff 2 to 24 s plus jitter, final errors stop it),
+replaces the snapshot, rejoins voice and re-reads cached history. Drop closes
+the connection; `close().await` also waits for the worker. `ClientSet` holds
+one client per server.
 
-`media::VideoTrackSender` opens byte-level GOP writers after StartStream.
-One `VideoTrackReceiver` accepts all incoming video groups and exposes their
-track ids for demux. Subscribe through control first; reset/drop obsolete GOPs.
-With the optional `screen-share` feature, `ScreenShareSession` combines native
-capture and H.264 encoding from `ss-video` with those GOP writers. The session
-owns keyframe-request handling and removes its server track when capture ends.
-Rendering remains outside this crate.
+`media::VideoTrackSender` opens GOP writers after StartStream; one
+`VideoTrackReceiver` demuxes incoming video groups by track id. With the
+`screen-share` feature, `ScreenShareSession` feeds `ss-video` capture and H.264
+into those writers, answers keyframe requests and removes its track when
+capture ends. Rendering stays outside this crate.
 
-`load_older` fetches HTTPS history with the QUIC certificate pin and session
-bearer, without redirects or environment proxies. A concurrent state change
-returns `StateChanged` for retry. Caches retain 200 live messages per channel
-plus requested history pages. Reconnect or lost visibility clears the cache.
+`load_older` fetches HTTPS history with the QUIC session's trust policy and
+bearer, without redirects or proxies; a concurrent change returns
+`StateChanged`. Caches keep 200 live messages per channel plus loaded pages;
+lost visibility clears a channel's cache.
 
 `VoiceSession` owns capture, processing, Opus, jitter buffers, mixing, and the
-client media bridge. Hosts select PTT, VAD, or open mic and receive 500 ms
-stats plus actionable device events. Test tone/silence sources need no audio
-hardware. `leave().await` releases every stream and worker.
+media bridge. Hosts pick PTT, VAD or open mic and get 500 ms stats and device
+events; test sources need no hardware. `leave().await` releases everything.
 
 May depend on `ss-core`, `ss-proto`, `ss-net`, `ss-audio`, `ss-input`, optional
-`ss-video`, and Quinn stream handles.
-Must not depend on `ss-server`, `ss-cli`, SQL, or windowing toolkits.
+`ss-video`, and Quinn stream handles. Must not depend on `ss-server`, `ss-cli`,
+SQL, or windowing toolkits.

@@ -1,6 +1,6 @@
 # T-045C — Chat attachments and previews
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-045A, T-027, T-029

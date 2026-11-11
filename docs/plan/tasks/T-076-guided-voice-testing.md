@@ -1,6 +1,6 @@
 # T-076 — Guided voice tests and local evidence bundles
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-075, T-043, T-044, T-051, T-058

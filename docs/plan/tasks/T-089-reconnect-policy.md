@@ -1,6 +1,6 @@
 # T-089 — Reconnect policy: retryable errors, address fallback, backoff, stale cache
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-060, T-081, T-086

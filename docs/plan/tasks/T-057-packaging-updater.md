@@ -1,6 +1,6 @@
 # T-057 — Packaging, code signing, auto-update, release pipeline
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-042, T-075

@@ -1,6 +1,6 @@
 # T-055 — Notifications, sound cues, do-not-disturb
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-042, T-041

@@ -1,6 +1,6 @@
 # Sideband task runner. `just check` is what CI runs.
 
-check: fmt-check clippy test
+check: fmt-check clippy test plan-check
 
 # `imports_granularity` is still a rustfmt nightly option. Compilation stays
 # on the stable toolchain in rust-toolchain.toml.
@@ -45,3 +45,23 @@ check-desktop:
 check-deps:
     bash scripts/check-deps.test.sh
     bash scripts/check-deps.sh
+
+# Rewrite the dependency graph and waves in docs/plan/tasks/INDEX.md from its
+# task tables. Rerun after changing a row's "Depends on" or adding a task.
+plan-index:
+    python3 scripts/plan-index.py
+
+# Fails when the INDEX graph or waves are stale or a row disagrees with its task file.
+plan-index-check:
+    python3 scripts/plan-index.py --check
+
+# Fails when 02-protocol.md and the axum routes or envelope oneofs disagree.
+protocol-doc-check:
+    python3 scripts/check-protocol-doc.py
+
+# Script tests plus both plan checks. Part of `just check`.
+plan-check:
+    python3 scripts/plan-index.test.py
+    python3 scripts/check-protocol-doc.test.py
+    python3 scripts/plan-index.py --check
+    python3 scripts/check-protocol-doc.py

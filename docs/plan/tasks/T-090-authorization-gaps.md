@@ -1,6 +1,6 @@
 # T-090 — Close authorization gaps: overrides, role edits, voice seats, owner
 
-Status: in-progress
+Status: done
 Phase: 4
 Size: M
 Depends on: T-022, T-025, T-030, T-061

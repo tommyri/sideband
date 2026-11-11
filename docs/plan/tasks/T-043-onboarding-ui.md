@@ -1,6 +1,6 @@
 # T-043 — Onboarding UI: add server, trust fingerprint, register/login, multi-server
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-042
@@ -74,8 +74,11 @@ Settings internals.
   advanced options and focus restoration. Native macOS Tab/Enter login and
   Escape dismissal passed; the final dialog is centered and initially focuses
   the address field. Packaged debug app ZIP and checksums were generated.
-- Remaining acceptance: run the script below on Windows and Linux, finish
-  checklist integration with real settings, and record all platform results.
+- Remaining acceptance: run the script below on Windows and Linux and record
+  all platform results. (T-099, 2026-11-11: checklist integration with real
+  settings is done; `ServerHome.tsx` opens the real audio settings, which link
+  to global shortcuts. Status `awaiting-acceptance`; rows in
+  [ACCEPTANCE.md](ACCEPTANCE.md).)
   Implementation is available for T-044 integration; this status does not block
   the next testing-app increment.
 

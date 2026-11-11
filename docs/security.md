@@ -4,8 +4,10 @@ What a self-hosted Sideband server protects, from whom, and how. Written
 for T-061 against the server at the end of phase 2 (T-020 to T-034).
 
 > **Review status:** the acceptance criterion "reviewed by a second person"
-> is **pending**. The maintainer has to name the reviewer here:
-> `Reviewed by: <name>, <date>`.
+> is **pending** (T-067). The maintainer has to name the reviewer here:
+> `Reviewed by: <name>, <date>`. The 2026-11-09 code review at `d861a0a` was
+> a full read of the code, not that second-person review; what it changed in
+> this document, and what is still open, is in section 13.
 
 ## 1. Assets
 
@@ -130,8 +132,12 @@ It does not protect against:
   once to the creator. The migration revokes legacy plaintext codes and logs
   how many were invalidated.
 - **Webhook tokens**: 16 random bytes, SHA-256 stored, returned once.
-- **Attachment links**: HMAC-SHA256 over id and expiry, 10-minute lifetime,
-  32-byte key created with mode 0600 before any byte is written.
+- **Attachment links**: HMAC-SHA256 over attachment id, signer (the
+  uploader's account id) and expiry; the token carries expiry, signer and MAC
+  (layout in `02-protocol.md` §6, T-092). 10-minute lifetime, 32-byte key
+  created with mode 0600 before any byte is written. Signed downloads use
+  their own pool of 16 open transfers per signer, so a leaked link cannot
+  use up the uploader's own transfer slots.
 - **Zeroization** (`zeroize`): issued session tokens, password copies on the
   hashing thread, the credential fields of every `Hello` once checked, and
   the attachment signing key on drop. Tokens also exist in prost messages and
@@ -187,7 +193,7 @@ T-090 closed the gaps a later review found, each with a test that failed first:
 - *Administrators.* `03-data-model.md` promised an owner who always wins. There
   is none: administrators are peers, a non-administrator can no longer act on
   an administrator even from a higher role position, and the seeded Admin role
-  cannot be deleted or stripped, so `user grant-admin` keeps working.
+  cannot be deleted or stripped, so `role grant-admin` keeps working.
 - *Leaks.* The actor's own reply skipped the fan-out filter, so muting someone
   in a hidden voice channel returned that channel's id; replies now pass the
   same filter. A leave (`VoiceStateUpdated` without a channel) went to every
@@ -402,4 +408,43 @@ updated `h2` past RUSTSEC-2026-0258.
 
 ## 12. Known gaps
 
-- Fuzz targets have not yet run the 1 h each that T-061 asks for. Tracked as T-067.
+- Fuzz targets have not yet run the 1 h each that T-061 asks for, and
+  `fuzz.yml` has never been dispatched. Tracked as T-067.
+- Files saved from chat carry no download mark (`com.apple.quarantine`,
+  Windows `Zone.Identifier`), so Gatekeeper and SmartScreen do not check a
+  received executable. T-104.
+- The guided-test evidence export can contain server addresses. T-096.
+- Some desktop shell modules still derive "may the user do this" hints
+  themselves instead of from `ss_client_core::authority`; the server
+  rechecks every command, so a wrong hint shows a control that then fails.
+  T-105.
+- Windows release signing runs inside `tauri build`, where a dependency's
+  build script can sign with the key (it cannot read it). T-110.
+- `cargo deny check` fails on RUSTSEC-2026-0459 until `sqlx` allows
+  `libsqlite3-sys` 0.39. T-110.
+- A `Welcome` can still pass 1 MiB from members, roles and guild channels
+  (about 8,000 members); roles are not capped. T-109.
+
+## 13. Review of 2026-11-09
+
+A full read of the code at `d861a0a` found defects and plan drift, recorded
+as T-081 to T-101 in [`tasks/INDEX.md`](plan/tasks/INDEX.md). The findings
+that changed a guarantee this document states:
+
+| Task | What was not true | Now | Status |
+|---|---|---|---|
+| T-090 | Role and override edits could grant bits the actor lacks; channel commands worked on channels hidden from the actor; seats survived losing `VIEW_CHANNEL` or `CONNECT`; the documented owner did not exist | Fixed, section 5 and `03-data-model.md` | done |
+| T-091 | One member could push another's `Welcome` past 1 MiB with group DMs, and event bursts were dropped on open connections | Fixed, sections 6 and 7 | merged; VPS load check open |
+| T-092 | Transfers were buffered in memory and uploads read before the permission check; a deleted message's files stayed downloadable; the TLS-ALPN listener had no cap or deadline; `ss-server` with no subcommand started the unauthenticated spike on `0.0.0.0:443` | Fixed, sections 2, 4 and 8, `02-protocol.md` §6 | done |
+| T-093 | A stolen token could not be revoked; "resume token" lifetimes were misdescribed | Fixed, section 4 | merged; in-app checks open |
+| T-094 | A message deleted while its link preview was fetched was republished in full; permission reloads could race and leave a demoted user's old rights | Fixed (`01-architecture.md`, `02-protocol.md`) | done |
+| T-095 | The webview could load the store plugin and read `sessions.json` (every bearer token); the shell skipped the workspace lints | Fixed, `04-conventions.md` Frontend | merged; installed-build checks open |
+| T-096 | Evidence exports include server addresses | Open | in progress |
+| T-097 | Any branch could publish a signed update; signing secrets were in the whole build's environment; server images were not tied to a tested commit | Fixed in the workflows (`docs/release.md`) except Windows signing (T-110) | merged; needs GitHub environments and a first real run |
+| T-098 | `check-deps.sh` passed when `cargo tree` failed; the public-repo check missed `*pins.json`; the sample Compose ran without dropped capabilities or limits | Fixed in `deploy/` | merged; VPS backup/restore open |
+| T-101 | The fuzz targets did not exercise the parsers that run; the router rejected messages the protocol allows | Fixed, section 10 | done |
+| T-104 | Saved files carry no download mark | Open, section 12 | todo |
+| T-105 | Shell permission hints are derived in several places | Open, section 12 | todo |
+
+Hands-on checks for these tasks are in
+[`tasks/ACCEPTANCE.md`](plan/tasks/ACCEPTANCE.md).

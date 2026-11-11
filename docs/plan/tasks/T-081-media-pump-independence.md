@@ -1,6 +1,6 @@
 # T-081 — Keep voice datagrams flowing while control commands are pending
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-041, T-060

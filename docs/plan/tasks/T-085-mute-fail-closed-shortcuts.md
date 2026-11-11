@@ -1,6 +1,6 @@
 # T-085 — Mute fails closed; global shortcuts are never dropped
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-041, T-058

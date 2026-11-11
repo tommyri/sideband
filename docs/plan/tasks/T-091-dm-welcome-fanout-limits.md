@@ -1,6 +1,6 @@
 # T-091 — Bound DMs, Welcome size and fan-out so one member cannot lock others out
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-028, T-024, T-061

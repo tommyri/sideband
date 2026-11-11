@@ -1,6 +1,6 @@
 # T-051 — Audio and voice settings UI
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-044, T-041, T-047
@@ -82,5 +82,6 @@ and exercise permission-denial, unplug/replug and Apple processing. No microphon
 permission was granted by automation. T-058 now integrates the global listener,
 macOS Input Monitoring settings action and Linux evdev opt-in; open Global
 shortcuts from this screen. Its platform acceptance matrix remains pending.
-T-063 diagnostics stays visibly unavailable and the optional 10 ms override
-remains gated by the T-018 release verdict. These do not block T-076 increments.
+The optional 10 ms override remains gated by the T-018 release verdict.
+(T-099, 2026-11-11: diagnostics are no longer unavailable; the settings screen
+opens the T-063 panel, Ctrl+Shift+D.) These do not block T-076 increments.

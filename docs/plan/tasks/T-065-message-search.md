@@ -3,7 +3,7 @@
 Status: done
 Phase: 4
 Size: S
-Depends on: T-026, T-045
+Depends on: T-026, T-045A, T-045B
 Paths: `crates/ss-server/migrations/0006_message_search.sql`, `crates/ss-server/src/http/search.rs`, `apps/desktop/src/features/search/`
 
 ## Goal
@@ -47,3 +47,10 @@ Attachment content indexing.
 - Privacy review: removed corpus-wide bm25 ordering. A regression varies term frequencies
   using hidden-only edits and deletions and verifies visible ordering and the limited page
   remain unchanged. The UI and API documentation state newest-first ordering.
+
+T-099 (2026-11-11): this task was `done` while its dependency T-045 was still
+open. What it uses is the chat view (T-045A, done) and jump-to-message with the
+out-of-cache lookup (`features/chat/navigation.ts`, T-045B, code merged), not
+the T-045 parent or the attachments increment, so "Depends on" now names
+those. T-045B is `awaiting-acceptance`; a task may be `done` on a dependency
+whose code is merged and only hands-on checks remain (`04-conventions.md`).

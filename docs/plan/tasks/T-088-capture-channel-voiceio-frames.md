@@ -1,6 +1,6 @@
 # T-088 — Capture channel selection and whole-frame ring transfers
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-010, T-054

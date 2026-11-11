@@ -1,6 +1,6 @@
 # T-097 — Gate releases: main only, tested commit, isolated signing, provenance
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-057, T-034

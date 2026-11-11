@@ -5,9 +5,15 @@ port UDP 443 (configurable). HTTPS on TCP 443 for REST.
 
 ## 1. Connection lifecycle
 
-1. Client opens QUIC connection; verifies server cert against its pin store
-   (TOFU: first connect shows fingerprint, user accepts; later connects must
-   match). `ss-net` exposes `PinStore` and a `rustls` verifier.
+1. Client opens QUIC connection and verifies the server certificate by the
+   trust policy saved for that server (`ss_net::pins::TrustPolicy`, details in
+   [`docs/security.md`](../security.md) section 3). A server with a publicly
+   trusted certificate is checked by hostname and CA chain on every handshake,
+   so renewals are accepted (`PublicCertificate`). A self-signed server is
+   pinned on first use (TOFU: first connect shows the fingerprint, the user
+   accepts; later connects must match, `PinnedCertificate`). A failed public
+   check never falls back to TOFU. `ss-net` exposes `PinStore` and a `rustls`
+   verifier.
 2. Client opens **one bidirectional stream**: the *control stream*. All control
    messages flow here, both directions, for the life of the connection.
 3. First client message must be `Hello`. Server replies `Welcome` or `Error`
@@ -188,7 +194,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `VoiceStateUpdated` | `user_id`, `conn_id`, `channel_id?`, `self_mute`, `self_deaf`, `server_mute` | |
 | `TrackAdded` | `track_id`, `user_id`, `conn_id`, `kind` (AUDIO/VIDEO/SCREEN), `codec{name, sample_rate, channels}`, `channel_id` | Mapping for datagram demux |
 | `TrackRemoved` | `track_id` | |
-| `MessageCreated` / `MessageUpdated` / `MessageDeleted` | `Message`, `nonce?` | `Message` includes author, content, reply, attachments, mentions, `link_previews[]` (may arrive later via `MessageUpdated`) |
+| `MessageCreated` / `MessageUpdated` / `MessageDeleted` | `Message`, `nonce?` | `Message` includes author, content, reply, attachments, mentions, `link_previews[]` (may arrive later via `MessageUpdated`), and for a webhook post `webhook_id` and `webhook_name` instead of an author |
 | `TypingStarted` | `channel_id`, `user_id` | |
 | `ReadStateUpdated` | `channel_id`, `last_read_message_id`, `mention_count` | |
 | `RoleCreated` / `RoleUpdated` / `RoleDeleted` | `Role` | |
@@ -372,12 +378,11 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/server` | Public: name, version, cert fingerprint, registration mode |
 | GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, registrationMode and revision; stale PUT returns 409 |
 | POST | `/api/v1/server/icon` | MANAGE_SERVER raw raster upload, up to 2 MiB; returns iconId, applied only by settings PUT |
-| GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order |
-| GET | `/api/v1/channels/{id}/messages/around/{message_id}` | Jump to message |
-| GET | `/api/v1/channels/{id}/search?q=` | Phase 4 |
+| GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order. `after=<id>` instead returns the page after the cursor; `before` and `after` together are `400` |
+| GET | `/api/v1/channels/{id}/messages/around/{message_id}?limit=` | Jump to message |
+| GET | `/api/v1/search?q=&channel=&from=&before=&after=&has=&limit=` | Message search (FTS5, T-065), below |
 | POST | `/api/v1/attachments` | multipart upload → `{attachment_id, url, mime, size, width?, height?}` |
-| GET | `/api/v1/attachments/{id}/{filename}` | Download (auth required, signed URL variant for previews) |
-| GET | `/api/v1/users/{id}/avatar` | |
+| GET | `/api/v1/attachments/{id}/{filename}` | Download (auth required, signed URL variant for previews). Also serves avatars (`User.avatar_attachment_id`) and the server icon to any signed-in member |
 | GET | `/api/v1/channels/{channel_id}/overrides` | Requires MANAGE_CHANNELS and VIEW_CHANNEL; guild-only rows `{roleId: ULID, allow: decimal-u64, deny: decimal-u64}` |
 | GET | `/api/v1/webhooks?before=&limit=` | Metadata only; requires `MANAGE_SERVER` |
 | POST | `/api/v1/webhooks/{id}/{token}` | Incoming webhook `{content, username?, avatar_url?}`; no bearer needed |
@@ -385,19 +390,39 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/moderation/bans?before=&q=` | BAN_MEMBERS; 50-row active ban metadata/capability page, expired/lifted bans omitted |
 | GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
 | GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
+| GET | `/healthz` | internal listener only (`127.0.0.1:9101`) |
 | GET | `/metrics` | internal listener only |
+| GET | `/connections` | internal listener only: live connections for `ss-server conn list` |
+| GET | `/.well-known/acme-challenge/{token}` | ACME HTTP-01 listener on TCP 80 only; every other path there redirects to HTTPS |
+
+`scripts/check-protocol-doc.py` fails when this table and the axum routes in
+`ss-server`, or the message tables in section 3 and the envelope `oneof`s,
+name different things.
 
 History JSON uses camelCase fields, base64 bytes, decimal strings for 64-bit
 integers, and named protocol enums. Pages contain at most 100 messages (the
-client requests 50). The client sends the Welcome token as the HTTPS bearer
-and verifies the same leaf certificate pin as QUIC. It is the same session
+client requests 50). A message a webhook posted has no `author` and carries
+`webhookId` and `webhookName` (`Message.webhook_id`/`webhook_name`, tags 11
+and 12) instead. The client sends the Welcome token as the HTTPS bearer
+and verifies the certificate with the trust policy of the authenticated QUIC
+session (section 1): the same leaf pin for a self-signed server, hostname and
+CA chain for a public certificate. "Pinned HTTPS" below means this. It is the same session
 token as on QUIC, with the same lifetimes (section 1.1); ending the session
 makes the next request `401`. No redirects are followed.
 The public listener terminates TLS itself with the same hot-reloaded leaf
-certificate as QUIC. Clients pin that leaf for both transports. Plain HTTP on
+certificate as QUIC, so one trust decision covers both transports. Plain HTTP on
 the public port is refused; only the loopback health/metrics listener remains
 unencrypted. ACME HTTP-01 uses TCP 80 for challenges and redirects every other
 request to this HTTPS listener.
+
+Search takes a literal query `q` of 1 to 16 words and at most 256
+characters, and optional filters: `channel` and `from` (author) are ULIDs,
+`before` and `after` are Unix milliseconds (`after` must be earlier), `has` is
+`link`, `file` or `image`, and `limit` is 1–100 (default 50). Only channels the
+caller can see, and DMs they belong to, are searched, and each hit is checked
+again after the query. Results are an array of `{id, channelId, authorId,
+authorName, createdAt, excerpt}` with ULID strings and a decimal `createdAt`,
+newest first.
 
 Webhook metadata pages are newest-first by ULID with an exclusive `before` cursor
 and default limit 50 (allowed 1–100). Rows contain `id`, `channelId`, `name`,
@@ -405,7 +430,7 @@ and default limit 50 (allowed 1–100). Rows contain `id`, `channelId`, `name`,
 are decimal strings. Tokens, token hashes and posting URLs are never included.
 CreateWebhook still reveals its token only in the acknowledgement. The desktop
 constructs the HTTPS posting URL from its connected server address and keeps it
-only in the open creation panel. Metadata requests use the same pin as QUIC,
+only in the open creation panel. Metadata requests use pinned HTTPS,
 a ten-second timeout and a 256 KiB response cap.
 
 Audit pages are ordered by creation time and ID descending. The optional `before`
@@ -479,7 +504,7 @@ every addition:
 Servers advertise `role-management-v2` in Welcome server features for `MoveRole`
 and explicit color clearing. Clients disable those additions on older servers.
 Role moves and deletion compaction emit `RoleUpdated` for every changed position.
-Override reads use the session bearer and the approved HTTPS certificate pin.
+Override reads use the session bearer over pinned HTTPS (section 6).
 
 ### Session commands
 
