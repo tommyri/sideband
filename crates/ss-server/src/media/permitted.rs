@@ -33,6 +33,8 @@ pub struct Forwarder {
 
 const WINDOW: Duration = Duration::from_secs(1);
 const DISCONNECT_AFTER: u8 = 3;
+/// Budgets kept before a new sender triggers a prune of quiet ones.
+const PRUNE_ABOVE: usize = 256;
 
 struct Budget {
     started: Instant,
@@ -128,6 +130,12 @@ impl Forwarder {
     fn limit(&self, sender: Id, bytes: usize, max_bitrate_bps: u32) -> LimitOutcome {
         let now = Instant::now();
         let mut budgets = self.budgets.lock();
+        // A budget older than WINDOW is reset on its next use, so dropping it
+        // changes nothing. Pruning only when a new sender arrives keeps the map
+        // to recent senders without a scan per datagram.
+        if budgets.len() >= PRUNE_ABOVE && !budgets.contains_key(&sender) {
+            budgets.retain(|_, budget| now.duration_since(budget.started) < WINDOW);
+        }
         let budget = budgets.entry(sender).or_insert(Budget {
             started: now,
             bytes: 0,
@@ -160,5 +168,28 @@ impl Forwarder {
             dropped: self.dropped.load(Ordering::Relaxed),
             rate_limited: self.rate_limited.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use parking_lot::RwLock;
+    use ss_core::Id;
+
+    use super::{Forwarder, PRUNE_ABOVE, WINDOW};
+    use crate::{registry::ConnectionRegistry, voice::rooms::Rooms};
+
+    #[test]
+    fn budgets_of_quiet_senders_are_dropped() {
+        let registry = Arc::new(ConnectionRegistry::new(Duration::from_secs(1)));
+        let forwarder = Forwarder::new(Arc::new(RwLock::new(Rooms::new(registry))));
+        for _ in 0..PRUNE_ABOVE {
+            forwarder.limit(Id::generate(), 100, 64_000);
+        }
+        std::thread::sleep(WINDOW + Duration::from_millis(20));
+        forwarder.limit(Id::generate(), 100, 64_000);
+        assert_eq!(forwarder.budgets.lock().len(), 1);
     }
 }

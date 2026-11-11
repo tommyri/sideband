@@ -65,8 +65,25 @@ pub struct UploadForm {
     pub bytes: Vec<u8>,
 }
 
+/// Collects the fields in memory where the server streams to a file.
+struct Recorded {
+    channel_id: String,
+    bytes: Vec<u8>,
+}
+
+impl crate::http::attachments::UploadSink for Recorded {
+    fn write(
+        &mut self,
+        chunk: &[u8],
+    ) -> impl Future<Output = Result<(), crate::http::attachments::HttpError>> {
+        self.bytes.extend_from_slice(chunk);
+        std::future::ready(Ok(()))
+    }
+}
+
 /// Parses a `multipart/form-data` upload body exactly as
-/// `POST /api/v1/attachments` does. `Err` is the HTTP error message.
+/// `POST /api/v1/attachments` does: `channel_id` must precede `file`.
+/// `Err` is the HTTP error message.
 pub async fn upload_form(
     content_type: &str,
     body: Vec<u8>,
@@ -81,14 +98,19 @@ pub async fn upload_form(
     let mut multipart = Multipart::from_request(request, &())
         .await
         .map_err(|_| "upload is not valid multipart")?;
-    let (channel_id, filename, bytes) =
-        crate::http::attachments::read_upload(&mut multipart, max_bytes)
-            .await
-            .map_err(crate::http::attachments::HttpError::message)?;
+    let (filename, recorded) =
+        crate::http::attachments::read_upload(&mut multipart, max_bytes, async |text: &str| {
+            Ok(Recorded {
+                channel_id: text.to_owned(),
+                bytes: Vec::new(),
+            })
+        })
+        .await
+        .map_err(crate::http::attachments::HttpError::message)?;
     Ok(UploadForm {
-        channel_id,
+        channel_id: recorded.channel_id,
         filename,
-        bytes,
+        bytes: recorded.bytes,
     })
 }
 

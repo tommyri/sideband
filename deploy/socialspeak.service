@@ -30,6 +30,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 UMask=0077
+# Above the server's own HTTP connection cap (1024), the usual soft limit.
+LimitNOFILE=65536
 Restart=on-failure
 RestartSec=2
 

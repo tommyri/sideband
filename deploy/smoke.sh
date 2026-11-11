@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the image, confirm /healthz, then join the spike entrypoint with two bots.
+# Build the image, confirm /healthz, then join the `spike` subcommand with two bots.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -84,7 +84,7 @@ docker run -d --name socialspeak-spike \
   --user 65532:65532 \
   -p "127.0.0.1:${spike_port}:4433/udp" \
   -v socialspeak-spike:/data \
-  "$image" --data-dir /data --bind "0.0.0.0:4433"
+  "$image" spike --data-dir /data --bind "0.0.0.0:4433"
 
 spike=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do

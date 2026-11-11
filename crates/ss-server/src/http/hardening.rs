@@ -61,6 +61,9 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A connection is asked to close at this age, whatever it is doing. A
 /// request in flight then has [`TRANSFER_TIMEOUT`] to finish.
 pub const MAX_AGE: Duration = Duration::from_mins(10);
+/// Pause after a failed `accept`, so a persistent error such as `EMFILE`
+/// does not spin the loop.
+pub const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Connection limits for [`serve_with`]. `Default` is the constants above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +200,11 @@ async fn serve_with_acceptor(
                 Ok(accepted) => accepted,
                 Err(error) => {
                     tracing::debug!(%error, "http accept failed");
+                    drop(permit);
+                    tokio::select! {
+                        () = &mut stop => break,
+                        () = tokio::time::sleep(ACCEPT_BACKOFF) => {}
+                    }
                     continue;
                 }
             },

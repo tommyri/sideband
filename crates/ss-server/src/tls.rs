@@ -4,16 +4,19 @@
 //! files change. `acme` orders a certificate for `public_host` and serves
 //! that same leaf on QUIC. Reloads swap the rustls resolver. The UDP socket
 //! stays bound.
+//!
+//! The ACME cache (`tls/acme`, which holds the certificate key) is owner-only.
+//! The `tls-alpn-01` listener has the public listener's per-address cap and
+//! handshake deadline, and closes each connection after its handshake.
 
 use std::{
+    future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll},
     time::Duration,
 };
 
@@ -26,7 +29,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
-use futures::Stream;
+use base64::Engine;
 use notify::Watcher;
 use rustls::{
     pki_types::{
@@ -36,10 +39,19 @@ use rustls::{
     server::ResolvesServerCert,
 };
 use rustls_acme::{AcmeConfig, UseChallenge, caches::DirCache};
+use sha2::{Digest, Sha256};
 use ss_net::tls::{CertResolver, Fingerprint, TlsConfig};
-use tokio::net::TcpListener;
+use tokio::{io::AsyncWriteExt, net::TcpListener, sync::Semaphore};
+use tokio_rustls::TlsAcceptor;
 
-use crate::config::{self, AcmeChallenge, Config, TlsMode};
+use crate::{
+    config::{self, AcmeChallenge, Config, TlsMode},
+    http::hardening::{ACCEPT_BACKOFF, MAX_CONNECTIONS, ServeLimits},
+    limits::PeerSessions,
+};
+
+/// ALPN protocol of a TLS-ALPN-01 validation handshake (RFC 8737).
+const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
 type FingerprintSlot = Arc<ArcSwap<Option<Fingerprint>>>;
 
@@ -142,7 +154,7 @@ pub async fn current_fingerprint(config: &Config, data_dir: &Path) -> Result<Str
             let tls = read_files(config, data_dir)?;
             leaf_text(&tls)
         }
-        TlsMode::Acme => cached_fingerprint(&acme_cache(data_dir))
+        TlsMode::Acme => cached_fingerprint(&acme_cert_file(config, data_dir))
             .map(|fingerprint| fingerprint.to_string())
             .ok_or(Error::Invalid("acme has not issued a certificate")),
     }
@@ -238,26 +250,70 @@ fn publish(result: Result<Fingerprint, ss_net::Error>, slot: &FingerprintSlot) {
 async fn acme(config: &Config, data_dir: &Path, stop: &Arc<AtomicBool>) -> Result<Loaded, Error> {
     validate_acme(config)?;
     let cache = acme_cache(data_dir);
-    std::fs::create_dir_all(&cache)?;
-    let built = acme_config(config, cache.clone());
-    let fingerprint = slot_with(cached_fingerprint(&cache));
-    let mut loaded = match config.tls.challenge {
-        AcmeChallenge::Http01 => start_http01(built, config, cache.clone(), &fingerprint, stop)?,
-        AcmeChallenge::TlsAlpn01 => start_alpn(built, config.server.bind_quic).await?,
+    private_dir(&cache)?;
+    let cert_file = acme_cert_file(config, data_dir);
+    let built = acme_config(config, cache);
+    let fingerprint = slot_with(cached_fingerprint(&cert_file));
+    let state = built.state();
+    let resolver = state.resolver();
+    drive_acme(
+        state,
+        cert_file.clone(),
+        Arc::clone(&fingerprint),
+        Arc::clone(stop),
+    );
+    let loaded = match config.tls.challenge {
+        AcmeChallenge::Http01 => http01_routes(&resolver, config, &fingerprint)?,
+        AcmeChallenge::TlsAlpn01 => {
+            let listener = TcpListener::bind(config.server.bind_quic).await?;
+            let stopped = Arc::clone(stop);
+            tokio::spawn(serve_challenges(
+                listener,
+                challenge_config(Arc::clone(&resolver) as Arc<dyn ResolvesServerCert>),
+                ServeLimits::default(),
+                async move {
+                    while !stopped.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                },
+            ));
+            Loaded {
+                quic: resolver,
+                fingerprint: Arc::clone(&fingerprint),
+                challenge: Router::new(),
+                redirect: None,
+            }
+        }
     };
-    loaded.fingerprint = fingerprint;
-    if cached_fingerprint(&cache).is_none() {
+    if cached_fingerprint(&cert_file).is_none() {
         tracing::info!("acme has not issued a certificate yet");
     }
     let slot = Arc::clone(&loaded.fingerprint);
     let stopped = Arc::clone(stop);
     tokio::spawn(async move {
         while !stopped.load(Ordering::Relaxed) {
-            remember_cached(&cache, &slot);
+            remember_cached(&cert_file, &slot);
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
     Ok(loaded)
+}
+
+/// Creates `dir` and any missing parent owner-only, and narrows `dir` if it
+/// already existed.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        builder.mode(0o700);
+        builder.create(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    builder.create(dir)?;
+    Ok(())
 }
 
 fn validate_acme(config: &Config) -> Result<(), Error> {
@@ -279,70 +335,109 @@ fn validate_acme(config: &Config) -> Result<(), Error> {
     Ok(())
 }
 
-fn start_http01(
-    built: AcmeConfig<std::io::Error>,
+fn http01_routes(
+    resolver: &Arc<rustls_acme::ResolvesServerCertAcme>,
     config: &Config,
-    cache: PathBuf,
     fingerprint: &FingerprintSlot,
-    stop: &Arc<AtomicBool>,
 ) -> Result<Loaded, Error> {
-    let state = built.state();
-    let resolver = state.resolver();
-    drive_http01(state, cache, Arc::clone(fingerprint), Arc::clone(stop));
-    let challenge = acme_router(Arc::clone(&resolver), None);
+    let challenge = acme_router(Arc::clone(resolver), None);
     let redirect = Some((
         http01_addr(config)?,
-        acme_router(Arc::clone(&resolver), Some(redirect_base(config))),
+        acme_router(Arc::clone(resolver), Some(redirect_base(config))),
     ));
     Ok(Loaded {
-        quic: resolver,
+        quic: Arc::clone(resolver) as Arc<dyn ResolvesServerCert>,
         fingerprint: Arc::clone(fingerprint),
         challenge,
         redirect,
     })
 }
 
-async fn start_alpn(built: AcmeConfig<std::io::Error>, bind: SocketAddr) -> Result<Loaded, Error> {
-    let listener = TcpListener::bind(bind).await?;
-    let state = built.state();
-    let resolver = state.resolver();
-    let mut incoming =
-        Box::pin(state.tokio_incoming(TcpAccept(listener), vec![b"acme-tls/1".to_vec()]));
-    tokio::spawn(async move {
-        loop {
-            let next = std::future::poll_fn(|cx| incoming.as_mut().poll_next(cx)).await;
-            match next {
-                Some(Ok(mut stream)) => {
-                    let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
-                }
-                Some(Err(error)) => tracing::warn!(%error, "acme handshake"),
-                None => break,
-            }
-        }
-    });
-    Ok(Loaded {
-        quic: resolver,
-        fingerprint: slot_with(None),
-        challenge: Router::new(),
-        redirect: None,
-    })
+/// Rustls configuration for the `tls-alpn-01` listener: it offers only
+/// `acme-tls/1`, for which `resolver` answers with the challenge certificate.
+fn challenge_config(resolver: Arc<dyn ResolvesServerCert>) -> Arc<rustls::ServerConfig> {
+    let mut config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(resolver);
+    config.alpn_protocols = vec![ACME_TLS_ALPN.to_vec()];
+    Arc::new(config)
 }
 
-fn drive_http01(
+/// Accepts TLS-ALPN-01 validation connections until `stop` resolves. Each
+/// has `limits.header_timeout` to finish its handshake and is then closed. At
+/// most `limits.per_address` are open per address (further ones close on
+/// accept) and [`MAX_CONNECTIONS`] in all (further accepts wait).
+async fn serve_challenges(
+    listener: TcpListener,
+    config: Arc<rustls::ServerConfig>,
+    limits: ServeLimits,
+    stop: impl Future<Output = ()>,
+) {
+    let acceptor = TlsAcceptor::from(config);
+    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let peers = PeerSessions::default();
+    peers.set_max(limits.per_address);
+    let mut stop = std::pin::pin!(stop);
+    let mut handshakes = tokio::task::JoinSet::new();
+    loop {
+        let permit = tokio::select! {
+            () = &mut stop => break,
+            permit = Arc::clone(&slots).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
+        };
+        let (stream, peer) = tokio::select! {
+            () = &mut stop => break,
+            accepted = listener.accept() => match accepted {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    tracing::debug!(%error, "acme accept failed");
+                    drop(permit);
+                    tokio::select! {
+                        () = &mut stop => break,
+                        () = tokio::time::sleep(ACCEPT_BACKOFF) => {}
+                    }
+                    continue;
+                }
+            },
+        };
+        let Some(slot) = peers.acquire(peer.ip()) else {
+            drop(stream);
+            continue;
+        };
+        let acceptor = acceptor.clone();
+        let deadline = limits.header_timeout;
+        handshakes.spawn(async move {
+            match tokio::time::timeout(deadline, acceptor.accept(stream)).await {
+                Ok(Ok(mut stream)) => {
+                    let _ = tokio::time::timeout(deadline, stream.shutdown()).await;
+                }
+                Ok(Err(error)) => tracing::debug!(%error, "acme handshake rejected"),
+                Err(_) => tracing::debug!("acme handshake timed out"),
+            }
+            drop(slot);
+            drop(permit);
+        });
+        while handshakes.try_join_next().is_some() {}
+    }
+    handshakes.shutdown().await;
+}
+
+/// Polls the ACME order state machine (issuance and renewal) until `stop`.
+fn drive_acme(
     state: rustls_acme::AcmeState<std::io::Error>,
-    cache: PathBuf,
+    cert_file: PathBuf,
     slot: FingerprintSlot,
     stop: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
         let mut state = Box::pin(state);
         while !stop.load(Ordering::Relaxed) {
-            let event = tokio::time::timeout(
-                Duration::from_secs(2),
-                std::future::poll_fn(|cx| state.as_mut().poll_next(cx)),
-            )
-            .await;
-            remember_cached(&cache, &slot);
+            let event =
+                tokio::time::timeout(Duration::from_secs(2), futures::StreamExt::next(&mut state))
+                    .await;
+            remember_cached(&cert_file, &slot);
             match event {
                 Ok(Some(Ok(event))) => tracing::info!(?event, "acme"),
                 Ok(Some(Err(error))) => tracing::warn!(%error, "acme"),
@@ -407,8 +502,8 @@ async fn acme_redirect(uri: Uri, State(state): State<Arc<AcmeHttp>>) -> Response
     Redirect::permanent(&format!("{base}{path}")).into_response()
 }
 
-fn remember_cached(cache: &Path, slot: &FingerprintSlot) {
-    let Some(fingerprint) = cached_fingerprint(cache) else {
+fn remember_cached(cert_file: &Path, slot: &FingerprintSlot) {
+    let Some(fingerprint) = cached_fingerprint(cert_file) else {
         return;
     };
     if **slot.load() != Some(fingerprint) {
@@ -417,24 +512,30 @@ fn remember_cached(cache: &Path, slot: &FingerprintSlot) {
     }
 }
 
-fn cached_fingerprint(dir: &Path) -> Option<Fingerprint> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !name.starts_with("cached_cert_") {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(entry.path()) else {
-            continue;
-        };
-        if let Some(fingerprint) = pem_fingerprint(&bytes) {
-            return Some(fingerprint);
-        }
-    }
-    None
+/// Leaf of the cached certificate in `cert_file`, if ACME has issued one.
+fn cached_fingerprint(cert_file: &Path) -> Option<Fingerprint> {
+    pem_fingerprint(&std::fs::read(cert_file).ok()?)
+}
+
+/// The cache file rustls-acme's `DirCache` writes for the configured host
+/// and directory. A cache can hold others (an old host, the staging
+/// directory); only this one is the certificate being served.
+fn acme_cert_file(config: &Config, data_dir: &Path) -> PathBuf {
+    acme_cache(data_dir).join(cert_file_name(
+        config.server.public_host.trim(),
+        directory(&config.tls),
+    ))
+}
+
+/// `DirCache::cached_cert_file_name` for one domain: SHA-256 over each
+/// domain and a NUL, then the directory URL, base64url without padding.
+fn cert_file_name(domain: &str, directory: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(domain.as_bytes());
+    hash.update([0]);
+    hash.update(directory.as_bytes());
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash.finalize());
+    format!("cached_cert_{encoded}")
 }
 
 fn pem_fingerprint(bytes: &[u8]) -> Option<Fingerprint> {
@@ -609,20 +710,6 @@ fn spawn_watch(
     }
 }
 
-struct TcpAccept(TcpListener);
-
-impl Stream for TcpAccept {
-    type Item = std::io::Result<tokio::net::TcpStream>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.get_mut().0.poll_accept(cx) {
-            Poll::Ready(Ok((stream, _))) => Poll::Ready(Some(Ok(stream))),
-            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(error))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
 /// A certificate file or ACME setting the process should not start with.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -638,4 +725,133 @@ pub enum Error {
     /// `notify` could not watch the certificate files.
     #[error("certificate watch: {0}")]
     Watch(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use rustls_acme::{CertCache, caches::DirCache};
+    use ss_net::tls::CertResolver;
+    use tokio::{io::AsyncReadExt, net::TcpStream, time::timeout};
+
+    use super::{
+        cached_fingerprint, cert_file_name, challenge_config, private_dir, serve_challenges,
+    };
+    use crate::{config::ACME_DIRECTORY, http::hardening::ServeLimits};
+
+    #[tokio::test]
+    async fn idle_alpn_connections_close_at_the_handshake_deadline_and_are_capped_per_address() {
+        ss_net::tls::install_default_crypto_provider();
+        let dir = tempfile::tempdir().unwrap();
+        let identity = ss_net::tls::generate_self_signed(dir.path()).await.unwrap();
+        let resolver = Arc::new(CertResolver::new(identity).unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let limits = ServeLimits {
+            header_timeout: Duration::from_millis(300),
+            per_address: 2,
+            ..ServeLimits::default()
+        };
+        let served = tokio::spawn(serve_challenges(
+            listener,
+            challenge_config(resolver),
+            limits,
+            async move {
+                let _ = stop_rx.await;
+            },
+        ));
+
+        let started = Instant::now();
+        let mut first = TcpStream::connect(addr).await.unwrap();
+        let mut second = TcpStream::connect(addr).await.unwrap();
+        let mut third = TcpStream::connect(addr).await.unwrap();
+        assert!(
+            closed_within(&mut third, Duration::from_millis(200)).await,
+            "a third idle connection from one address stayed open"
+        );
+        assert!(closed_within(&mut first, Duration::from_secs(2)).await);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "closed before the handshake deadline: {elapsed:?}"
+        );
+        assert!(closed_within(&mut second, Duration::from_secs(2)).await);
+
+        let mut again = TcpStream::connect(addr).await.unwrap();
+        assert!(
+            !closed_within(&mut again, Duration::from_millis(100)).await,
+            "closed connections did not free their address slots"
+        );
+        let _ = stop_tx.send(());
+        timeout(Duration::from_secs(2), served)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    /// Whether the peer closes (or resets) `stream` within `limit`.
+    async fn closed_within(stream: &mut TcpStream, limit: Duration) -> bool {
+        let mut buf = [0_u8; 64];
+        matches!(
+            timeout(limit, stream.read(&mut buf)).await,
+            Ok(Ok(0) | Err(_))
+        )
+    }
+
+    #[tokio::test]
+    async fn the_fingerprint_comes_from_the_configured_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DirCache::new(dir.path().to_path_buf());
+        let domains = vec!["chat.example.com".to_owned()];
+        for n in 0..8 {
+            let old =
+                rcgen::generate_simple_self_signed(vec!["old.example.com".to_owned()]).unwrap();
+            let directory = format!("https://staging-{n}.example/directory");
+            cache
+                .store_cert(&domains, &directory, old.cert.pem().as_bytes())
+                .await
+                .unwrap();
+        }
+        let wanted = rcgen::generate_simple_self_signed(domains.clone()).unwrap();
+        cache
+            .store_cert(&domains, ACME_DIRECTORY, wanted.cert.pem().as_bytes())
+            .await
+            .unwrap();
+        let file = dir
+            .path()
+            .join(cert_file_name("chat.example.com", ACME_DIRECTORY));
+        assert!(file.is_file(), "the name differs from rustls-acme's");
+        assert_eq!(
+            cached_fingerprint(&file),
+            Some(ss_net::tls::fingerprint(wanted.cert.der()))
+        );
+        let missing = dir
+            .path()
+            .join(cert_file_name("other.example.com", ACME_DIRECTORY));
+        assert_eq!(cached_fingerprint(&missing), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_acme_cache_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("tls").join("acme");
+        private_dir(&fresh).unwrap();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(mode(&dir.path().join("tls")), 0o700);
+
+        let existing = dir.path().join("old-acme");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir(&existing).unwrap();
+        assert_eq!(mode(&existing), 0o700);
+    }
 }

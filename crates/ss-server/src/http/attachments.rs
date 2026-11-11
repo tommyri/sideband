@@ -1,11 +1,22 @@
 //! `POST /api/v1/attachments` and `GET /api/v1/attachments/{id}/{filename}`.
 //!
-//! Upload is bearer auth plus `ATTACH_FILES` on the form's channel id.
+//! Upload is bearer auth plus `ATTACH_FILES` on the form's channel id. The
+//! `channel_id` field must come before `file`, so permission is checked
+//! before any file byte is read; the file then streams to disk.
 //! Download accepts that bearer token or a short-lived `token` query signed
-//! for the attachment. Images and video are inline; everything else is an
-//! attachment download.
+//! for the attachment, and streams from disk. A deleted message's files are
+//! gone (404). Images and video are inline; everything else is an attachment
+//! download.
+//!
+//! Each account may have [`crate::storage::UploadPolicy::transfers_per_account`]
+//! uploads and downloads open at once. A signed-URL download counts against
+//! the account that signed it (the token binds the signer), never the client
+//! address, which behind a reverse proxy is the proxy's. A download's file and
+//! slot belong to a task that ends when the body is sent, dropped, or
+//! [`crate::storage::UploadPolicy::transfer_timeout`] passes, whether or not
+//! the client is reading.
 
-use std::{fmt::Write, sync::Arc};
+use std::{collections::HashMap, fmt::Write, io, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -16,17 +27,24 @@ use axum::{
     routing::{get, post},
 };
 use base64::Engine;
+use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use ss_core::{ChannelKind, Id, Permissions};
+use tokio::{io::AsyncReadExt, sync::mpsc};
 
 use crate::{
     auth::Auth,
     db::{self, attachments, channels, messages, settings, users},
     limits::{KeyedLimiter, UPLOAD_BURST, UPLOAD_PERIOD, quota},
     perms::{AccessError, PermissionService},
-    storage::{SaveError, Saved, Store},
+    storage::{Incoming, SaveError, Saved, Store},
 };
+
+/// Bytes read from disk per download body chunk.
+const CHUNK: usize = 64 * 1024;
+/// `Retry-After` when an account has too many transfers open.
+const BUSY_RETRY: Duration = Duration::from_secs(1);
 
 /// Auth, permissions, and the file store for the upload routes.
 #[derive(Clone)]
@@ -39,11 +57,14 @@ pub struct FilesState {
     pub files: Store,
     /// Uploads per account, ahead of the daily byte quota.
     uploads: Arc<KeyedLimiter<Id>>,
+    /// Open uploads and downloads per account.
+    transfers: Arc<TransferGate>,
 }
 
 /// Upload and download routes. Mount them on the public HTTPS listener.
 pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> Router {
     let limit = files.body_limit();
+    let transfers = Arc::new(TransferGate::new(files.transfers_per_account()));
     Router::new()
         .route("/api/v1/attachments", post(upload))
         .route(
@@ -56,6 +77,7 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> R
             perms,
             files,
             uploads: Arc::new(KeyedLimiter::new(quota(UPLOAD_BURST, UPLOAD_PERIOD))),
+            transfers,
         })
 }
 
@@ -71,16 +93,23 @@ async fn upload(
 ) -> Result<Json<Value>, HttpError> {
     let user = caller(&state.auth, &headers).await?;
     state.uploads.check(&user).map_err(HttpError::RateLimited)?;
-    let (channel_text, filename, bytes) =
-        read_upload(&mut multipart, state.files.max_bytes()).await?;
-    let channel_id = parse_id(channel_text.trim())?;
-    permit_upload(&state, user, channel_id).await?;
+    let _transfer = state.transfers.enter(user)?;
+    let (filename, incoming) = read_upload(
+        &mut multipart,
+        state.files.max_bytes(),
+        async |channel_text: &str| {
+            let channel_id = parse_id(channel_text.trim())?;
+            permit_upload(&state, user, channel_id).await?;
+            state.files.incoming().await.map_err(save_error)
+        },
+    )
+    .await?;
     let saved = state
         .files
-        .save(user, &filename, &bytes)
+        .save_incoming(user, &filename, incoming)
         .await
         .map_err(save_error)?;
-    let url = state.files.download_url(saved.id, &saved.filename);
+    let url = state.files.download_url(saved.id, &saved.filename, user);
     Ok(Json(saved_json(&saved, &url)))
 }
 
@@ -91,13 +120,19 @@ async fn download(
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let id = parse_id(&attachment_id)?;
-    if query
+    if let Some(signer) = query
         .token
         .as_deref()
-        .is_some_and(|token| state.files.authorize(id, token))
+        .and_then(|token| state.files.authorize(id, token))
     {
         let file = load_file(&state, id).await?;
-        return named(&state, &file, &filename, &headers).await;
+        if file.filename != filename {
+            return Err(HttpError::NotFound);
+        }
+        if let Some(message_id) = file.message_id {
+            live_message(&state, message_id).await?;
+        }
+        return serve(&state, &file, &headers, signer).await;
     }
     let user = caller(&state.auth, &headers).await?;
     let file = load_file(&state, id).await?;
@@ -105,19 +140,22 @@ async fn download(
         return Err(HttpError::NotFound);
     }
     may_read(&state, user, &file).await?;
-    serve(&state, &file, &headers).await
+    serve(&state, &file, &headers, user).await
 }
 
-async fn named(
-    state: &FilesState,
-    file: &db::Attachment,
-    filename: &str,
-    headers: &HeaderMap,
-) -> Result<Response, HttpError> {
-    if file.filename != filename {
-        return Err(HttpError::NotFound);
-    }
-    serve(state, file, headers).await
+/// The message a file is attached to, unless it is missing or deleted.
+async fn live_message(state: &FilesState, message_id: Id) -> Result<db::Message, HttpError> {
+    let mut conn = state
+        .perms
+        .pool()
+        .read()
+        .await
+        .map_err(|_| HttpError::Internal)?;
+    messages::get(&mut conn, message_id)
+        .await
+        .map_err(|_| HttpError::Internal)?
+        .filter(|message| message.deleted_at.is_none())
+        .ok_or(HttpError::NotFound)
 }
 
 async fn permit_upload(state: &FilesState, user: Id, channel_id: Id) -> Result<(), HttpError> {
@@ -161,17 +199,7 @@ async fn permit_upload(state: &FilesState, user: Id, channel_id: Id) -> Result<(
 
 async fn may_read(state: &FilesState, user: Id, file: &db::Attachment) -> Result<(), HttpError> {
     if let Some(message_id) = file.message_id {
-        let mut conn = state
-            .perms
-            .pool()
-            .read()
-            .await
-            .map_err(|_| HttpError::Internal)?;
-        let message = messages::get(&mut conn, message_id)
-            .await
-            .map_err(|_| HttpError::Internal)?
-            .ok_or(HttpError::NotFound)?;
-        drop(conn);
+        let message = live_message(state, message_id).await?;
         return match state
             .perms
             .check(user, Some(message.channel_id), Permissions::VIEW_CHANNEL)
@@ -228,6 +256,7 @@ async fn serve(
     state: &FilesState,
     file: &db::Attachment,
     headers: &HeaderMap,
+    who: Id,
 ) -> Result<Response, HttpError> {
     let etag = format!("\"{}\"", hex(&file.sha256));
     if headers
@@ -241,8 +270,9 @@ async fn serve(
             .body(Body::empty())
             .map_err(|_| HttpError::Internal);
     }
-    let bytes = match state.files.read(&file.storage_path).await {
-        Ok(bytes) => bytes,
+    let permit = state.transfers.enter(who)?;
+    let (blob, len) = match state.files.open_blob(&file.storage_path).await {
+        Ok(opened) => opened,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(HttpError::NotFound);
         }
@@ -259,16 +289,140 @@ async fn serve(
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CONTENT_SECURITY_POLICY, super::hardening::CSP)
         .header(header::CACHE_CONTROL, "private, no-cache")
-        .body(Body::from(bytes))
+        .header(header::CONTENT_LENGTH, len)
+        .body(blob_body(blob, len, permit, state.files.transfer_timeout()))
         .map_err(|_| HttpError::Internal)
 }
 
-pub(crate) async fn read_upload(
+/// A body of `len` bytes of `file`. A spawned task reads [`CHUNK`]s into a
+/// one-slot channel, so at most two chunks are in memory. The task owns the
+/// file and `permit` and ends when the last chunk is queued, the body is
+/// dropped, or `timeout` passes. The timer runs even when nobody polls the
+/// body, as with an HTTP/2 client that stopped reading. On timeout the file
+/// and slot are released at once; the body then yields an error instead of
+/// ending short.
+fn blob_body(file: tokio::fs::File, len: u64, permit: TransferPermit, timeout: Duration) -> Body {
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(pump(file, len, permit, timeout, tx));
+    Body::from_stream(futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    }))
+}
+
+async fn pump(
+    mut file: tokio::fs::File,
+    mut remaining: u64,
+    permit: TransferPermit,
+    timeout: Duration,
+    tx: mpsc::Sender<io::Result<Bytes>>,
+) {
+    let sending = async {
+        while remaining > 0 {
+            let want = usize::try_from(remaining).unwrap_or(CHUNK).min(CHUNK);
+            let mut buf = vec![0; want];
+            let chunk = match file.read(&mut buf).await {
+                Ok(0) => Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(read) => {
+                    buf.truncate(read);
+                    remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(remaining));
+                    Ok(Bytes::from(buf))
+                }
+                Err(error) => Err(error),
+            };
+            let failed = chunk.is_err();
+            if tx.send(chunk).await.is_err() || failed {
+                return;
+            }
+        }
+    };
+    let timed_out = tokio::time::timeout(timeout, sending).await.is_err();
+    drop(file);
+    drop(permit);
+    if timed_out {
+        // Only the channel is left; this waits for the body to be polled or dropped.
+        let _ = tx
+            .send(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "attachment transfer deadline",
+            )))
+            .await;
+    }
+}
+
+/// Open transfers per account: the bearer, or a signed URL's signer. A key
+/// leaves the map with its last transfer, so the map is as large as the set
+/// of accounts with a transfer open.
+struct TransferGate {
+    max: usize,
+    open: parking_lot::Mutex<HashMap<Id, usize>>,
+}
+
+impl TransferGate {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            open: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn enter(self: &Arc<Self>, who: Id) -> Result<TransferPermit, HttpError> {
+        let mut open = self.open.lock();
+        let count = open.entry(who).or_insert(0);
+        if *count >= self.max {
+            if *count == 0 {
+                open.remove(&who);
+            }
+            return Err(HttpError::Busy);
+        }
+        *count += 1;
+        Ok(TransferPermit {
+            gate: Arc::clone(self),
+            who,
+        })
+    }
+}
+
+/// One open transfer. Dropping it frees the slot.
+struct TransferPermit {
+    gate: Arc<TransferGate>,
+    who: Id,
+}
+
+impl Drop for TransferPermit {
+    fn drop(&mut self) {
+        let mut open = self.gate.open.lock();
+        if let Some(count) = open.get_mut(&self.who) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.who);
+            }
+        }
+    }
+}
+
+/// Where [`read_upload`] writes the file field.
+pub(crate) trait UploadSink {
+    /// Appends one chunk of the file.
+    async fn write(&mut self, chunk: &[u8]) -> Result<(), HttpError>;
+}
+
+impl UploadSink for Incoming {
+    async fn write(&mut self, chunk: &[u8]) -> Result<(), HttpError> {
+        Incoming::write(self, chunk).await.map_err(save_error)
+    }
+}
+
+/// Reads an upload form. The `channel_id` field must come first: its text is
+/// passed to `open`, which checks permission and returns the sink, before
+/// any byte of `file` is read. The file is then copied into the sink, at
+/// most `max_bytes`. Returns the client's file name and the sink.
+pub(crate) async fn read_upload<S: UploadSink>(
     multipart: &mut Multipart,
     max_bytes: u64,
-) -> Result<(String, String, Vec<u8>), HttpError> {
-    let max = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-    let mut channel_id = None;
+    open: impl AsyncFnOnce(&str) -> Result<S, HttpError>,
+) -> Result<(String, S), HttpError> {
+    let mut open = Some(open);
+    let mut sink = None;
     let mut file = None;
     while let Some(mut field) = multipart
         .next_field()
@@ -276,29 +430,58 @@ pub(crate) async fn read_upload(
         .map_err(|_| HttpError::BadRequest("upload is not valid multipart"))?
     {
         let name = field.name().unwrap_or("").to_owned();
-        let filename = field.file_name().map(str::to_owned);
         match name.as_str() {
             "channel_id" => {
-                channel_id = Some(read_channel(&mut field).await?);
+                let Some(open) = open.take() else {
+                    return Err(HttpError::BadRequest("one channel id per upload"));
+                };
+                let text = read_channel(&mut field).await?;
+                sink = Some(open(&text).await?);
             }
             "file" => {
                 if file.is_some() {
                     return Err(HttpError::BadRequest("one file per upload"));
                 }
-                let bytes = read_limited(&mut field, max).await?;
-                file = Some((filename.unwrap_or_else(|| "file".to_owned()), bytes));
+                let Some(mut target) = sink.take() else {
+                    return Err(HttpError::BadRequest(
+                        "channel id must come before the file",
+                    ));
+                };
+                let filename = field
+                    .file_name()
+                    .map_or_else(|| "file".to_owned(), str::to_owned);
+                if copy_limited(&mut field, max_bytes, &mut target).await? == 0 {
+                    return Err(HttpError::BadRequest("file is empty"));
+                }
+                file = Some((filename, target));
             }
-            _ => {
-                let _ = field.bytes().await;
-            }
+            _ => while let Ok(Some(_)) = field.chunk().await {},
         }
     }
-    let channel_id = channel_id.ok_or(HttpError::BadRequest("channel id is required"))?;
-    let (filename, bytes) = file.ok_or(HttpError::BadRequest("file is required"))?;
-    if bytes.is_empty() {
-        return Err(HttpError::BadRequest("file is empty"));
+    if open.is_some() {
+        return Err(HttpError::BadRequest("channel id is required"));
     }
-    Ok((channel_id, filename, bytes))
+    file.ok_or(HttpError::BadRequest("file is required"))
+}
+
+async fn copy_limited<S: UploadSink>(
+    field: &mut axum::extract::multipart::Field<'_>,
+    max: u64,
+    sink: &mut S,
+) -> Result<u64, HttpError> {
+    let mut size = 0_u64;
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|_| HttpError::BadRequest("upload is not valid multipart"))?
+    {
+        size = size.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if size > max {
+            return Err(HttpError::Payload("file is too large"));
+        }
+        sink.write(&chunk).await?;
+    }
+    Ok(size)
 }
 
 async fn read_channel(
@@ -449,6 +632,7 @@ pub(crate) enum HttpError {
     Unsupported(&'static str),
     Quota(&'static str),
     RateLimited(std::time::Duration),
+    Busy,
     Internal,
 }
 
@@ -463,6 +647,10 @@ impl HttpError {
             Self::Unsupported(message) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, message),
             Self::Quota(message) => (StatusCode::TOO_MANY_REQUESTS, message),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate limited"),
+            Self::Busy => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many concurrent transfers",
+            ),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         }
     }
@@ -477,6 +665,7 @@ impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let retry_after = match self {
             Self::RateLimited(wait) => Some((wait, "rate limited")),
+            Self::Busy => Some((BUSY_RETRY, "too many concurrent transfers")),
             Self::Quota(message) => Some((std::time::Duration::from_hours(24), message)),
             _ => None,
         };

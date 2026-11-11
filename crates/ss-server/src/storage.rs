@@ -1,14 +1,16 @@
 //! Attachment bytes on disk.
 //!
 //! Files live at `attachments/<yy>/<mm>/<ulid>` under the data directory.
-//! A repeated SHA-256 reuses that blob and still inserts a new row. Unlinked
-//! uploads older than an hour are deleted, except avatars and the server icon.
+//! An upload streams into `attachments/.incoming/` through [`Incoming`], so
+//! no body is held in memory. A repeated SHA-256 reuses that blob and still
+//! inserts a new row. Unlinked uploads older than an hour, and every file of a
+//! deleted message, are deleted, except avatars and the server icon.
 
 use std::{
     io::ErrorKind,
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use base64::Engine;
@@ -16,12 +18,14 @@ use hmac::{Hmac, KeyInit, Mac};
 use image::ImageDecoder;
 use sha2::{Digest, Sha256};
 use ss_core::{Id, Timestamp};
-use tokio::sync::watch;
+use tokio::{io::AsyncWriteExt, sync::watch};
 
 use crate::db::{self, NewAttachment, attachments, settings};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const KEY_FILE: &str = "attachment.key";
+/// Leading bytes kept for content sniffing. `infer` needs at most ~32 KiB.
+const SNIFF_BYTES: usize = 64 * 1024;
 
 const DENIED_MIME: &[&str] = &[
     "application/java",
@@ -52,6 +56,16 @@ pub struct UploadPolicy {
     pub token_ttl: Duration,
     /// MIME types or extensions that may be stored even when they look executable.
     pub executable_allow: Vec<String>,
+    /// Uploads plus downloads one account may have open at once; a signed-URL
+    /// download counts against its signer. The default is 16; further
+    /// requests get 429.
+    pub transfers_per_account: usize,
+    /// How long one download may take, from its start. One that has not
+    /// finished by then is cut off and frees its slot, whether or not the
+    /// client is reading. The default is
+    /// [`crate::http::hardening::TRANSFER_TIMEOUT`], which also bounds an
+    /// upload request.
+    pub transfer_timeout: Duration,
 }
 
 impl Default for UploadPolicy {
@@ -62,6 +76,8 @@ impl Default for UploadPolicy {
             orphan_after: Duration::from_hours(1),
             token_ttl: Duration::from_mins(10),
             executable_allow: Vec::new(),
+            transfers_per_account: 16,
+            transfer_timeout: crate::http::hardening::TRANSFER_TIMEOUT,
         }
     }
 }
@@ -190,27 +206,69 @@ impl Store {
         max.saturating_add(256 * 1024)
     }
 
+    /// Concurrent transfers allowed per account; see [`UploadPolicy`].
+    #[must_use]
+    pub fn transfers_per_account(&self) -> usize {
+        self.inner.policy.transfers_per_account
+    }
+
     /// Writes `bytes` for `user` and inserts a row.
     pub async fn save(&self, user: Id, filename: &str, bytes: &[u8]) -> Result<Saved, SaveError> {
-        if bytes.is_empty() {
-            return Err(SaveError::Empty);
-        }
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.inner.policy.max_bytes {
             return Err(SaveError::TooLarge);
         }
+        let mut incoming = self.incoming().await?;
+        incoming.write(bytes).await?;
+        self.save_incoming(user, filename, incoming).await
+    }
+
+    /// Starts an upload in `attachments/.incoming/`. Write the body with
+    /// [`Incoming::write`], then pass it to [`Self::save_incoming`].
+    pub async fn incoming(&self) -> Result<Incoming, SaveError> {
+        let id = Id::generate();
+        let path = incoming_path(&self.inner.data_dir, id);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::File::create(&path).await?;
+        Ok(Incoming {
+            id,
+            path: Some(path),
+            file: Some(file),
+            hasher: Sha256::new(),
+            head: Vec::new(),
+            size: 0,
+            max: self.inner.policy.max_bytes,
+        })
+    }
+
+    /// Checks a finished upload, moves it into place, and inserts a row for
+    /// `user`. The temporary file is removed on every error.
+    pub async fn save_incoming(
+        &self,
+        user: Id,
+        filename: &str,
+        mut incoming: Incoming,
+    ) -> Result<Saved, SaveError> {
+        if incoming.size == 0 {
+            return Err(SaveError::Empty);
+        }
         let filename = normalize_filename(filename);
-        let mime = safe_mime(sniffed_mime(bytes));
+        let mime = safe_mime(sniffed_mime(&incoming.head));
         if is_blocked(&mime, &filename, &self.inner.policy.executable_allow) {
             return Err(SaveError::RejectedType);
         }
-        let size = i64::try_from(bytes.len()).map_err(|_| SaveError::TooLarge)?;
-        let hash = sha256(bytes);
-        let dims = measured(bytes, &mime).await;
-        let id = Id::generate();
-        let temp = incoming_path(&self.inner.data_dir, id);
-        write_temp(&temp, bytes).await?;
+        let size = i64::try_from(incoming.size).map_err(|_| SaveError::TooLarge)?;
+        if let Some(mut file) = incoming.file.take() {
+            file.flush().await?;
+        }
+        let hash: [u8; 32] = std::mem::take(&mut incoming.hasher).finalize().into();
+        let Some(temp) = incoming.path.take() else {
+            return Err(SaveError::Io(std::io::Error::other("upload already saved")));
+        };
+        let dims = measured(&temp, &mime).await;
         match self
-            .finish(user, id, filename, mime, size, hash, dims, &temp)
+            .finish(user, incoming.id, filename, mime, size, hash, dims, &temp)
             .await
         {
             Ok(saved) => Ok(saved),
@@ -221,39 +279,52 @@ impl Store {
         }
     }
 
-    /// Signed path a client can put in an image tag.
+    /// Signed path a client can put in an image tag. Downloads through it
+    /// count against `signer`'s transfer cap.
     #[must_use]
-    pub fn download_url(&self, id: Id, filename: &str) -> String {
-        let token = self.signed_token(id);
+    pub fn download_url(&self, id: Id, filename: &str, signer: Id) -> String {
+        let token = self.signed_token(id, signer);
         format!(
             "/api/v1/attachments/{id}/{}?token={token}",
             path_escape(filename)
         )
     }
 
-    /// Whether `token` currently authorizes `id`.
+    /// The account that signed `token`, if it currently authorizes `id`.
     #[must_use]
-    pub fn authorize(&self, id: Id, token: &str) -> bool {
+    pub fn authorize(&self, id: Id, token: &str) -> Option<Id> {
         verify(&self.inner.key, id, token, Timestamp::now().as_millis())
     }
 
-    /// Reads a blob stored at `storage_path`.
-    pub async fn read(&self, storage_path: &str) -> Result<Vec<u8>, std::io::Error> {
-        let path = resolve(&self.inner.data_dir, storage_path)?;
-        tokio::fs::read(path).await
+    /// How long one transfer may take; see [`UploadPolicy::transfer_timeout`].
+    #[must_use]
+    pub fn transfer_timeout(&self) -> Duration {
+        self.inner.policy.transfer_timeout
     }
 
-    /// Deletes unlinked uploads older than the policy window.
+    /// Opens the blob stored at `storage_path` for streaming, with its length.
+    pub async fn open_blob(
+        &self,
+        storage_path: &str,
+    ) -> Result<(tokio::fs::File, u64), std::io::Error> {
+        let path = resolve(&self.inner.data_dir, storage_path)?;
+        let file = tokio::fs::File::open(path).await?;
+        let len = file.metadata().await?.len();
+        Ok((file, len))
+    }
+
+    /// Deletes unlinked uploads older than the policy window and every file
+    /// of a deleted message, then any stale `.incoming` file.
     pub async fn collect_orphans(&self) -> Result<usize, db::Error> {
         let window = i64::try_from(self.inner.policy.orphan_after.as_millis()).unwrap_or(i64::MAX);
         let cutoff = Timestamp::now().as_millis().saturating_sub(window);
         remove_orphans(&self.inner.pool, &self.inner.data_dir, cutoff).await
     }
 
-    fn signed_token(&self, id: Id) -> String {
+    fn signed_token(&self, id: Id, signer: Id) -> String {
         let ttl = i64::try_from(self.inner.policy.token_ttl.as_millis()).unwrap_or(600_000);
         let expiry = Timestamp::now().as_millis().saturating_add(ttl);
-        issue_token(&self.inner.key, id, expiry)
+        issue_token(&self.inner.key, id, signer, expiry)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -339,11 +410,56 @@ async fn place_blob(
     Ok((path, true))
 }
 
-async fn write_temp(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+/// An upload being written to `attachments/.incoming/`. It hashes and counts
+/// as it goes and keeps only the leading bytes for sniffing. Dropping it
+/// without [`Store::save_incoming`] deletes the file.
+pub struct Incoming {
+    id: Id,
+    path: Option<PathBuf>,
+    file: Option<tokio::fs::File>,
+    hasher: Sha256,
+    head: Vec<u8>,
+    size: u64,
+    max: u64,
+}
+
+impl Incoming {
+    /// Appends `chunk`. Fails with [`SaveError::TooLarge`] past the cap.
+    pub async fn write(&mut self, chunk: &[u8]) -> Result<(), SaveError> {
+        let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+        let size = self.size.saturating_add(len);
+        if size > self.max {
+            return Err(SaveError::TooLarge);
+        }
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("upload already finished"))?;
+        file.write_all(chunk).await?;
+        self.hasher.update(chunk);
+        let room = SNIFF_BYTES.saturating_sub(self.head.len());
+        self.head
+            .extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or(&[]));
+        self.size = size;
+        Ok(())
     }
-    tokio::fs::write(path, bytes).await
+}
+
+impl Drop for Incoming {
+    fn drop(&mut self) {
+        // Close before unlinking (Windows refuses to delete an open file).
+        drop(self.file.take());
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = tokio::fs::remove_file(path).await;
+            });
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 fn incoming_path(data_dir: &Path, id: Id) -> PathBuf {
@@ -383,7 +499,8 @@ async fn gc_loop(
 async fn remove_orphans(pool: &db::Pool, data_dir: &Path, cutoff: i64) -> Result<usize, db::Error> {
     let mut guard = pool.write().await;
     let protected = icon_id(&mut guard).await?;
-    let rows = attachments::unlinked_before(&mut guard, cutoff).await?;
+    let mut rows = attachments::unlinked_before(&mut guard, cutoff).await?;
+    rows.extend(attachments::on_deleted_messages(&mut guard).await?);
     let mut removed = 0_usize;
     for row in rows {
         if Some(row.id) == protected {
@@ -396,10 +513,34 @@ async fn remove_orphans(pool: &db::Pool, data_dir: &Path, cutoff: i64) -> Result
         }
         removed += 1;
     }
+    drop(guard);
     if removed > 0 {
         tracing::info!(removed, "deleted orphan attachments");
     }
+    let incoming = data_dir.join("attachments").join(".incoming");
+    let window = u64::try_from(Timestamp::now().as_millis().saturating_sub(cutoff)).unwrap_or(0);
+    let stale = Duration::from_millis(window);
+    let _ = tokio::task::spawn_blocking(move || remove_stale_incoming(&incoming, stale)).await;
     Ok(removed)
+}
+
+/// Deletes `.incoming` files older than `age`: uploads cut off by a crash.
+fn remove_stale_incoming(dir: &Path, age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|elapsed| elapsed > age);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 async fn remove_blob(data_dir: &Path, storage_path: &str) {
@@ -420,21 +561,22 @@ async fn icon_id(conn: &mut sqlx::SqliteConnection) -> Result<Option<Id>, db::Er
     Ok(setting.value.parse().ok())
 }
 
-async fn measured(bytes: &[u8], mime: &str) -> Option<(u32, u32)> {
+async fn measured(path: &Path, mime: &str) -> Option<(u32, u32)> {
     if !mime.starts_with("image/") {
         return None;
     }
-    let owned = bytes.to_vec();
-    tokio::task::spawn_blocking(move || decode_image_size(&owned))
-        .await
-        .ok()
-        .flatten()
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(path).ok()?;
+        decode_image_size(std::io::BufReader::new(file))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
-fn decode_image_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
+fn decode_image_size(source: impl std::io::BufRead + std::io::Seek) -> Option<(u32, u32)> {
+    let reader = image::ImageReader::new(source).with_guessed_format().ok()?;
     let mut decoder = reader.into_decoder().ok()?;
     let (mut width, mut height) = decoder.dimensions();
     let orientation = decoder
@@ -558,55 +700,43 @@ fn resolve(data_dir: &Path, storage_path: &str) -> Result<PathBuf, std::io::Erro
     Ok(data_dir.join(relative))
 }
 
-fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let digest = Sha256::digest(bytes);
-    let mut out = [0; 32];
-    out.copy_from_slice(digest.as_ref());
-    out
-}
-
-fn issue_token(key: &[u8], id: Id, expiry: i64) -> String {
-    let mac = mac_bytes(key, id, expiry);
-    let mut raw = Vec::with_capacity(40);
+/// `base64url(expiry ‖ signer ‖ HMAC-SHA256(key, id ‖ signer ‖ expiry))`:
+/// 8 + 16 + 32 bytes. Expiry is big-endian Unix milliseconds.
+fn issue_token(key: &[u8], id: Id, signer: Id, expiry: i64) -> String {
+    let mac = mac_bytes(key, id, signer, expiry);
+    let mut raw = Vec::with_capacity(56);
     raw.extend_from_slice(&expiry.to_be_bytes());
+    raw.extend_from_slice(&signer.as_bytes());
     raw.extend_from_slice(&mac);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
 }
 
-fn verify(key: &[u8], id: Id, token: &str, now: i64) -> bool {
-    let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token) else {
-        return false;
-    };
-    let Some(expiry_bytes) = raw.get(..8) else {
-        return false;
-    };
-    let Some(tag) = raw.get(8..) else {
-        return false;
-    };
-    if tag.len() != 32 {
-        return false;
+/// The signer of `token` when it is a valid, unexpired token for `id`.
+fn verify(key: &[u8], id: Id, token: &str, now: i64) -> Option<Id> {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token)
+        .ok()?;
+    if raw.len() != 56 {
+        return None;
     }
-    let mut expiry_buf = [0; 8];
-    expiry_buf.copy_from_slice(expiry_bytes);
-    let expiry = i64::from_be_bytes(expiry_buf);
-    let Ok(mut mac) = HmacSha256::new_from_slice(key) else {
-        return false;
-    };
-    let id_bytes = id.as_bytes();
-    mac.update(&id_bytes);
-    mac.update(&expiry_buf);
-    if mac.verify_slice(tag).is_err() {
-        return false;
-    }
-    expiry > now
+    let (expiry_bytes, rest) = raw.split_at(8);
+    let (signer_bytes, tag) = rest.split_at(16);
+    let expiry = i64::from_be_bytes(expiry_bytes.try_into().ok()?);
+    let signer = Id::from_bytes(signer_bytes.try_into().ok()?);
+    let mut mac = HmacSha256::new_from_slice(key).ok()?;
+    mac.update(&id.as_bytes());
+    mac.update(signer_bytes);
+    mac.update(expiry_bytes);
+    mac.verify_slice(tag).ok()?;
+    (expiry > now).then_some(signer)
 }
 
-fn mac_bytes(key: &[u8], id: Id, expiry: i64) -> [u8; 32] {
+fn mac_bytes(key: &[u8], id: Id, signer: Id, expiry: i64) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(key).unwrap_or_else(|_| {
         HmacSha256::new_from_slice(&[0; 32]).expect("hmac accepts a 32-byte key")
     });
-    let id_bytes = id.as_bytes();
-    mac.update(&id_bytes);
+    mac.update(&id.as_bytes());
+    mac.update(&signer.as_bytes());
     mac.update(&expiry.to_be_bytes());
     let bytes = mac.finalize().into_bytes();
     let mut out = [0; 32];
@@ -676,6 +806,8 @@ async fn restrict_key(path: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::{
         decode_image_size, is_blocked, issue_token, normalize_filename, sniffed_mime, verify,
         year_month,
@@ -722,7 +854,7 @@ mod tests {
 
     #[test]
     fn png_dimensions_and_exif_rotation_swap_axes() {
-        assert_eq!(decode_image_size(PNG_1X1), Some((1, 1)));
+        assert_eq!(decode_image_size(Cursor::new(PNG_1X1)), Some((1, 1)));
         let mut encoded = Vec::new();
         let mut jpeg = image::codecs::jpeg::JpegEncoder::new(&mut encoded);
         jpeg.encode(
@@ -732,20 +864,40 @@ mod tests {
             image::ExtendedColorType::Rgb8,
         )
         .unwrap();
-        assert_eq!(decode_image_size(&encoded), Some((2, 1)));
+        assert_eq!(decode_image_size(Cursor::new(&encoded)), Some((2, 1)));
         let turned = with_orientation(&encoded, 6);
-        assert_eq!(decode_image_size(&turned), Some((1, 2)));
+        assert_eq!(decode_image_size(Cursor::new(&turned)), Some((1, 2)));
     }
 
     #[test]
     fn expired_tokens_fail_the_mac_check() {
         let key = [9_u8; 32];
         let id = ss_core::Id::from_bytes([1; 16]);
-        let token = issue_token(&key, id, 50);
-        assert!(verify(&key, id, &token, 49));
-        assert!(!verify(&key, id, &token, 50));
-        assert!(!verify(&key, id, &token, 51));
-        assert!(!verify(&[8_u8; 32], id, &token, 49));
+        let signer = ss_core::Id::from_bytes([2; 16]);
+        let token = issue_token(&key, id, signer, 50);
+        assert_eq!(verify(&key, id, &token, 49), Some(signer));
+        assert_eq!(verify(&key, id, &token, 50), None);
+        assert_eq!(verify(&key, id, &token, 51), None);
+        assert_eq!(verify(&[8_u8; 32], id, &token, 49), None);
+        assert_eq!(
+            verify(&key, ss_core::Id::from_bytes([3; 16]), &token, 49),
+            None
+        );
+    }
+
+    #[test]
+    fn the_signer_is_covered_by_the_mac() {
+        use base64::Engine;
+        let key = [9_u8; 32];
+        let id = ss_core::Id::from_bytes([1; 16]);
+        let token = issue_token(&key, id, ss_core::Id::from_bytes([2; 16]), 50);
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let mut raw = engine.decode(&token).unwrap();
+        raw[8..24].copy_from_slice(&[4; 16]);
+        assert_eq!(verify(&key, id, &engine.encode(&raw), 49), None);
+        // A pre-T-092 token (expiry and MAC only) no longer verifies.
+        raw.drain(8..24);
+        assert_eq!(verify(&key, id, &engine.encode(&raw), 49), None);
     }
 
     fn with_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {

@@ -168,6 +168,25 @@ pub async fn unlinked_before(
         .collect()
 }
 
+/// Files of soft-deleted messages, except avatars.
+pub async fn on_deleted_messages(conn: &mut SqliteConnection) -> Result<Vec<Attachment>, Error> {
+    let rows = db(sqlx::query_as::<_, AttachmentRow>(
+        "SELECT a.id, a.uploader_id, a.message_id, a.filename, a.mime, a.size, a.sha256, a.width, a.height, a.storage_path, a.created_at
+         FROM attachments a
+         JOIN messages m ON m.id = a.message_id
+         WHERE m.deleted_at IS NOT NULL
+           AND a.id NOT IN (
+               SELECT avatar_attachment_id FROM users WHERE avatar_attachment_id IS NOT NULL
+           )
+         ORDER BY a.created_at, a.id",
+    )
+    .fetch_all(&mut *conn)
+    .await)?;
+    rows.into_iter()
+        .map(AttachmentRow::into_attachment)
+        .collect()
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct AttachmentRow {
     id: Id,
