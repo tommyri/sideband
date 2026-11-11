@@ -26,7 +26,7 @@ struct Data {
     #[serde(default)]
     volumes: BTreeMap<String, f32>,
     #[serde(default)]
-    notifications: crate::notifications::Preferences,
+    notifications: ss_client_core::notifications::Preferences,
     #[serde(default)]
     muted: BTreeMap<String, bool>,
 }
@@ -97,12 +97,12 @@ impl DesktopStorage {
         Ok(())
     }
 
-    pub fn notifications(&self) -> crate::notifications::Preferences {
+    pub fn notifications(&self) -> ss_client_core::notifications::Preferences {
         self.data().notifications.clone()
     }
     pub fn save_notifications(
         &self,
-        preferences: crate::notifications::Preferences,
+        preferences: ss_client_core::notifications::Preferences,
     ) -> Result<(), Error> {
         self.update(|data| data.notifications = preferences)
     }
@@ -246,6 +246,51 @@ mod tests {
             .label(server.id().unwrap().as_str(), "Home".into())
             .unwrap();
         assert_eq!(storage.servers()[0].label, "Home");
+    }
+    /// A `sessions.json` written before notification policy moved to
+    /// `ss-client-core` still loads, and saving writes the same shape back.
+    #[test]
+    fn saved_notification_preferences_keep_their_shape() {
+        let sample = serde_json::json!({
+            "servers": [{
+                "id": "localhost:5781",
+                "host": "localhost",
+                "port": 5781,
+                "https_port": 5782,
+                "label": "Home"
+            }],
+            "sessions": {},
+            "last": "localhost:5781",
+            "volumes": {},
+            "notifications": {
+                "desktop": true,
+                "previews": false,
+                "dnd": true,
+                "mutedServers": ["localhost:5781"],
+                "channels": {
+                    "localhost:5781/01HZX5V4Q4M7K8Y9Z0A1B2C3D4": "all",
+                    "localhost:5781/01HZX5V4Q4M7K8Y9Z0A1B2C3D5": "mentions",
+                    "localhost:5781/01HZX5V4Q4M7K8Y9Z0A1B2C3D6": "none"
+                }
+            },
+            "muted": {}
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        std::fs::write(&path, sample.to_string()).unwrap();
+        let storage = DesktopStorage::open(&path).unwrap();
+        let prefs = storage.notifications();
+        assert!(prefs.desktop && !prefs.previews && prefs.dnd);
+        assert!(prefs.muted_servers.contains("localhost:5781"));
+        assert_eq!(prefs.channels.len(), 3);
+        storage.save_notifications(prefs).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["notifications"], sample["notifications"]);
+        // Files from before notification preferences existed still load.
+        std::fs::write(&path, r#"{"servers":[],"sessions":{},"last":null}"#).unwrap();
+        let old = DesktopStorage::open(&path).unwrap().notifications();
+        assert!(!old.desktop && !old.dnd && old.channels.is_empty());
     }
     #[test]
     fn reads_do_not_wait_for_a_write_in_progress() {
