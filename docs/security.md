@@ -497,17 +497,17 @@ Sideband's certificate.
   `fuzz.yml` has never been dispatched. Tracked as T-067.
 - Files saved from chat carry no download mark on Linux, which has no
   equivalent. macOS and Windows mark them (T-104).
-- The guided-test evidence export can contain server addresses. T-096.
-- Some desktop shell modules still derive "may the user do this" hints
-  themselves instead of from `ss_client_core::authority`; the server
-  rechecks every command, so a wrong hint shows a control that then fails.
-  T-105.
-- Windows release signing runs inside `tauri build`, where a dependency's
-  build script can sign with the key (it cannot read it). T-110.
-- `cargo deny check` fails on RUSTSEC-2026-0459 until `sqlx` allows
-  `libsqlite3-sys` 0.39. T-110.
-- A `Welcome` can still pass 1 MiB from members, roles and guild channels
-  (about 8,000 members); roles are not capped. T-109.
+- Windows release signing imports the certificate for the whole Windows
+  build job, so `pnpm install` scripts, the desktop tests and `tauri build`
+  can all sign with it; assume they could export it too (section 11). Moving
+  signing to its own job is T-111.
+- RUSTSEC-2026-0459 (bundled SQLite before 3.54) is ignored in `deny.toml`
+  until `sqlx` allows `libsqlite3-sys` 0.39; review by 2027-02-11 (section
+  11, T-110).
+- Members, channels and role grants are not capped, so past the bound in
+  section 7 every `Hello` is refused. About 230 channels with full topics
+  reach it alone, so a member with `MANAGE_CHANNELS` can lock everyone out.
+  T-112.
 
 ## 13. Review of 2026-11-09
 
