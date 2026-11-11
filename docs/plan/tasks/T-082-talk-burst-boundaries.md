@@ -1,6 +1,6 @@
 # T-082 — Correct talk-burst boundaries for voice activation and gate close
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-052, T-041

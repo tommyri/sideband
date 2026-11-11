@@ -1,6 +1,6 @@
 # T-093 — Session revocation, logout and expiry
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: S
 Depends on: T-021, T-061

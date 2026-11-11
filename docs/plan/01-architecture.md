@@ -35,7 +35,7 @@ flowchart LR
 ## Cargo workspace
 
 ```
-socialspeak/
+sideband/                      # repository root (crates keep the ss- prefix)
 ├── Cargo.toml                 # workspace, shared lints, shared deps
 ├── rust-toolchain.toml
 ├── justfile                   # just check | test | run-server | run-cli | dev-desktop
@@ -54,6 +54,8 @@ socialspeak/
 │       ├── src-tauri/         # Rust shell: commands/events bridging ss-client-core
 │       └── src/               # React + TypeScript + Vite + Tailwind
 ├── deploy/                    # Dockerfile, docker-compose.yml, systemd unit, example config
+├── fuzz/                      # cargo-fuzz targets (separate workspace)
+├── scripts/                   # build, release, dependency and plan checks
 └── docs/plan/                 # this plan
 ```
 
@@ -105,7 +107,8 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   channels it changed.
 - **HTTP** (`axum`) shares `ServerState`; used only for things that are
   awkward over the control stream: history pagination, uploads/downloads,
-  webhooks, server info, avatars.
+  webhooks, server info, search, and avatars and the server icon (both
+  served by the attachment download route).
 - **Single data dir** (`--data-dir`): `config.toml`, `socialspeak.db`,
   `attachments/`, `tls/`, `logs/`.
 

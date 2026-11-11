@@ -1,6 +1,6 @@
 # T-050 — `ss-input` Linux backends (X11 XInput2, Wayland GlobalShortcuts portal, evdev opt-in)
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-047

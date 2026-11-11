@@ -51,12 +51,29 @@ The voice and control transport is written in this repo. The moq.dev crates
 (`moq-lite`, `hang`, `moq-relay`) are not a dependency of the server or of
 the voice path.
 
-`moq-video` 0.1.18 is the capture and codec library for screen sharing. Its
-capture, resize, conversion, and encoder APIs work independently of MoQ, so
-`ss-video` uses those APIs directly and hands Annex-B H.264 access units to
-SocialSpeak's own GOP transport. No MoQ catalog, relay, or subscription type
-is linked into the application protocol. `moq-video` is linked from the
-client, not from the server.
+`moq-video` is the capture and codec library for screen sharing, pinned
+exactly in the workspace `Cargo.toml` (`=0.1.21` today; a bump is a reviewed
+change, since 0.x minors break). Its capture, resize, conversion, encoder and
+decoder APIs work independently of MoQ, so `ss-video` uses those APIs directly
+and hands Annex-B H.264 access units to Sideband's own GOP transport.
+`moq-video` is linked from the client, not from the server, `ss-net` or the
+voice path.
+
+Those APIs take a few value types from the MoQ crates, so `ss-video` also
+depends on `moq-net` and `hang`, pinned exactly. Only these are allowed, and
+only inside `ss-video` (plus `moq_net::Timestamp` in the desktop
+`viewer_smoke` example, which builds frames for the viewer):
+
+- `moq_net::Timestamp` and `moq_net::bandwidth::Rate`, the frame time and
+  encoder bitrate that `moq-video` frames and encoder configs carry;
+- `hang::catalog::VideoConfig` and `hang::catalog::VideoCodec`, the decoder
+  configuration `moq-video`'s decoder is built from. `ss-video` fills them
+  from `TrackAdded.codec`; a hang catalog is never sent or received.
+
+No MoQ session, relay, broadcast, track, subscription or catalog transport
+type is linked into the application protocol, and none of these types
+appears in `ss-proto`, `ss-net` or `ss-client-core`'s public API. Any other
+MoQ type is a change to this decision.
 
 The relay and publish/subscribe model in that project buys nothing for a
 single server, and the crates were at 0.12.x with breaking changes between
@@ -192,8 +209,17 @@ directory.
 The server generates a self-signed certificate on first start and prints its
 SHA-256 fingerprint. The client stores that fingerprint and refuses a later
 connection whose certificate does not match, until the user accepts the new
-one. A publicly trusted certificate is accepted by the usual WebPKI rules
-and still recorded, so a surprise replacement is visible.
+one.
+
+A server whose certificate chains to a public CA (ACME, or operator PEM
+files from a public CA) gets a different saved policy: public-certificate
+trust (`ss_net::pins::TrustPolicy::PublicCertificate`). Each handshake checks
+hostname, validity and chain with WebPKI and Mozilla roots, so renewals and
+key rotation are accepted without a prompt; a failed check never falls back
+to trust on first use. An explicit pin stays stricter than public trust and
+is never silently replaced: legacy pin files migrate to strict pins, and
+moving a pinned server to public trust is an explicit action that validates
+both transports first. The full policy is in `docs/security.md` section 3.
 
 ACME is an option in the server config for a host that has a domain name.
 The same certificate serves QUIC and HTTPS.
@@ -204,11 +230,13 @@ Unix. A corrupt identity fails startup rather than silently changing the pin.
 Pins identify the exact leaf certificate DER by SHA-256 and are scoped to
 the original host and port. A matching explicit pin overrides CA/name checks,
 but TLS handshake signatures are always verified. Unpinned certificates use
-WebPKI with Mozilla roots; an accepted public certificate is recorded before
-returning the connection. Any later pin change needs explicit approval.
+WebPKI with Mozilla roots; an accepted public certificate is recorded as a
+public-certificate policy before returning the connection. Any later pin
+change needs explicit approval.
 
-T-040 reuses that verifier for HTTPS history. The approved QUIC pin covers
-HTTPS on the same host, including a separately configured TCP port. History
+T-040 reuses that verifier for HTTPS history. The trust policy of the
+authenticated QUIC session (pin or public certificate) covers HTTPS on the
+same host, including a separately configured TCP port. History
 never performs a second trust-on-first-use decision, follows redirects, or
 uses environment proxies. The host owns session-token persistence separately
 from `PinStore`, so it can use an OS keychain without imposing one on the core.

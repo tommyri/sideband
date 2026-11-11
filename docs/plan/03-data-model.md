@@ -1,7 +1,8 @@
 # Data model
 
 SQLite, WAL mode, `sqlx` with embedded migrations in
-`crates/ss-server/migrations/`. All ids are ULIDs stored as 16-byte BLOBs
+`crates/ss-server/migrations/` (0001 to 0006; the listing below is the schema
+after all of them). All ids are ULIDs stored as 16-byte BLOBs
 (`ss_core::Id`). Timestamps are `INTEGER` Unix milliseconds. Soft deletes only
 where history matters (messages).
 
@@ -13,8 +14,8 @@ users            (id PK, username UNIQUE COLLATE NOCASE, display_name, password_
                   disabled_at NULL)
 sessions         (id PK, user_id FK, token_hash UNIQUE, device_name, created_at,
                   last_seen_at, expires_at NULL)
-invites          (id PK, code_hash UNIQUE, created_by FK users, max_uses NULL, uses,
-                  expires_at NULL, revoked_at NULL, created_at)
+invites          (id PK, code_hash UNIQUE /*0004: SHA-256 hex*/, created_by FK users,
+                  max_uses NULL, uses, expires_at NULL, revoked_at NULL, created_at)
 
 roles            (id PK, name, color NULL, permissions INTEGER /*u64 bitflags*/,
                   position INTEGER, is_default INTEGER /*the @everyone role*/,
@@ -32,8 +33,14 @@ channel_overrides(channel_id FK, role_id FK, allow INTEGER, deny INTEGER,
 
 messages         (id PK, channel_id FK, author_id FK users NULL, webhook_id FK NULL,
                   content TEXT, reply_to FK messages NULL, created_at, edited_at NULL,
-                  deleted_at NULL)
+                  deleted_at NULL,
+                  mentions_everyone INTEGER DEFAULT 0 /*0002: @everyone in content*/,
+                  webhook_name NULL /*0003: name shown for a webhook post*/)
 message_mentions (message_id FK, user_id FK, PRIMARY KEY(message_id,user_id))
+message_nonces   (user_id FK, nonce TEXT, message_id FK, created_at,
+                  PRIMARY KEY(user_id, nonce))  -- 0005: SendMessage replay dedupe
+message_search   FTS5(content) over view searchable_messages (rowid, content of
+                  messages not deleted), kept by triggers  -- 0006
 attachments      (id PK, uploader_id FK, message_id FK NULL, filename, mime, size,
                   sha256, width NULL, height NULL, storage_path, created_at)
 link_previews    (url_hash PK, url, status INTEGER, title NULL, description NULL,
@@ -49,15 +56,20 @@ audit_log        (id PK, actor_id FK NULL, action TEXT, target_kind TEXT,
                   target_id BLOB NULL, details TEXT /*json*/, created_at)
 webhooks         (id PK, channel_id FK, name, token_hash UNIQUE, created_by FK,
                   created_at, revoked_at NULL)
-server_settings  (key PK, value TEXT)  -- name, description, icon, registration_mode
+server_settings  (key PK, value TEXT)  -- name, description, icon, registration_mode,
+                                         -- owner_invite until the first account
 ```
 
 Indexes: `messages(channel_id, id DESC)`, `messages(author_id)`,
 `attachments(message_id)`, `sessions(user_id)`, `bans(user_id, lifted_at)`,
-`audit_log(created_at)`, `link_previews(expires_at)`.
+`audit_log(created_at)`, `link_previews(expires_at)`,
+`message_nonces(created_at)`.
 
-Full-text search over `messages.content` via FTS5 external-content table is a
-phase 4 task.
+Nonces are kept 5 minutes after the message was stored (`02-protocol.md`
+§1.2). Message search (T-065, migration 0006) is an FTS5 external-content
+table with the `unicode61 remove_diacritics 2` tokenizer; deleting or
+soft-deleting a message removes it from the index, and `ss-server
+reindex-search` rebuilds it.
 
 ## Permissions
 
@@ -88,7 +100,7 @@ phase 4 task.
 Default `@everyone` role: `VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES |
 CONNECT | SPEAK | STREAM | CREATE_INVITES | CHANGE_NICKNAME`. Default `Admin`
 role: `ADMINISTRATOR`. The owner (first user) gets `Admin`. The seeded `Admin`
-role cannot be deleted and cannot lose `ADMINISTRATOR`, so `user grant-admin`
+role cannot be deleted and cannot lose `ADMINISTRATOR`, so `role grant-admin`
 always has a role to grant.
 
 Resolution for user `u` in channel `c`:
@@ -110,7 +122,7 @@ granted/edited if positioned below the actor's highest role.
 There is no owner above the administrators. The first user is an administrator
 like any other, so give `ADMINISTRATOR` only to people trusted with the whole
 server: one administrator can ban or demote another. The operator's CLI
-(`user grant-admin`, `user unban`) is the recovery path. (T-090 chose this over
+(`role grant-admin`, `user unban`) is the recovery path. (T-090 chose this over
 adding an owner column; the earlier text here promised an owner who always wins,
 which the code never had.)
 

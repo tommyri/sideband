@@ -7,7 +7,8 @@ These apply to every task. Sub-agents: read before writing code.
 - Edition 2024, stable toolchain pinned in `rust-toolchain.toml`. MSRV = pinned.
 - Workspace-level lints in root `Cargo.toml`: `clippy::all`, `clippy::pedantic`
   (allow a documented short list), `unsafe_code = "deny"` everywhere except
-  `ss-input`, the platform modules of `ss-audio`, and its private
+  `ss-input`, the platform modules of `ss-audio` (`platform` and the
+  `device::macos_voiceio::raw` input-proc module, T-088), and its private
   `codec::native` Opus bridge, which locally allow it with a `// SAFETY:`
   comment on every block. The codec exception covers missing decoder CTLs,
   packet framing validation, and DRED offsets; native state never escapes.
@@ -25,7 +26,8 @@ These apply to every task. Sub-agents: read before writing code.
 - Shared deps live in `[workspace.dependencies]`; crates use
   `dep.workspace = true`.
 - Public items documented with `///`. Each crate has a `README.md` of ≤ 40
-  lines saying what it owns and what it must not depend on.
+  lines saying what it owns and what it must not depend on. Trim, do not
+  raise the limit (T-099 trimmed `ss-audio`, `ss-client-core`, `ss-server`).
 - Feature flags for optional native pieces: `ss-audio` features
   `aec` (sonora), `rnnoise`, `dred`, `macos-voiceio`. `deepfilter` is a
   reserved, empty feature: no DeepFilterNet3 build meets the dependency and
@@ -43,7 +45,8 @@ These apply to every task. Sub-agents: read before writing code.
 - Audio DSP (jitter buffer, resampler glue, mixer) is tested with synthetic
   signals: known sine → assert on RMS/THD/latency, not on exact samples.
 - `just check` = `cargo fmt --check && cargo clippy --all-targets -- -D
-  warnings && cargo test --workspace`. It is the routine gate, run locally
+  warnings && cargo test --workspace`, then `just plan-check` (Python, under
+  a second). It is the routine gate, run locally
   before every commit (with `just check-desktop` for desktop or frontend
   changes). Every GitHub workflow runs only when dispatched by hand; nothing
   runs on push or pull request (maintainer decision, 2026-11-11, T-098).
@@ -98,6 +101,21 @@ These apply to every task. Sub-agents: read before writing code.
   (`feat(server): …`, `fix(audio): …`). One task per PR. PR description:
   what, why, how tested, deviations from the task file.
 - Update the task file `Status:` and add "Notes from implementation" when done.
+
+## Plan documents
+
+- Status values: `todo`, `in-progress` (code or automated work in the task's
+  own scope is still missing), `awaiting-acceptance` (merged; only hands-on
+  checks on real hardware, a VPS or GitHub, or a maintainer decision remain;
+  each one is a row in [`tasks/ACCEPTANCE.md`](tasks/ACCEPTANCE.md)), `done`,
+  `blocked`. A task's row in `tasks/INDEX.md` and its `Status:` line agree.
+- `tasks/INDEX.md`'s dependency graph and waves are generated from its task
+  tables: after changing a row's "Depends on" or adding a task, run
+  `just plan-index`. `just plan-check` (part of `just check`) fails when they
+  are stale, a row disagrees with its task file, an `awaiting-acceptance`
+  task has no row in `tasks/ACCEPTANCE.md`, or `02-protocol.md` and the
+  routes and envelopes in the code name different things
+  (`scripts/check-protocol-doc.py`).
 
 ## Platform notes
 

@@ -1,6 +1,6 @@
 # T-086 — Client knows its own connection; track receivers survive id reuse
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-081, T-082

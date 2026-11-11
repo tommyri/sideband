@@ -1,6 +1,6 @@
 # T-092 — Stream attachments, bound the remaining listeners, retire the spike default
 
-Status: in-progress
+Status: done
 Phase: 4
 Size: M
 Depends on: T-027, T-033, T-066

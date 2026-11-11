@@ -1,45 +1,40 @@
 # ss-server
 
-The server owns control dispatch, voice membership (`voice::Registry`),
-opaque audio fan-out (`media::Router`), accounts (`auth`, `connection`),
-permissions (`perms`), channels, presence, voice, text, direct messages, link previews, attachments, moderation, webhooks, and SQLite (`db`). Media is never decoded.
+The server owns control dispatch, voice membership (`voice::Voice`, seats in
+`voice::rooms::Rooms`), opaque audio fan-out (`media::Router`), accounts
+(`auth`, `connection`), permissions (`perms`), channels, presence, text, DMs,
+search, link previews, attachments, moderation, webhooks, and SQLite (`db`).
+Media is never decoded.
 
-`ss-server init` writes `config.toml`, the database, and a TLS identity, then
-prints the owner invite and fingerprint. `ss-server run` serves authenticated
-QUIC and HTTP. `/healthz` and `/metrics` listen on `127.0.0.1:9101`; metrics
-cover sessions, datagrams, slow-consumer kicks, messages, and SQLite lock time.
-`SS_WORKER_THREADS=N` (N > 1) swaps the one-thread runtime for N workers. Ctrl-C
-and SIGTERM notice clients, close them, and checkpoint SQLite. `check-config`
-rejects an unknown key. `backup` tars the database and attachments.
+`init` writes `config.toml`, the database and a TLS identity, then prints the
+owner invite and fingerprint. `run` serves authenticated QUIC and HTTPS;
+`/healthz`, `/metrics` and `/connections` listen on `127.0.0.1:9101`.
+`SS_WORKER_THREADS=N` (N > 1) runs N workers instead of one. Ctrl-C and SIGTERM
+notify clients, close them and checkpoint SQLite. `check-config` rejects an
+unknown key; `backup` tars the database and attachments.
 
 A subcommand is required; with none, usage is printed and the exit code is 2.
-`spike --data-dir ./data --bind 127.0.0.1:4433` is the unauthenticated spike.
-`invite create --owner`, `user list`, `user set-password`,
-`user ban`, `user unban`, `role grant-admin`, `fingerprint`, and `tls rotate` recover an account.
-`check-migrations` exits without listening. The data dir is
-`$XDG_DATA_HOME/socialspeak` when that variable is set, otherwise `./data`.
+`spike --bind 127.0.0.1:4433` is the unauthenticated spike. `invite create
+--owner`, `user list|set-password|ban|unban|sessions`, `role grant-admin`,
+`fingerprint` and `tls rotate` recover access; `conn list`, `reindex-search` and
+`check-migrations` never listen. The data dir defaults to
+`$XDG_DATA_HOME/socialspeak`, else `./data`.
 
-One audio track is assigned per joined connection. Joins announce existing
-tracks to the newcomer and its track to all channel members. Leave, switch,
-and disconnect remove the old assignment. Mute/deaf flags affect forwarding.
-The spike advertises mono 48 kHz Opus. Authenticated joins use the channel profile.
-`media::streams` relays subscribed video GOPs with per-viewer drop-oldest
-budgets, permission/membership cleanup, private quality hints, and counters.
+One audio track per joined connection; joins announce tracks both ways, and
+leave, switch and disconnect remove it. Mute/deaf flags gate forwarding; joins
+use the channel profile (the spike: mono 48 kHz Opus). `media::streams` relays
+subscribed video GOPs with per-viewer drop-oldest budgets, cleanup on
+permission or membership loss, private quality hints, and counters.
 
-Sessions and outgoing control queues are bounded; a full 256-member bootstrap
-fits before the writer resumes. Oversized Welcome replies return INVALID. Slow control consumers are
-closed instead of losing track events. The media path reuses Bytes, validates
-ownership, skips the sender and deaf peers, and counts invalid input and send
-drops. It drops new packets when Quinn's bounded send queue is full.
-Quotas live in `limits`, name rules in `text`, HTTP headers, deadlines, and
-the accept loop in `http::hardening`; `docs/security.md` lists them all.
-
-`cargo test -p ss-server` covers real loopback QUIC clients and zero steady
-forwarding allocations. Run the ignored `sustained_twenty_clients` test with
-`--release -- --ignored --nocapture` for a 30-second, 20-client load check.
-To target a separate loopback server for CPU measurement, set `SS_LOAD_PORT`
-and `SS_LOAD_FINGERPRINT` to its printed port and SHA-256 certificate pin.
+Sessions and control queues are bounded; a slow consumer is closed (code 2),
+never sent a gap, and a Welcome sheds DMs to fit one frame. The media path
+reuses Bytes, validates ownership, skips the sender and deaf peers, and counts
+invalid input and full-queue drops. Quotas live in `limits`, name rules in
+`text`, HTTP deadlines and the accept loop in `http::hardening`;
+`docs/security.md` lists them all. Ignored test `sustained_twenty_clients`
+(`--release -- --ignored`) is a 30 s load check; `SS_LOAD_PORT`/`_FINGERPRINT`
+point it at another server.
 
 May depend on `ss-core`, `ss-proto`, `ss-net`, Tokio, Quinn, and server-side
-storage/HTTP/logging/CLI libraries. Must not depend on `ss-audio`, `ss-input`,
-`ss-client-core`, or `ss-cli`.
+storage/HTTP/logging/CLI libraries; not on `ss-audio`, `ss-input`,
+`ss-client-core` or `ss-cli`.

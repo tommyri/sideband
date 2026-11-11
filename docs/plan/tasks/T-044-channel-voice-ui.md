@@ -1,6 +1,6 @@
 # T-044 — Channel sidebar and voice UI
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-042, T-041

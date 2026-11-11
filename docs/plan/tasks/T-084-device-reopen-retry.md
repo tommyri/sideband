@@ -1,6 +1,6 @@
 # T-084 — Retry failed device reopens during a call
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-010, T-041, T-054, T-083

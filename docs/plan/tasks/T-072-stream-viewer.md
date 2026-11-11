@@ -1,6 +1,6 @@
 # T-072 — Client: stream viewer (decode + wgpu window)
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 5
 Size: M
 Depends on: T-070, T-071

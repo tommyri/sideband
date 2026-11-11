@@ -1,6 +1,6 @@
 # T-098 — Deploy and CI hygiene: fail-closed checks, compose and NGINX limits, backup ownership
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: M
 Depends on: T-034, T-001

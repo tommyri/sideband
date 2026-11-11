@@ -1,6 +1,6 @@
 # T-095 — Desktop shell hardening: capabilities, lints, locks, scaffold leftovers
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-042, T-085

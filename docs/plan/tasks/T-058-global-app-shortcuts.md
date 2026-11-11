@@ -1,6 +1,6 @@
 # T-058 — Global shortcuts for mute/deafen and PTT wiring in the app
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-047, T-044, T-051

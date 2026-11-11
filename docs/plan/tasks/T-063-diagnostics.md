@@ -1,6 +1,6 @@
 # T-063 — Diagnostics: client panel, server metrics, log bundle
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 4
 Size: S
 Depends on: T-041, T-044, T-032, T-076

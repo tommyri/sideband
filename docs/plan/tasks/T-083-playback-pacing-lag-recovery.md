@@ -1,6 +1,6 @@
 # T-083 — Bounded playback latency: ring-level pacing and jitter lag recovery
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: M
 Depends on: T-015, T-041, T-082
