@@ -105,6 +105,15 @@ it('redacts every address form seeded into notes, steps and trial fields', () =>
     '198.51.100.23',
   ])
     expect(output).not.toContain(value)
+  // A quote inside a URL does not end the redaction early.
+  for (const url of [
+    `https://h.test/a?q="x"&token=quoted-secret`,
+    `ss://h.test/p?name='y'&key=single-secret`,
+  ]) {
+    const out = redact(`see ${url} now`)
+    expect(out).not.toContain('secret')
+    expect(out).toContain('now')
+  }
   // Ordinary text with colons and times survives.
   expect(output).toContain('at 12:30:45')
   expect(redact('ss_client_core::state ratio 16:9')).toBe('ss_client_core::state ratio 16:9')

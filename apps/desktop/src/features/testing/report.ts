@@ -230,7 +230,7 @@ export function redact(text: string): string {
         '[redacted private key]',
       )
       // Any scheme: the app's own sideband:// and ss:// links name a server.
-      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']*/gi, '[redacted URL]')
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]*/gi, '[redacted URL]')
       .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted email]')
       .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
       .replace(
