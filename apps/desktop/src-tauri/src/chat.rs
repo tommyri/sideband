@@ -5,8 +5,8 @@ use crate::{
     types::{ApiError, BridgeAttachment, BridgeMessage, BridgePreview},
 };
 use serde::{Deserialize, Serialize};
-use ss_client_core::v1;
-use ss_core::{Id, Permissions};
+use ss_client_core::{authority::ChatRights, v1};
+use ss_core::Id;
 use tauri::State;
 use ts_rs::TS;
 
@@ -120,13 +120,8 @@ fn snapshot_for(
     let store = client.state();
     store.retain_loaded_messages(channel);
     let view = store.read();
-    let permissions = view.permissions(channel).unwrap_or_else(Permissions::empty);
-    if !permissions.contains(Permissions::VIEW_CHANNEL) {
-        return Err(ApiError::new(
-            "forbidden",
-            "This channel is no longer visible.",
-        ));
-    }
+    let rights = ChatRights::of(&view, channel)
+        .ok_or_else(|| ApiError::new("forbidden", "This channel is no longer visible."))?;
     let segment = view
         .messages
         .get(&channel)
@@ -154,9 +149,9 @@ fn snapshot_for(
             .filter(|r| !r.last_read_message_id.is_empty())
             .map(|r| display(&r.last_read_message_id))
             .transpose()?,
-        can_send: permissions.contains(Permissions::SEND_MESSAGES),
-        can_attach: permissions.contains(Permissions::ATTACH_FILES),
-        can_manage: permissions.contains(Permissions::MANAGE_MESSAGES),
+        can_send: rights.send,
+        can_attach: rights.attach,
+        can_manage: rights.manage,
     })
 }
 #[derive(Deserialize, TS)]
