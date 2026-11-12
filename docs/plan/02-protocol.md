@@ -269,6 +269,13 @@ and resyncs from `Welcome`. A newer `SubscriberHint` or `RequestKeyframe`
 for a track replaces one not yet sent. A command that waits on the database
 does not stop delivery of events.
 
+The `Welcome` and the events after it do not overlap for new messages: a
+message counted in a `Snapshot.read_states` `mention_count` is never sent
+after the `Welcome` as `MessageCreated`, and every later message is. A client
+adds the mentions it receives to the snapshot's count. The server subscribes
+the session to its event bus at the snapshot's read point, while no message
+is between its commit and its publish.
+
 ### Limits
 
 Quotas and input limits are listed in [`docs/security.md`](../security.md)

@@ -342,7 +342,6 @@ impl Server {
             Err(envelope) => return reject(&connection, &mut stream, &envelope).await,
         };
         crate::observe::record_session();
-        let mut subscription = self.bus.subscribe();
         let (outbound, outgoing) = mpsc::channel(registry::OUTBOUND_CAPACITY);
         let direct = Arc::new(registry::DirectQueue::default());
         let (kicks, kick_rx) = mpsc::channel(1);
@@ -386,11 +385,12 @@ impl Server {
             session_id: authed.session_id,
             perms_cache: authed.permissions,
         };
+        // The bus subscription starts at the snapshot's read point.
         let result = match self
             .prepare_welcome(&connection, &mut stream, &authed, conn_id, request_id)
             .await
         {
-            Ok(welcome) => {
+            Ok((welcome, mut subscription)) => {
                 self.pump(
                     &context,
                     stream,
@@ -410,7 +410,6 @@ impl Server {
             Err(error) => Err(error),
         };
         voice_guard.reconnect = reconnectable(close_reason(&quic).await);
-        drop(subscription);
         drop(unregister);
         drop(voice_guard);
         result
@@ -482,6 +481,8 @@ impl Server {
         }
     }
 
+    /// Builds the `Welcome` and the bus subscription that continues from it:
+    /// a message counted in its read states is not delivered again.
     async fn prepare_welcome(
         &self,
         connection: &Connection,
@@ -489,13 +490,13 @@ impl Server {
         authed: &auth::Authenticated,
         conn_id: Id,
         request_id: u32,
-    ) -> Result<v1::ServerEnvelope, Error> {
-        let mut snapshot = match snapshot::build_with(&self.perms, authed.user.id, |id| {
+    ) -> Result<(v1::ServerEnvelope, broadcast::Receiver<ServerEvent>), Error> {
+        let built = snapshot::build_live(&self.perms, &self.bus, authed.user.id, |id| {
             self.registry.presence(id)
         })
-        .await
-        {
-            Ok(snapshot) => snapshot,
+        .await;
+        let (mut snapshot, subscription) = match built {
+            Ok(built) => built,
             Err(error) => {
                 tracing::debug!(%error, "snapshot failed");
                 let envelope = v1::ServerEnvelope::error(
@@ -540,7 +541,7 @@ impl Server {
             );
             return reject(connection, stream, &error).await;
         }
-        Ok(welcome)
+        Ok((welcome, subscription))
     }
 
     async fn pump(
@@ -890,9 +891,15 @@ async fn finish(
 /// guild channel event and never forward it, so one stands for the whole
 /// batch: deleting a category of hundreds of channels must not overflow the
 /// bus and close every other session.
+///
+/// `MessageCreated` is skipped: `Messages::send` published it under the bus
+/// hold, before its commit could be seen by a session signing in.
 fn publish(server: &Server, context: &AuthedContext, events: Vec<server_envelope::Msg>) {
     let mut guild_published = false;
     for event in events {
+        if let server_envelope::Msg::MessageCreated(_) = &event {
+            continue;
+        }
         if let server_envelope::Msg::ReadStateUpdated(_) = &event {
             for conn in server.registry.connection_ids(context.user_id) {
                 if conn == context.conn_id {
@@ -1306,7 +1313,11 @@ async fn replies(
         result
     } else if let Some(result) = server.channels.dispatch(context.user_id, msg).await {
         result
-    } else if let Some(result) = server.messages.dispatch(context.user_id, msg).await {
+    } else if let Some(result) = server
+        .messages
+        .dispatch(context.user_id, context.conn_id, msg)
+        .await
+    {
         result
     } else if let Some(result) = server.webhooks.dispatch(context.user_id, msg).await {
         result

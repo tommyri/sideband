@@ -5,6 +5,10 @@
 //! service fills voice states and tracks separately. The connection owner
 //! diffs [`channel_view`] for channel/permission events, including revocation;
 //! [`delivers`] filters other fan-out events against current visibility.
+//!
+//! The snapshot is read in one read transaction. [`build_live`] subscribes to
+//! the event bus at that transaction's read point, so a new message is either
+//! in the read states' `mention_count` or arrives live, never both.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,8 +18,12 @@ use ss_proto::{
     validate::{id_from_bytes, id_to_bytes},
 };
 
+use sqlx::Connection as _;
+use tokio::sync::broadcast;
+
 use crate::{
     db::{self, EVERYONE_ROLE_ID, NewChannel, channels, messages, read_states, roles, users},
+    events::{EventBus, ServerEvent},
     limits,
     perms::PermissionService,
 };
@@ -36,9 +44,35 @@ pub async fn build_with(
     user: Id,
     presence: impl Fn(Id) -> v1::Presence,
 ) -> Result<v1::Snapshot, db::Error> {
+    // Nothing publishes on a bus of its own; its subscription is dropped.
+    build_live(perms, &EventBus::new(), user, presence)
+        .await
+        .map(|(snapshot, _)| snapshot)
+}
+
+/// Like [`build_with`], and subscribes to `bus` at the snapshot's read point.
+///
+/// The receiver gets every message the read states did not count and none
+/// they did: it subscribes while no message is between its commit and its
+/// publish ([`EventBus::quiet`]), in the same instant the read transaction
+/// fixes what it sees. The rest of the snapshot is that transaction and the
+/// permission cache, which commands update before they publish, so no other
+/// event published before the subscription is missing from it.
+pub async fn build_live(
+    perms: &PermissionService,
+    bus: &EventBus,
+    user: Id,
+    presence: impl Fn(Id) -> v1::Presence,
+) -> Result<(v1::Snapshot, broadcast::Receiver<ServerEvent>), db::Error> {
     ensure_defaults(perms, user).await?;
     perms.reload().await?;
-    let mut conn = perms.pool().read().await?;
+    let mut pooled = perms.pool().read().await?;
+    let mut conn = pooled.begin().await?;
+    let subscription = {
+        let _quiet = bus.quiet().await;
+        fix_read_point(&mut conn).await?;
+        bus.subscribe()
+    };
     let visible = perms.visible_channels(user);
     let mut tree = Vec::new();
     for channel in channels::list_guild(&mut conn).await? {
@@ -84,7 +118,8 @@ pub async fn build_with(
         .collect();
     let mut reads = read_states_for(&mut conn, user, &guild).await?;
     reads.extend(page.read_states);
-    Ok(v1::Snapshot {
+    conn.commit().await?;
+    let snapshot = v1::Snapshot {
         channels: tree,
         roles: wire_roles,
         members,
@@ -93,7 +128,17 @@ pub async fn build_with(
         read_states: reads,
         direct_messages: page.channels,
         direct_messages_next: page.next,
-    })
+    };
+    Ok((snapshot, subscription))
+}
+
+/// Fixes what the open read transaction sees. A deferred SQLite transaction
+/// takes its snapshot at its first read, not at `BEGIN`.
+async fn fix_read_point(conn: &mut sqlx::SqliteConnection) -> Result<(), db::Error> {
+    sqlx::query("SELECT 1 FROM messages LIMIT 1")
+        .fetch_optional(conn)
+        .await?;
+    Ok(())
 }
 
 /// One page of a member's DMs, most recently active first.
@@ -479,4 +524,135 @@ pub(crate) async fn channel_view(
         view.insert(channel.id, wire);
     }
     Ok(view)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use ss_core::Id;
+    use ss_proto::{
+        v1::{self, server_envelope},
+        validate::{id_from_bytes, id_to_bytes},
+    };
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    use super::{build_live, offline_presence};
+    use crate::{
+        db::{self, NewMessage, messages, read_states, testing},
+        events::EventBus,
+        perms::PermissionService,
+    };
+
+    /// Stores message `n` mentioning `owner`. The caller publishes it.
+    async fn mention(pool: &db::Pool, n: u8, channel: Id, author: Id, owner: Id) -> Id {
+        let mut conn = pool.write().await;
+        messages::insert(
+            &mut conn,
+            NewMessage {
+                id: testing::id(n),
+                channel_id: channel,
+                author_id: Some(author),
+                webhook_id: None,
+                webhook_name: None,
+                content: format!("<@{owner}> {n}"),
+                reply_to: None,
+                mentions: vec![owner],
+                mentions_everyone: false,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    fn created(id: Id, channel: Id) -> server_envelope::Msg {
+        server_envelope::Msg::MessageCreated(v1::MessageCreated {
+            message: Some(v1::Message {
+                id: id_to_bytes(id),
+                channel_id: id_to_bytes(channel),
+                ..v1::Message::default()
+            }),
+            nonce: None,
+        })
+    }
+
+    fn created_id(msg: &server_envelope::Msg) -> Option<Id> {
+        match msg {
+            server_envelope::Msg::MessageCreated(event) => event
+                .message
+                .as_ref()
+                .and_then(|message| id_from_bytes(&message.id).ok()),
+            _ => None,
+        }
+    }
+
+    /// A message between its commit and its publish while a session signs
+    /// in. Before T-113 the session subscribed first and read later, so this
+    /// message was in `mention_count` and delivered live: counted twice.
+    #[tokio::test]
+    async fn a_mention_committed_during_sign_in_is_counted_or_delivered_not_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(
+            db::Pool::open(dir.path().join("snapshot.db"))
+                .await
+                .unwrap(),
+        );
+        let (owner, sender, channel) = {
+            let mut conn = pool.write().await;
+            let owner = testing::user(&mut conn, 1).await.id;
+            let sender = testing::user(&mut conn, 2).await.id;
+            let channel = testing::text_channel(&mut conn, 10, owner).await.id;
+            let read = testing::message(&mut conn, 20, channel, sender).await.id;
+            read_states::upsert(&mut conn, owner, channel, read)
+                .await
+                .unwrap();
+            (owner, sender, channel)
+        };
+        let perms = Arc::new(PermissionService::open(Arc::clone(&pool)).await.unwrap());
+        let bus = EventBus::new();
+
+        let before = {
+            let _hold = bus.hold().await;
+            let id = mention(&pool, 21, channel, sender, owner).await;
+            bus.publish(None, created(id, channel));
+            id
+        };
+        // A sender has committed and not yet published.
+        let hold = bus.hold().await;
+        let during = mention(&pool, 22, channel, sender, owner).await;
+        let sign_in = tokio::spawn({
+            let perms = Arc::clone(&perms);
+            let bus = bus.clone();
+            async move { build_live(&perms, &bus, owner, offline_presence).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !sign_in.is_finished(),
+            "subscribed inside the sender's hold"
+        );
+        bus.publish(None, created(during, channel));
+        drop(hold);
+        let (snapshot, mut subscription) = sign_in.await.unwrap().unwrap();
+        let after = {
+            let _hold = bus.hold().await;
+            let id = mention(&pool, 23, channel, sender, owner).await;
+            bus.publish(None, created(id, channel));
+            id
+        };
+
+        let counted = snapshot
+            .read_states
+            .iter()
+            .find(|state| state.channel_id == id_to_bytes(channel))
+            .map(|state| state.mention_count);
+        assert_eq!(
+            counted,
+            Some(2),
+            "{before} and {during} are in the snapshot"
+        );
+        let delivered = created_id(&subscription.try_recv().unwrap().msg);
+        assert_eq!(delivered, Some(after));
+        assert!(matches!(subscription.try_recv(), Err(TryRecvError::Empty)));
+    }
 }

@@ -1200,17 +1200,13 @@ async fn a_rate_limited_resync_waits_as_told_and_then_catches_up() {
     https_task.abort();
 }
 
-/// The server subscribes a session to the event bus before it builds the
-/// snapshot. A mention stored in between is counted in the snapshot's
-/// `mention_count` and again when its `MessageCreated` arrives. Every session
-/// that signs in while mentions stream in ends up above the count a session
-/// that signs in afterwards reads from the database (21 to 23 for 20).
-///
-/// The client cannot tell those events apart: the snapshot carries no
-/// message horizon for guild channels, and there is no read-state query. The
-/// fix belongs on the server (T-107 notes).
+/// Twelve sessions sign in while four accounts send twenty mentions. Each
+/// mention must be counted once: in the snapshot's `mention_count` or as a
+/// live `MessageCreated`, never both. Before T-113 the server subscribed to
+/// the bus before it built the snapshot, and every session ended at 21 to 24
+/// (T-107 notes). The client cannot tell such events apart: the snapshot
+/// carries no message horizon for guild channels.
 #[tokio::test]
-#[ignore = "server defect, reproduced by T-107: bus subscription precedes the snapshot"]
 async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
     const SENDERS: usize = 4;
     // Each account may send five messages per five seconds.

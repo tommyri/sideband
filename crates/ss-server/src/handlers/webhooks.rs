@@ -80,6 +80,8 @@ impl Webhooks {
             .map_err(|wait| Error::RateLimited("webhook is posting too quickly", wait))?;
         let mut conn = self.perms.pool().write().await;
         require_text(&mut conn, webhook.channel_id).await?;
+        // Commit and publish under the hold, as `SendMessage` does.
+        let hold = self.bus.hold().await;
         let stored = messages::insert(
             &mut conn,
             NewMessage {
@@ -96,7 +98,6 @@ impl Webhooks {
         )
         .await?;
         let wire = to_proto(&mut conn, &stored).await?;
-        drop(conn);
         self.bus.publish(
             None,
             server_envelope::Msg::MessageCreated(v1::MessageCreated {
@@ -104,6 +105,8 @@ impl Webhooks {
                 nonce: None,
             }),
         );
+        drop(hold);
+        drop(conn);
         self.previews.enqueue(PreviewJob {
             message_id: stored.id,
             content,
