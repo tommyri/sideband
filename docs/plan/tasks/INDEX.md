@@ -52,12 +52,15 @@ before it is merged:
    1 to 4 decided)
 6. T-104, T-105, T-107, T-109, T-110 (T-104 and T-105 needed T-096; the
    other three are T-099's follow-ups and touch none of their files)
-7. T-108, which needs T-105; T-106 is the maintainer's decisions, not
-   agent work
-7. T-106 (maintainer decisions), T-107, T-109, T-110; then T-108, which
-   waits for T-096 and T-105
+7. T-108, T-111, T-112, T-113, T-064, with T-114 done by the maintainer's
+   session (a one-file build script)
 
-T-087 needs Linux and Windows machines and T-100 blocks only T-074.
+Not agent work: T-106 (maintainer decisions) and T-100 (backend decision).
+T-067 needs a second reviewer and its 1 h fuzz runs need an otherwise idle
+machine. T-011, T-012, T-018, T-019, T-069 and T-087 need Windows, Linux,
+a VPS or hands-on listening.
+
+T-100 blocks only T-074.
 
 ## Phase 0 — Foundations
 
