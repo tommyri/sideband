@@ -24,7 +24,7 @@ empty_commands! {
     move_role: MoveRole, set_user_roles: SetUserRoles, set_channel_override: SetChannelOverride,
     subscribe_track: SubscribeTrack, unsubscribe_track: UnsubscribeTrack, stop_stream: StopStream,
     request_keyframe: RequestKeyframe, set_preferred_quality: SetPreferredQuality,
-    set_presence: SetPresence, delete_webhook: DeleteWebhook,
+    set_presence: SetPresence, delete_webhook: DeleteWebhook, revoke_bot_token: RevokeBotToken,
 }
 macro_rules! resource_commands {
     ($($name:ident: $wire:ident => $variant:ident, $result:ty),* $(,)?) => { impl Client { $(
@@ -44,6 +44,9 @@ resource_commands! {
     update_role: UpdateRole => Role, v1::Role,
     update_profile: UpdateProfile => User, v1::User,
     create_webhook: CreateWebhook => Webhook, v1::Webhook,
+    create_bot: CreateBot => Bot, v1::Bot,
+    reset_bot_token: ResetBotToken => Bot, v1::Bot,
+    list_bots: ListBots => Bots, v1::BotList,
 }
 impl Client {
     /// Load the next page of older conversations into the state, from

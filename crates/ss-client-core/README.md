@@ -3,9 +3,9 @@
 Headless, UI-independent connections and live server state. Hosts supply a
 Tokio runtime, certificate `PinStore`, and optionally a session `Storage`.
 `Client::connect` authenticates and applies Welcome before returning;
-`connect_with_storage` also saves the session token and last server wherever
-the host chooses. Unknown or changed certificates return an actionable error;
-only the host can approve.
+`connect_with_storage` also saves the session token (never a
+`Credentials::Bot` token) and last server. Unknown or changed certificates
+return an actionable error; only the host can approve.
 
 Subscribe to `ClientEvent`, then read `client.state()`: events describe
 applied changes, so on broadcast lag read the state again, and never hold a

@@ -7,6 +7,10 @@
 //! [`Sessions`] remembers which session each connection used: a revoke in
 //! this process closes them immediately, and [`Sessions::sweep`] closes the
 //! ones whose row another process (the CLI) deleted or that expired.
+//!
+//! A bot connection is attached under its `bot_tokens` row id instead of a
+//! session id; the sweep checks that row too, and a revoke closes it the
+//! same way (T-080).
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -20,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::{Error, SESSION_MAX_AGE_MS, session_alive};
 use crate::{
-    db::{self, sessions, users},
+    db::{self, bots, sessions, users},
     handlers,
     registry::Kick,
 };
@@ -188,6 +192,12 @@ impl Sessions {
         Ok(Some(ack::Result::Empty(v1::Empty {})))
     }
 
+    /// Closes every connection that used `credential` (a session or a bot
+    /// token row) with `SessionRevoked` and code 6.
+    pub(crate) fn end(&self, credential: Id) {
+        self.close(credential, None);
+    }
+
     /// Closes every connection that used `session`. `answer`, when set, is
     /// the connection and request that asked: it gets its `Ack` as the last
     /// frame instead of `SessionRevoked`.
@@ -234,7 +244,10 @@ impl Sessions {
             for id in ids {
                 let alive = sessions::get(&mut conn, id)
                     .await?
-                    .is_some_and(|session| session_alive(&session, now));
+                    .is_some_and(|session| session_alive(&session, now))
+                    || bots::get(&mut conn, id)
+                        .await?
+                        .is_some_and(|token| token.revoked_at.is_none());
                 if !alive {
                     dead.push(id);
                 }

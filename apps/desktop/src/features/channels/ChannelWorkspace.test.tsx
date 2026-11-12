@@ -48,6 +48,7 @@ const member = {
   canMove: false,
   volume: 100,
   localMuted: false,
+  bot: false,
 }
 const channel = {
   id: 'voice',
@@ -198,6 +199,16 @@ describe('live channels and voice', () => {
     expect(screen.getByRole('button', { name: 'Join voice channel Studio' })).toBeDisabled()
     await waitFor(() => expect(getServerView).toHaveBeenCalled())
     expect(joinVoice).not.toHaveBeenCalled()
+  })
+  it('tags bot accounts and only them', () => {
+    const menu = vi.fn()
+    render(
+      <>
+        <MemberRow server="server" member={{ ...member, id: 'bot', bot: true }} onMenu={menu} />
+        <MemberRow server="server" member={{ ...member, id: 'person' }} onMenu={menu} />
+      </>,
+    )
+    expect(screen.getAllByTitle('Bot account')).toHaveLength(1)
   })
   it('updates only the speaking member row, not unrelated rows', () => {
     const changed = vi.fn()

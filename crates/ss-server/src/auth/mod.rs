@@ -149,6 +149,9 @@ pub struct Authenticated {
     /// Channel checks use [`crate::perms`]. This value is not refreshed when
     /// a role changes.
     pub permissions: Permissions,
+    /// Whether the credential was a bot token. `session_id` is then the
+    /// `bot_tokens` row and `resume_token` echoes the bot token.
+    pub bot: bool,
 }
 
 impl std::fmt::Debug for Authenticated {
@@ -158,6 +161,7 @@ impl std::fmt::Debug for Authenticated {
             .field("resume_token", &db::REDACTED)
             .field("session_id", &self.session_id)
             .field("permissions", &self.permissions)
+            .field("bot", &self.bot)
             .finish()
     }
 }
@@ -185,14 +189,57 @@ impl Auth {
             Some(v1::hello::Auth::SessionToken(token) | v1::hello::Auth::ResumeToken(token)) => {
                 self.resume(token).await
             }
+            Some(v1::hello::Auth::BotToken(token)) => self.authenticate_bot(token).await,
             None => Err(Error::Invalid("missing credentials")),
         }
+    }
+
+    /// Resolves a bot token: the live `bot_tokens` row and its active bot
+    /// account. Never a session token, and a session token never matches.
+    pub async fn authenticate_bot(&self, token: &str) -> Result<Authenticated, Error> {
+        if token.is_empty() || token.len() > 512 {
+            return Err(Error::Unauthenticated);
+        }
+        let digest = token::hash(token);
+        let mut conn = self.pool.read().await?;
+        let Some(row) = db::bots::live_by_hash(&mut conn, &digest).await? else {
+            return Err(Error::Unauthenticated);
+        };
+        let user = load_active(&mut conn, row.bot_id).await?;
+        if user.kind != UserKind::Bot {
+            return Err(Error::Unauthenticated);
+        }
+        let permissions = permissions_for(&mut conn, user.id).await?;
+        Ok(Authenticated {
+            user,
+            resume_token: token.to_owned(),
+            session_id: row.id,
+            permissions,
+            bot: true,
+        })
     }
 
     /// Resolves a bearer session token and slides its expiry, at most once a
     /// minute.
     pub async fn authenticate_bearer(&self, token: &str) -> Result<Authenticated, Error> {
         self.resume(token).await
+    }
+
+    /// Whether bot token row `token` is still live for `bot`, and the bot may
+    /// still sign in (not disabled or banned).
+    pub(crate) async fn bot_token_live(&self, token: Id, bot: Id) -> Result<bool, Error> {
+        let mut conn = self.pool.read().await?;
+        let live = db::bots::get(&mut conn, token)
+            .await?
+            .is_some_and(|row| row.revoked_at.is_none() && row.bot_id == bot);
+        if !live {
+            return Ok(false);
+        }
+        match load_active(&mut conn, bot).await {
+            Ok(_) => Ok(true),
+            Err(Error::Unauthenticated | Error::Disabled | Error::Banned { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 
     /// Display name from settings, or `Sideband` when the row is missing.
@@ -253,9 +300,12 @@ impl Auth {
         self.limiter
             .admit(&login.username, peer)
             .map_err(|retry_after| Error::RateLimited { retry_after })?;
+        // A bot has no password: its name logs in like an unknown one.
         let found = {
             let mut conn = self.pool.read().await?;
-            users::get_by_username(&mut conn, &login.username).await?
+            users::get_by_username(&mut conn, &login.username)
+                .await?
+                .filter(|user| user.kind == UserKind::User)
         };
         // An unknown username costs the same argon2 run as a wrong password,
         // so the reply time does not tell the two apart.
@@ -298,17 +348,18 @@ impl Auth {
             < SEEN_EVERY_MS
         {
             let mut conn = self.pool.read().await?;
-            let user = load_active(&mut conn, session.user_id).await?;
+            let user = load_person(&mut conn, session.user_id).await?;
             let permissions = permissions_for(&mut conn, user.id).await?;
             return Ok(Authenticated {
                 user,
                 resume_token: token.to_owned(),
                 session_id: session.id,
                 permissions,
+                bot: false,
             });
         }
         let mut conn = self.pool.write().await;
-        let user = load_active(&mut conn, session.user_id).await?;
+        let user = load_person(&mut conn, session.user_id).await?;
         // A revoke may have run between the read and this write.
         sessions::slide(&mut conn, session.id, now, expiry(session.created_at, now))
             .await
@@ -322,6 +373,7 @@ impl Auth {
             resume_token: token.to_owned(),
             session_id: session.id,
             permissions,
+            bot: false,
         })
     }
 
@@ -351,6 +403,7 @@ impl Auth {
             resume_token: issued.token.to_string(),
             session_id: session.id,
             permissions,
+            bot: false,
         })
     }
 
@@ -397,6 +450,7 @@ impl Auth {
             resume_token: pending.issued.token.to_string(),
             session_id: session.id,
             permissions,
+            bot: false,
         })
     }
 }
@@ -430,6 +484,22 @@ pub async fn create_owner_invite(pool: &db::Pool) -> Result<String, Error> {
     }
     settings::set(&mut conn, OWNER_INVITE, &code).await?;
     Ok(code)
+}
+
+/// A new bot token: 32 random bytes, base64url, and its stored digest.
+pub(crate) fn bot_token() -> Result<(zeroize::Zeroizing<String>, String), Error> {
+    let issued = token::issue()?;
+    Ok((issued.token, issued.hash))
+}
+
+/// Validates a bot's username with the rules a member's name follows,
+/// including the look-alike check against every existing account.
+pub(crate) async fn check_bot_username(
+    conn: &mut sqlx::SqliteConnection,
+    username: &str,
+) -> Result<(), Error> {
+    validate_username(username)?;
+    ensure_distinct(conn, username).await
 }
 
 /// A new unguessable invite or webhook token.
@@ -542,6 +612,16 @@ async fn load_active(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<d
     }
     if let Some(ban) = active_ban(conn, user.id).await? {
         return Err(banned(ban.expires_at));
+    }
+    Ok(user)
+}
+
+/// [`load_active`], for a session token: a bot account never has one, and a
+/// row naming one is refused rather than trusted.
+async fn load_person(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<db::User, Error> {
+    let user = load_active(conn, user_id).await?;
+    if user.kind == UserKind::Bot {
+        return Err(Error::Unauthenticated);
     }
     Ok(user)
 }

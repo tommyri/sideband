@@ -415,7 +415,56 @@ const COMMANDS: &[(&str, Command)] = &[
             ),
         )]),
     ),
+    (
+        "CreateBot",
+        Command::Handled(&[("handlers/bots.rs", BOT_ISSUE)]),
+    ),
+    (
+        "ResetBotToken",
+        Command::Handled(&[(
+            "handlers/bots.rs",
+            perms_and(
+                &["MANAGE_SERVER"],
+                &[
+                    "is_bot(actor)",
+                    "holds(actor, None, scopes)",
+                    "can_act_on(actor, bot.id)",
+                ],
+            ),
+        )]),
+    ),
+    (
+        "RevokeBotToken",
+        Command::Handled(&[(
+            "handlers/bots.rs",
+            perms_and(
+                &["MANAGE_SERVER"],
+                &["is_bot(actor)", "can_act_on(actor, bot.id)"],
+            ),
+        )]),
+    ),
+    (
+        "ListBots",
+        Command::Handled(&[(
+            "handlers/bots.rs",
+            perms_and(&["MANAGE_SERVER"], &["is_bot(actor)"]),
+        )]),
+    ),
 ];
+
+/// Bot creation: a member with `MANAGE_SERVER`, never a bot, and scopes
+/// only from bits the issuer holds.
+const BOT_ISSUE: Policy = perms_and(
+    &["MANAGE_SERVER"],
+    &["is_bot(actor)", "holds(actor, None, scopes)"],
+);
+
+/// A bot API action: the token is the credential, and the action runs the
+/// same command handler as QUIC, capped by the token's scopes.
+const BOT_ACTION: Policy = scoped(
+    &["caller(", "bot_command("],
+    "bot token; runs the QUIC command handler and its checks (connection/bots.rs)",
+);
 
 /// Viewer-side video commands: a voice seat in the track's channel plus
 /// `VIEW_CHANNEL` there; a publisher cannot subscribe to itself.
@@ -523,6 +572,52 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         ),
     ),
     (
+        "http/bots.rs",
+        "post",
+        "/api/v1/channels/{channel_id}/messages",
+        BOT_ACTION,
+    ),
+    (
+        "http/bots.rs",
+        "patch",
+        "/api/v1/messages/{message_id}",
+        BOT_ACTION,
+    ),
+    (
+        "http/bots.rs",
+        "delete",
+        "/api/v1/messages/{message_id}",
+        BOT_ACTION,
+    ),
+    ("http/bots.rs", "post", "/api/v1/dms", BOT_ACTION),
+    (
+        "http/bots.rs",
+        "get",
+        "/api/v1/members",
+        scoped(
+            &["caller(", "spend_bot("],
+            "every signed-in account gets the whole member list in its Welcome",
+        ),
+    ),
+    (
+        "http/bots.rs",
+        "get",
+        "/api/v1/channels",
+        scoped(
+            &["caller(", "channel_view(", "direct_page("],
+            "guild channels the bot can view after its scope cap, and its own DMs",
+        ),
+    ),
+    (
+        "http/bots.rs",
+        "get",
+        "/api/v1/events",
+        scoped(
+            &["caller(", "bot_events("],
+            "bot token; the stream applies a QUIC session's filters (connection/bots.rs)",
+        ),
+    ),
+    (
         "http/info.rs",
         "get",
         "/api/v1/server",
@@ -579,6 +674,14 @@ const OUTBOUND: &[(&str, &str, &[&str])] = &[
         &["snapshot::delivers(", "admit_voice("],
     ),
     ("connection.rs", "deliver", &["snapshot::delivers("]),
+    // A bot's event stream passes the same filter and the voice-state gate.
+    (
+        "connection/bots.rs",
+        "forward",
+        &["snapshot::delivers(", "admit_voice("],
+    ),
+    // A bot is capped by the scopes of the token it signed in with.
+    ("connection/bots.rs", "bot_caller", &["bot_token("]),
     // A leave names no channel; only connections that saw the arrival get it.
     ("registry.rs", "enqueue", &["admit("]),
     // Seats are rechecked after every role, grant, override or guild channel

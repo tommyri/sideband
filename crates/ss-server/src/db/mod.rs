@@ -7,6 +7,7 @@
 pub mod attachments;
 pub mod audit_log;
 pub mod bans;
+pub mod bots;
 pub mod channels;
 mod convert;
 pub mod invites;
@@ -39,6 +40,7 @@ use tokio::sync::Mutex;
 pub use attachments::NewAttachment;
 pub use audit_log::NewAuditEntry;
 pub use bans::NewBan;
+pub use bots::{BotToken, NewBotToken};
 pub use channels::{ChannelUpdate, NewChannel};
 pub use invites::NewInvite;
 pub use link_previews::NewLinkPreview;

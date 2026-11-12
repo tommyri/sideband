@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package socialspeak.v1;
+
+import "socialspeak/v1/common.proto";
+
+// Bot accounts and their tokens.
+// Spec: docs/plan/02-protocol.md sections 3, 6 and 7, and docs/bots.md.
+//
+// A bot is a `User` with kind `USER_KIND_BOT`. It holds roles like anyone
+// else and authenticates with `Hello.bot_token` or the HTTPS `Bot` scheme.
+// It never has a password or a session token.
+
+// Create a bot account and its first token. Requires `MANAGE_SERVER`; a bot
+// cannot create bots. The token is returned once, on the ack.
+message CreateBot {
+  // Unique name: 3 to 32 characters of a-z, 0-9, underscore, or dot.
+  string username = 1;
+  // Name shown in the member list. Empty uses the username.
+  string display_name = 2;
+  // Permission bits the token may use. The bot holds only the bits that
+  // are both here and granted by its roles. Only bits the creator holds.
+  uint64 scopes = 3;
+}
+
+// Issue a new token for a bot and revoke the old one. Connections and event
+// streams that used the old token are closed at once. Requires
+// `MANAGE_SERVER` and a role above the bot's.
+message ResetBotToken {
+  // 16-byte user id of the bot.
+  bytes bot_id = 1;
+  // Scopes of the new token. Only bits the caller holds.
+  uint64 scopes = 2;
+}
+
+// Revoke a bot's token without issuing another. Its connections and event
+// streams are closed at once. Requires `MANAGE_SERVER` and a role above the
+// bot's.
+message RevokeBotToken {
+  // 16-byte user id of the bot.
+  bytes bot_id = 1;
+}
+
+// List every bot account. Requires `MANAGE_SERVER`. Answered with
+// `Ack.bots`.
+message ListBots {}
+
+// A bot account. Token hashes are never sent.
+message Bot {
+  // The bot's account.
+  User user = 1;
+  // Scopes of the live token. Zero when there is none.
+  uint64 scopes = 2;
+  // Whether the bot has a live token.
+  bool active = 3;
+  // 16-byte id of the member who issued the live token. Empty when there is
+  // none.
+  bytes token_created_by = 4;
+  // When the live token was issued, Unix milliseconds. Zero when there is
+  // none.
+  int64 token_created_at = 5;
+  // Plaintext token. Present only on the `CreateBot` and `ResetBotToken`
+  // acknowledgement.
+  optional string token = 6;
+}
+
+// `ListBots` result, ordered by user id.
+message BotList {
+  // Every bot account, with or without a live token.
+  repeated Bot bots = 1;
+}

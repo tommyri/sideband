@@ -23,7 +23,7 @@ use crate::{
     auth::{self, Auth},
     events::{EventBus, ServerEvent},
     handlers::{
-        Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles, Webhooks,
+        Bots, Channels, DirectMessages, Messages, Moderation, Presence, Profiles, Roles, Webhooks,
     },
     limits::{self, KeyedLimiter, PeerSessions, quota},
     media::{self, ForwardOutcome, Forwarder},
@@ -54,6 +54,10 @@ use tokio::{
     task::JoinSet,
     time::{Instant, timeout},
 };
+
+mod bots;
+
+pub(crate) use bots::StreamFilter;
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -89,6 +93,7 @@ pub struct Server {
     channels: Channels,
     messages: Messages,
     webhooks: Arc<Webhooks>,
+    bots: Arc<Bots>,
     profiles: Profiles,
     presence: Presence,
     moderation: Moderation,
@@ -133,10 +138,12 @@ impl Server {
             messages.previews(),
             bus.clone(),
         ));
+        let sessions = Arc::new(auth::Sessions::new(Arc::clone(&pool)));
         Ok(Self {
             pool: Arc::clone(&pool),
             auth: Auth::new(Arc::clone(&pool)),
-            sessions: Arc::new(auth::Sessions::new(Arc::clone(&pool))),
+            bots: Arc::new(Bots::new(Arc::clone(&perms), Arc::clone(&sessions))),
+            sessions,
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
             channels: Channels::new(Arc::clone(&perms)),
@@ -193,8 +200,9 @@ impl Server {
         self.voice.member_count()
     }
 
-    /// History, uploads, audit, and incoming webhooks. `run` binds this.
-    pub fn public_routes(&self) -> axum::Router {
+    /// History, uploads, audit, incoming webhooks, and the bot API. `run`
+    /// binds this.
+    pub fn public_routes(self: &Arc<Self>) -> axum::Router {
         let auth = Arc::new(Auth::new(Arc::clone(&self.pool)));
         let perms = Arc::clone(&self.perms);
         crate::http::messages::router(Arc::clone(&auth), Arc::clone(&perms))
@@ -233,6 +241,7 @@ impl Server {
                 self.files.clone(),
             ))
             .merge(self.webhook_routes())
+            .merge(crate::http::bots::router(Arc::clone(self)))
     }
 
     /// Incoming-webhook routes. `run` binds HTTP; tests call this directly.
@@ -647,6 +656,7 @@ fn welcome_envelope(
                     "previews".into(),
                     "attachments".into(),
                     "sessions".into(),
+                    "bots".into(),
                 ],
             }),
             resume_token: authed.resume_token.clone(),
@@ -1292,6 +1302,9 @@ async fn replies(
             events: Vec::new(),
         };
     };
+    if let Some(refused) = bot_budget(server, context, request_id) {
+        return refused;
+    }
     let caller = auth::sessions_caller(context.user_id, context.session_id, context.conn_id);
     if let Some(result) = server.sessions.dispatch(caller, request_id, msg).await {
         return session_answer(request_id, result);
@@ -1320,6 +1333,8 @@ async fn replies(
     {
         result
     } else if let Some(result) = server.webhooks.dispatch(context.user_id, msg).await {
+        result
+    } else if let Some(result) = server.bots.dispatch(context.user_id, msg).await {
         result
     } else if let Some(result) = server.profiles.dispatch(context.user_id, msg).await {
         result
@@ -1364,6 +1379,19 @@ async fn replies(
             }
         }
     }
+}
+
+/// Bots also spend their own budget, on every transport (T-080).
+fn bot_budget(server: &Server, context: &AuthedContext, request_id: u32) -> Option<Answer> {
+    let wait = server.bots.spend(context.user_id).err()?;
+    Some(Answer {
+        frames: vec![v1::ServerEnvelope::rate_limited(
+            request_id,
+            "bot is sending too many requests",
+            wait,
+        )],
+        events: Vec::new(),
+    })
 }
 
 fn voice_answer(request_id: u32, result: Result<voice::Outcome, crate::handlers::Error>) -> Answer {
@@ -1453,7 +1481,11 @@ fn scrub(hello: &mut v1::Hello) {
             register.password.zeroize();
             register.invite_code.zeroize();
         }
-        Some(v1::hello::Auth::SessionToken(token) | v1::hello::Auth::ResumeToken(token)) => {
+        Some(
+            v1::hello::Auth::SessionToken(token)
+            | v1::hello::Auth::ResumeToken(token)
+            | v1::hello::Auth::BotToken(token),
+        ) => {
             token.zeroize();
         }
         None => {}

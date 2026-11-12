@@ -1195,6 +1195,16 @@ textarea:focus-visible {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.member-bot-tag {
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--subtle);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
 .member-names small {
   color: var(--muted);
   font-size: 10px;

@@ -5207,6 +5207,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
+name = "pbjson"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8edd1efdd8ab23ba9cb9ace3d9987a72663d5d7c9f74fa00b51d6213645cf6c"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+]
+
+[[package]]
+name = "pbjson-build"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ed4d5c6ae95e08ac768883c8401cf0e8deb4e6e1d6a4e1fd3d2ec4f0ec63200"
+dependencies = [
+ "heck 0.5.0",
+ "itertools 0.14.0",
+ "prost",
+ "prost-types",
+]
+
+[[package]]
 name = "pear"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6810,6 +6832,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "sideband-bot-example"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.4.3",
+ "ss-client-core",
+ "ss-core",
+ "ss-net",
+ "tokio",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7395,10 +7429,14 @@ name = "ss-proto"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "pbjson",
+ "pbjson-build",
  "proptest",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
  "ss-core",
  "thiserror 2.0.21",
  "tokio",
@@ -7440,6 +7478,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "sideband-bot-example",
  "sqlx",
  "ss-client-core",
  "ss-core",

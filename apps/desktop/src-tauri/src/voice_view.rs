@@ -47,6 +47,8 @@ pub struct MemberView {
     pub can_move: bool,
     pub volume: u16,
     pub local_muted: bool,
+    /// A bot account (`User.kind`), shown with a BOT tag.
+    pub bot: bool,
 }
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -200,6 +202,7 @@ fn member_view(
         local_muted: storage
             .user_muted(server, key)
             .map_err(super::commands::api_error)?,
+        bot: user.kind == i32::from(ss_client_core::v1::UserKind::Bot),
     })
 }
 

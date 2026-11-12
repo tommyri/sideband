@@ -51,7 +51,14 @@ export const MemberRow = memo(function MemberRow({
           {(member.displayName || member.username).slice(0, 2).toUpperCase()}
         </span>
         <span className="member-names">
-          <strong>{member.displayName || member.username}</strong>
+          <strong>
+            {member.displayName || member.username}
+            {member.bot && (
+              <span className="member-bot-tag" title="Bot account">
+                BOT
+              </span>
+            )}
+          </strong>
           <small>@{member.username}</small>
         </span>
         <span className="member-flags">

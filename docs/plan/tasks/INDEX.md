@@ -174,7 +174,7 @@ T-100 blocks only T-074.
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-080](T-080-bot-api.md) | Bot API | M | T-021, T-022, T-026, T-064 | todo |
+| [T-080](T-080-bot-api.md) | Bot API | M | T-021, T-022, T-026, T-064 | done |
 
 ## Review follow-ups — 2026-11-09
 

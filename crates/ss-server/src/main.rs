@@ -53,6 +53,11 @@ enum Command {
         #[command(subcommand)]
         action: TlsAction,
     },
+    /// Bot accounts and their tokens (`docs/bots.md`).
+    Bot {
+        #[command(subcommand)]
+        action: BotAction,
+    },
     /// Print the certificate fingerprint.
     Fingerprint {
         /// Directory containing the TLS identity.
@@ -210,6 +215,55 @@ enum SessionsAction {
 }
 
 #[derive(Subcommand)]
+enum BotAction {
+    /// Create a bot account and print its token once. The operator is the
+    /// issuer, so the scopes are not limited to a member's bits.
+    Create {
+        /// 3 to 32 characters of a-z, 0-9, underscore, or dot.
+        #[arg(long)]
+        username: String,
+        /// Name shown in the member list. Defaults to the username.
+        #[arg(long, default_value = "")]
+        display_name: String,
+        /// Permission names the token may use, comma-separated. The bot holds
+        /// only those its roles also grant.
+        #[arg(long, default_value = "VIEW_CHANNEL,SEND_MESSAGES")]
+        scopes: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Print every bot, its scopes and whether it has a live token.
+    List {
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Replace a bot's token and print the new one. The old one stops at
+    /// once; a running server closes its connections within 30 seconds.
+    Reset {
+        /// The bot's username.
+        #[arg(long)]
+        username: String,
+        /// Permission names for the new token, comma-separated.
+        #[arg(long, default_value = "VIEW_CHANNEL,SEND_MESSAGES")]
+        scopes: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+    /// Revoke a bot's token without issuing another.
+    Revoke {
+        /// The bot's username.
+        #[arg(long)]
+        username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum RoleAction {
     /// Grant the seeded Admin role. A running server sees it after restart.
     GrantAdmin {
@@ -311,6 +365,10 @@ async fn start() -> anyhow::Result<()> {
         Command::User { action } => {
             stderr_logs();
             user(action).await?;
+        }
+        Command::Bot { action } => {
+            stderr_logs();
+            bot(action).await?;
         }
         Command::Role {
             action: RoleAction::GrantAdmin { username, data_dir },
@@ -481,6 +539,76 @@ async fn revoke_sessions(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+async fn bot(action: BotAction) -> anyhow::Result<()> {
+    use ss_server::handlers::bots;
+    let open = |data_dir: PathBuf| async move {
+        ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await
+    };
+    match action {
+        BotAction::Create {
+            username,
+            display_name,
+            scopes,
+            data_dir,
+        } => {
+            let scopes = parse_scopes(&scopes)?;
+            let pool = open(data_dir).await?;
+            let (user, _, token) =
+                bots::create_account(&pool, None, &username, &display_name, scopes).await?;
+            println!("bot {} ({}) created", user.username, user.id);
+            println!("token (shown once): {}", *token);
+        }
+        BotAction::List { data_dir } => {
+            let pool = open(data_dir).await?;
+            for (user, token) in bots::list_accounts(&pool).await? {
+                let state = token.map_or_else(
+                    || "no live token".to_owned(),
+                    |token| {
+                        format!(
+                            "scopes {:?}, issued {}",
+                            token.scopes,
+                            utc(token.created_at)
+                        )
+                    },
+                );
+                println!("{}  {}  {state}", user.id, user.username);
+            }
+        }
+        BotAction::Reset {
+            username,
+            scopes,
+            data_dir,
+        } => {
+            let scopes = parse_scopes(&scopes)?;
+            let pool = open(data_dir).await?;
+            let bot = bots::find(&pool, &username).await?;
+            let (_, _, token) = bots::replace_token(&pool, None, bot.id, scopes).await?;
+            println!("token (shown once): {}", *token);
+        }
+        BotAction::Revoke { username, data_dir } => {
+            let pool = open(data_dir).await?;
+            let bot = bots::find(&pool, &username).await?;
+            let _revoked = bots::revoke_token(&pool, None, bot.id).await?;
+            println!("token revoked");
+        }
+    }
+    Ok(())
+}
+
+/// `VIEW_CHANNEL,SEND_MESSAGES` (names from `03-data-model.md`) as bits.
+fn parse_scopes(text: &str) -> anyhow::Result<ss_core::Permissions> {
+    let mut scopes = ss_core::Permissions::empty();
+    for name in text
+        .split([',', '|'])
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        scopes |= ss_core::Permissions::from_name(&name.to_ascii_uppercase())
+            .ok_or_else(|| anyhow::anyhow!("unknown permission {name}"))?;
+    }
+    Ok(scopes)
 }
 
 /// `YYYY-MM-DD HH:MM UTC` for a Unix-millisecond timestamp.

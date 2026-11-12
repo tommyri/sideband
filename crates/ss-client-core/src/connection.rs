@@ -98,6 +98,10 @@ pub enum Credentials {
     Login(v1::Login),
     /// Invite registration.
     Register(v1::Register),
+    /// A bot token (`docs/bots.md`). Reconnects use it again; it is never
+    /// saved to `Storage`, and HTTPS history needs a session, so a bot's
+    /// cached history is not re-read after a reconnect.
+    Bot(String),
 }
 
 pub(crate) struct Command {
@@ -207,6 +211,8 @@ impl MediaLink {
 pub(crate) struct AuthSession {
     pub token: String,
     pub trust: ss_net::pins::TrustPolicy,
+    /// `token` is a bot token, not a session token.
+    pub bot: bool,
 }
 
 /// One independently owned client. Drop aborts its worker, which drops the
@@ -249,6 +255,7 @@ impl Client {
         storage: Arc<dyn Storage>,
     ) -> Result<Self, Error> {
         let key = address.id()?;
+        let bot = matches!(credentials, Credentials::Bot(_));
         let credential = match credentials {
             Credentials::Saved => {
                 let storage = storage.clone();
@@ -261,12 +268,16 @@ impl Client {
             Credentials::Session(token) => v1::hello::Auth::SessionToken(token),
             Credentials::Login(login) => v1::hello::Auth::Login(login),
             Credentials::Register(register) => v1::hello::Auth::Register(register),
+            Credentials::Bot(token) => v1::hello::Auth::BotToken(token),
         };
         let (live, welcome) = establish(&address, pins.clone(), credential).await?;
         let store = StateStore::default();
         store.welcome(&welcome)?;
-        persist(&storage, &address, &welcome.resume_token).await?;
+        if !bot {
+            persist(&storage, &address, &welcome.resume_token).await?;
+        }
         let auth = Arc::new(RwLock::new(Some(AuthSession {
+            bot,
             token: welcome.resume_token,
             trust: live
                 .connection
@@ -636,7 +647,11 @@ impl Runner {
                 establish(
                     &self.address,
                     self.pins.clone(),
-                    v1::hello::Auth::ResumeToken(token.clone()),
+                    if session.bot {
+                        v1::hello::Auth::BotToken(token.clone())
+                    } else {
+                        v1::hello::Auth::ResumeToken(token.clone())
+                    },
                 ),
                 commands,
                 &mut self.pending,
@@ -671,6 +686,10 @@ impl Runner {
             };
         }
     }
+    /// Whether this client signed in with a bot token.
+    fn bot(&self) -> bool {
+        self.auth.read().as_ref().is_some_and(|session| session.bot)
+    }
     /// Install a resumed session and rejoin voice before `Connected`. The
     /// message resync is not part of this: it runs once connected.
     async fn resume(
@@ -681,12 +700,15 @@ impl Runner {
         token: &mut String,
     ) -> Result<ss_net::pins::TrustPolicy, Error> {
         self.store.install(welcome, reconnecting)?;
-        let (storage, address) = (self.storage.clone(), self.address.clone());
-        self.draining(
-            &mut next.incoming,
-            persist(&storage, &address, &welcome.resume_token),
-        )
-        .await?;
+        let bot = self.bot();
+        if !bot {
+            let (storage, address) = (self.storage.clone(), self.address.clone());
+            self.draining(
+                &mut next.incoming,
+                persist(&storage, &address, &welcome.resume_token),
+            )
+            .await?;
+        }
         token.clone_from(&welcome.resume_token);
         let trust = next
             .connection
@@ -695,6 +717,7 @@ impl Runner {
         *self.auth.write() = Some(AuthSession {
             token: welcome.resume_token.clone(),
             trust,
+            bot,
         });
         self.restore_voice(next).await?;
         // The seat is back: audio flows from here on, also while queued sends
@@ -716,6 +739,10 @@ impl Runner {
         let _ = self.events.send(ClientEvent::Resynced);
         self.status(ConnectionState::Connected);
         self.media.connected(Some(&next.connection));
+        // History pages take a session bearer; a bot keeps its cache.
+        if self.bot() {
+            return None;
+        }
         Resync::start(
             &self.address,
             trust,

@@ -135,6 +135,7 @@ Account recovery and moderation from the command line:
 | See or end sessions | `ss-server user sessions list` / `revoke --id … \| --all` | A running server closes the connections within 30 seconds |
 | Make someone an administrator | `ss-server role grant-admin --username …` | Takes effect after a server restart; in the app it is immediate |
 | Ban or unban | `ss-server user ban` / `unban --username …` | A live session stays connected until restart; banning from the app disconnects at once |
+| Create a bot, or replace or revoke its token | `ss-server bot create --username … [--scopes VIEW_CHANNEL,SEND_MESSAGES]` / `list` / `reset` / `revoke --username …` | Prints the token once; see [writing a bot](bots.md) |
 | Rebuild message search | `ss-server reindex-search` | See [message search](message-search.md#rebuild-the-index) |
 
 ## 5. Certificates

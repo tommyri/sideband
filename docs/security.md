@@ -18,6 +18,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Owner bootstrap code | `server_settings.owner_invite` until the first registration | Grants `Admin` |
 | Invite codes | Client only. Server stores SHA-256 hex in `invites.code_hash` | Registration on an invite-only server |
 | Webhook tokens | Client only. SHA-256 hex in `webhooks.token_hash` | Posting into a channel as a bot |
+| Bot tokens | Client only. SHA-256 hex in `bot_tokens.token_hash` | Acting as that bot account on QUIC and HTTPS, within its roles and scopes, until revoked or replaced (section 4) |
 | Attachment signing key | `<data>/attachment.key`, mode 0600 | Forges 10-minute download links |
 | TLS private key | `<data>/tls/identity.json` (self-signed), operator PEM files, or `tls/acme/` | Impersonating the server |
 | Message history, DMs, attachments | `socialspeak.db`, `attachments/` | Privacy of the group |
@@ -39,6 +40,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Internet → QUIC | Anyone | Complete a handshake, send one `Hello` | Stateless Retry before any slot, 256 sessions total, 32 per validated address, 10 s handshake and Hello deadlines, Hello and password quotas, 1 MiB frames |
 | Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers, attachments streamed from and to disk with 16 open transfers per account |
 | Members → server | Authenticated accounts | Every control command and REST call | `PermissionService::check` per command, role hierarchy, per-account quotas, input limits |
+| Bots → server | Holders of a bot token | The bot API (REST actions, event stream) and native QUIC, as the bot account | The same command handlers and visibility filters, capped by the token's scopes; no voice; per-bot budget and two streams; tokens revocable at once (sections 4 to 6) |
 | Moderators and admins → server | Accounts with management bits | Kick, ban, mute, move, roles, channels, webhooks, invites | Bits plus strict hierarchy (`can_act_on`); only `ADMINISTRATOR` grants `ADMINISTRATOR`; audit log |
 | Server → previewed sites | Arbitrary web servers | Return any bytes to the preview fetcher | SSRF address filter after DNS, pinned socket address, proxy variables ignored, 3 redirects re-checked, 5 s, 1 MiB, fuzzed parser |
 | Operator → server | Whoever has shell on the host | Everything | Out of scope. The data dir is the trust root |
@@ -132,6 +134,22 @@ It does not protect against:
   once to the creator. The migration revokes legacy plaintext codes and logs
   how many were invalidated.
 - **Webhook tokens**: 16 random bytes, SHA-256 stored, returned once.
+- **Bot tokens** (T-080): 32 random bytes, base64url, SHA-256 stored in
+  `bot_tokens`, returned once on `CreateBot`/`ResetBotToken` or printed once
+  by `ss-server bot create|reset`. One live token per bot; no expiry, since a
+  bot cannot type a password, so revocation is the remedy. They are a
+  separate credential: `Hello.bot_token` and `Authorization: Bot` look only
+  in `bot_tokens`, session lookups only in `sessions`, and both refuse a
+  credential that names the other kind of account. A bot account has no
+  password (not a PHC string; login treats its name as unknown, with the
+  dummy hash) and never gets a session. Revoking or replacing a token
+  closes its QUIC connections (`SessionRevoked`, code 6) and ends its event
+  streams at once; the CLI's changes are picked up by the 30 s sweep, and
+  streams recheck their token and account every 30 s. Issuing needs
+  `MANAGE_SERVER`, a bot never issues, scopes are limited to the issuer's
+  bits, and resetting or revoking another member's bot also needs a role
+  above it. The issued plaintext is held in a `Zeroizing` buffer; the copy
+  in the ack frame, like a session token's, is not wiped.
 - **Attachment links**: HMAC-SHA256 over attachment id, signer (the
   uploader's account id) and expiry; the token carries expiry, signer and MAC
   (layout in `02-protocol.md` §6, T-092). 10-minute lifetime, 32-byte key
@@ -203,6 +221,19 @@ T-090 closed the gaps a later review found, each with a test that failed first:
 - *Invites.* A ban left the member's invites usable, and `CREATE_INVITES` is
   in the default role. A ban, from the command or the CLI, now revokes them.
 
+Bots (T-080) go through the same handlers: an HTTPS action builds the
+QUIC command and runs the same dispatch, and the event stream applies the
+same visibility filter, DM rules, guild channel diff and voice-state gate a
+QUIC session does. `PermissionService` caps a bot by its token's scopes on
+every resolution (server-wide, per channel, `is_administrator`, and so
+`effective_permissions` in its `Welcome`), never grants it `CONNECT`, `SPEAK`
+or `STREAM`, and `JoinVoice` refuses bots outright. When an HTTPS request
+carries a token the snapshot does not cap by yet (the CLI created or
+replaced it from another process), the snapshot is reloaded first, and the
+request is refused if it still does not match. `tests/bots.rs` covers each
+property; the audit lists the bot commands, routes, the stream filter and
+that reload.
+
 ## 6. Rate limits
 
 All quotas are in-memory GCRA buckets (`governor`) for the process lifetime.
@@ -225,6 +256,8 @@ rejection is `Error{code: RATE_LIMITED, retry_after_ms}`; HTTP is `429` with
 | `CreateDm` that would open a new conversation | account | burst 10, then 1 per 6 s; reopening an existing 1:1 DM is free | `RATE_LIMITED` + retry |
 | `Typing` | account and channel | 1 per 5 s | `RATE_LIMITED` + retry |
 | Webhook posts | webhook | burst 30, then 1 per 2 s | `429` + `Retry-After` |
+| Bot requests: QUIC commands and HTTPS calls together | bot account | burst 50, then 5 per s, on top of the account's command budget and each command's quota | `RATE_LIMITED` + retry; `429` + `Retry-After` |
+| Bot event streams | bot token | 2 open; each ends after 9 min, or when 1024 events behind or blocked 10 s on its client | `429`; `serverNotice` and end |
 | Uploads | account | burst 10, then 1 per 6 s | `429` + `Retry-After` |
 | Upload bytes | account | 500 MiB per rolling 24 h | `429` + conservative 24 h `Retry-After` |
 | Public HTTP requests | address | burst 200, then 50 per s | `429` + `Retry-After` |
@@ -286,6 +319,10 @@ channels) closed every other session. Each has a test in
 | Channels | ≤ 500 live guild channels per server, categories included (`limits::MAX_CHANNELS`); DMs and deleted channels do not count. `CreateChannel` at the cap fails with `FORBIDDEN` |
 | Channel topics, all together | ≤ 65,536 UTF-8 bytes across live guild channels (`limits::CHANNEL_TOPIC_BYTES`); a `CreateChannel` or `UpdateChannel` that adds topic bytes past it fails with `FORBIDDEN` |
 | Webhook name and `username` override | 1–80, same rules |
+| Bot username, display name | As a member's username (look-alike check included) and display name |
+| Bot token scopes | Known permission bits only, and only bits the issuer holds |
+| Bot event-stream `prefix` | 1–32 characters |
+| Bot member page | 1–1000 members (`GET /api/v1/members`) |
 | Message body | 1–4000 after trimming; webhook bodies ≤ 2000 |
 | Mentions per message | ≤ 50 distinct `<@ULID>` |
 | Attachments per message | ≤ 10, each listed once, uploaded by the sender, unused |
@@ -520,6 +557,11 @@ ship code inside a signed release, but it cannot use or take the key.
 - RUSTSEC-2026-0459 (bundled SQLite before 3.54) is ignored in `deny.toml`
   until `sqlx` allows `libsqlite3-sys` 0.39; review by 2027-02-11 (section
   11, T-110).
+- A ban ends a bot's open event streams only at their next 30 s recheck;
+  its requests and QUIC connections are refused at once. Events between two
+  of a bot's streams are not replayed (T-080).
+- Bots cannot upload attachments, and `Logout` on a bot's QUIC connection
+  only closes it; revoking is `RevokeBotToken` (T-080).
 - Members and role grants are not capped, so a guild past the bound in
   section 7 (about 1,000 members with the longest strings, 8,000 typical)
   refuses every `Hello` until it shrinks. Roles and channels are capped so
