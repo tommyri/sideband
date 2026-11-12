@@ -236,7 +236,7 @@ follow-ups of T-106's answers:
 | [T-113](T-113-mention-count-at-sign-in.md) | Count a mention once when it arrives during sign-in | S | T-107, T-109 | done |
 | [T-114](T-114-migration-rebuild-trigger.md) | Rebuild the server when a migration is added | S | T-109 | done |
 | [T-115](T-115-default-ports-agree.md) | Make the default ports agree | S | T-064, T-092 | todo |
-| [T-116](T-116-no-frames-before-welcome.md) | Send nothing to a connection before its Welcome | S | T-113 | todo |
+| [T-116](T-116-no-frames-before-welcome.md) | Send nothing to a connection before its Welcome | S | T-113 | done |
 | [T-117](T-117-linux-realtime-audio.md) | Real-time voice priority on Linux through rtkit | S | T-083, T-106 | todo |
 | [T-118](T-118-capture-input-counts.md) | Show real capture inputs and open their full channel count | S | T-088, T-106 | todo |
 

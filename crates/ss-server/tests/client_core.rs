@@ -1299,6 +1299,172 @@ async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
     );
 }
 
+/// The connection of `user` that `before` did not list, once registered.
+async fn registered(world: &World, user: Id, before: &[Id]) -> Id {
+    timeout(WAIT, async {
+        loop {
+            let now = world.server.registry().connection_ids(user);
+            if let Some(conn) = now.into_iter().find(|conn| !before.contains(conn)) {
+                break conn;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the signing-in connection was never registered")
+}
+
+/// Frames other tasks address to a connection while it signs in (here
+/// read states, the realistic one: the user's other session marking a
+/// channel read) must not stand between the client and its `Welcome`. The
+/// client's `establish` reads nothing but the `Hello` reply, so more early
+/// frames than its event queue holds would keep that reply from it.
+#[tokio::test]
+async fn a_sign_in_behind_hundreds_of_addressed_frames_still_succeeds() {
+    const EARLY: usize = 300;
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let general = named(&owner.state().read(), "general", v1::ChannelKind::Text);
+    let first = owner.send_message(post(general, "first")).await.unwrap();
+    let second = owner.send_message(post(general, "second")).await.unwrap();
+    let user = own_id(&owner);
+    let before = world.server.registry().connection_ids(user);
+    let hold = world.server.hold_sign_ins().await;
+    let (address, pins, storage) = (
+        world.address.clone(),
+        world.pins.clone(),
+        world.storage.clone(),
+    );
+    let signing_in = tokio::spawn(Client::connect_with_storage(
+        address,
+        Credentials::Saved,
+        pins,
+        storage,
+    ));
+    let conn = registered(&world, user, &before).await;
+    for _ in 0..EARLY {
+        world.server.registry().enqueue(
+            conn,
+            v1::ServerEnvelope {
+                request_id: 0,
+                msg: Some(v1::server_envelope::Msg::ReadStateUpdated(
+                    v1::ReadStateUpdated {
+                        channel_id: wire(general),
+                        last_read_message_id: wire(first),
+                        mention_count: 0,
+                    },
+                )),
+            },
+        );
+    }
+    owner
+        .mark_read(v1::MarkRead {
+            channel_id: wire(general),
+            message_id: wire(second),
+        })
+        .await
+        .unwrap();
+    drop(hold);
+    let session = timeout(WAIT, signing_in)
+        .await
+        .expect("sign-in hung")
+        .unwrap()
+        .expect("sign-in failed");
+    let mut events = session.subscribe();
+    // The newest read state, sent last, wins over the snapshot and the
+    // earlier frames.
+    until(&session, &mut events, |state| {
+        state
+            .read_states
+            .get(&general)
+            .is_some_and(|read| read.last_read_message_id == wire(second))
+    })
+    .await;
+    assert_eq!(
+        session.state().read().connection,
+        ConnectionState::Connected
+    );
+}
+
+/// A kick aimed at a connection that is still signing in refuses its
+/// `Hello` with `FORBIDDEN`: a first sign-in fails with that error.
+#[tokio::test]
+async fn a_member_kicked_while_signing_in_is_refused() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let user = own_id(&guest);
+    drop(guest);
+    let before = world.server.registry().connection_ids(user);
+    let hold = world.server.hold_sign_ins().await;
+    let signing_in = tokio::spawn(Client::connect(
+        world.address.clone(),
+        Credentials::Login(v1::Login {
+            username: "guest".into(),
+            password: "test-password".into(),
+        }),
+        world.pins.clone(),
+    ));
+    let _ = registered(&world, user, &before).await;
+    owner
+        .kick_user(v1::KickUser {
+            user_id: wire(user),
+            reason: "out".into(),
+        })
+        .await
+        .unwrap();
+    drop(hold);
+    let refused = timeout(WAIT, signing_in)
+        .await
+        .expect("sign-in hung")
+        .unwrap();
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Forbidden)
+        ),
+        "{:?}",
+        refused.map(|_| ())
+    );
+}
+
+/// The same kick while the client reconnects ends its session: the refused
+/// `Hello` is final, so it stops and does not try again.
+#[tokio::test]
+async fn a_member_kicked_while_reconnecting_stops_reconnecting() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let mut events = guest.subscribe();
+    let user = own_id(&guest);
+    let before = world.server.registry().connection_ids(user);
+    let hold = world.server.hold_sign_ins().await;
+    drop_without_lease(&world, before[0]);
+    let _ = registered(&world, user, &before).await;
+    owner
+        .kick_user(v1::KickUser {
+            user_id: wire(user),
+            reason: "out".into(),
+        })
+        .await
+        .unwrap();
+    drop(hold);
+    until(&guest, &mut events, |state| {
+        matches!(state.connection, ConnectionState::Failed(_))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1400)).await;
+    assert!(
+        matches!(guest.state().read().connection, ConnectionState::Failed(_)),
+        "{:?}",
+        guest.state().read().connection
+    );
+    assert_eq!(
+        world.server.registry().connection_ids(user),
+        Vec::<Id>::new()
+    );
+}
+
 #[tokio::test]
 #[ignore = "two-minute CI chaos test"]
 async fn two_minute_random_outages_leave_no_stuck_client_or_voice_tracks() {

@@ -251,6 +251,14 @@ impl Server {
         &self.registry
     }
 
+    /// Test hook: keeps every sign-in waiting after its connection is
+    /// registered and before its snapshot's read point, until the guard is
+    /// dropped. New messages wait too (it is the bus hold).
+    #[doc(hidden)]
+    pub async fn hold_sign_ins(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.bus.hold().await
+    }
+
     /// Logout, revoke, and the session sweep and prune timer.
     pub fn sessions(&self) -> &auth::Sessions {
         &self.sessions
@@ -541,7 +549,72 @@ impl Server {
             );
             return reject(connection, stream, &error).await;
         }
+        self.admit_again(connection, stream, authed, request_id)
+            .await?;
         Ok((welcome, subscription))
+    }
+
+    /// Checks again, once the snapshot is built, what `Hello` checked: the
+    /// account is not banned and the session still exists. A ban or revoke
+    /// committed before this connection was registered, or by another
+    /// process, sent it no kick. Refuses the `Hello` as such a kick would
+    /// have: the `Error`, the notice, then the close code.
+    async fn admit_again(
+        &self,
+        connection: &Connection,
+        stream: &mut ServerStream,
+        authed: &auth::Authenticated,
+        request_id: u32,
+    ) -> Result<(), Error> {
+        let checked = async {
+            let mut conn = self.pool.read().await?;
+            let now = Timestamp::now();
+            let ban = crate::db::bans::list_for_user(&mut conn, authed.user.id)
+                .await?
+                .into_iter()
+                .find(|ban| ban.lifted_at.is_none() && ban.expires_at.is_none_or(|end| end > now));
+            let alive = crate::db::sessions::get(&mut conn, authed.session_id)
+                .await?
+                .is_some_and(|session| auth::session_alive(&session, now));
+            Ok::<_, crate::db::Error>((ban, alive))
+        }
+        .await;
+        let kick = match checked {
+            Ok((None, true)) => return Ok(()),
+            Ok((Some(ban), _)) => Kick {
+                notice: event_frame(server_envelope::Msg::Banned(v1::Banned {
+                    reason: ban.reason.unwrap_or_default(),
+                    expires_at: ban.expires_at.map(Timestamp::as_millis),
+                })),
+                code: registry::CLOSE_BANNED,
+                reason: b"banned",
+            },
+            Ok((None, false)) => Kick {
+                notice: event_frame(server_envelope::Msg::SessionRevoked(v1::SessionRevoked {
+                    reason: "signed out: this session was ended".into(),
+                })),
+                code: auth::CLOSE_SIGNED_OUT,
+                reason: b"signed out",
+            },
+            Err(error) => {
+                tracing::debug!(%error, "sign-in recheck failed");
+                let envelope = v1::ServerEnvelope::error(
+                    request_id,
+                    v1::ErrorCode::Internal,
+                    "internal error",
+                );
+                return reject(connection, stream, &envelope).await;
+            }
+        };
+        let _ = timeout(
+            NOTICE_TIMEOUT,
+            stream.send(&hello_refused_by(request_id, &kick)),
+        )
+        .await;
+        let _ = timeout(NOTICE_TIMEOUT, stream.send(&kick.notice)).await;
+        tokio::time::sleep(NOTICE_GRACE).await;
+        connection.quic().close(kick.code.into(), kick.reason);
+        Err(Error::Protocol)
     }
 
     async fn pump(
@@ -560,14 +633,27 @@ impl Server {
         let media_conn_id = context.conn_id;
         let video_conn = pump.quic.clone();
         let video = self.voice.streams();
-        let write = write_outbound(
+        let view = View::from_welcome(&welcome);
+        if let Some(server_envelope::Msg::Welcome(value)) = &welcome.msg
+            && let Some(snapshot) = &value.snapshot
+        {
+            self.registry.seed_voice(
+                context.conn_id,
+                snapshot
+                    .voice_states
+                    .iter()
+                    .filter_map(|state| id_from_bytes(&state.conn_id).ok()),
+            );
+        }
+        let write = Outbound {
             sender,
-            pump.outgoing,
-            pump.direct,
-            pump.kicks,
-            pump.quic,
-            Arc::clone(&self.registry),
-        );
+            outgoing: pump.outgoing,
+            direct: pump.direct,
+            kicks: pump.kicks,
+            quic: pump.quic,
+            registry: Arc::clone(&self.registry),
+        }
+        .run(welcome);
         let read = read_inbound(
             self,
             context,
@@ -575,7 +661,7 @@ impl Server {
             pump.outbound,
             subscription,
             request_id,
-            welcome,
+            view,
         );
         let datagrams = async move {
             loop {
@@ -772,21 +858,8 @@ async fn read_inbound(
     outbound: mpsc::Sender<v1::ServerEnvelope>,
     subscription: &mut broadcast::Receiver<ServerEvent>,
     mut last_request: u32,
-    welcome: v1::ServerEnvelope,
+    mut view: View,
 ) -> Result<(), Error> {
-    let mut view = View::from_welcome(&welcome);
-    if let Some(server_envelope::Msg::Welcome(value)) = &welcome.msg
-        && let Some(snapshot) = &value.snapshot
-    {
-        server.registry.seed_voice(
-            context.conn_id,
-            snapshot
-                .voice_states
-                .iter()
-                .filter_map(|state| id_from_bytes(&state.conn_id).ok()),
-        );
-    }
-    send(&outbound, welcome).await?;
     let mut inflight: Option<Inflight> = None;
     loop {
         tokio::select! {
@@ -1171,83 +1244,143 @@ async fn deliver(
 }
 
 /// Writes the session's own queue and frames addressed to it by other tasks,
-/// and carries out a kick. A write that stalls past the slow-consumer grace
-/// closes the connection; a kick that arrives during a stalled write closes
-/// it without the notice, since the stream is mid-frame.
-async fn write_outbound(
-    mut sender: ss_net::control::ControlSender<v1::ServerEnvelope>,
-    mut outgoing: mpsc::Receiver<v1::ServerEnvelope>,
+/// and carries out a kick.
+///
+/// The reply to `Hello` is the first frame the client reads. Until it is
+/// written, frames other tasks addressed to the connection while it signed
+/// in wait in its [`registry::DirectQueue`] (with that queue's bounds) and
+/// follow the `Welcome`. A kick, ban or revoked session that is already in
+/// the kick slot replaces the `Welcome` with the `Error` it implies
+/// ([`hello_refused_by`]), so the snapshot is never sent; one that arrives
+/// while the `Welcome` is being written follows it. A write that stalls past the
+/// slow-consumer grace closes the connection; a kick that arrives during a
+/// stalled write closes it without the notice, since the stream is
+/// mid-frame.
+struct Outbound {
+    sender: ss_net::control::ControlSender<v1::ServerEnvelope>,
+    outgoing: mpsc::Receiver<v1::ServerEnvelope>,
     direct: Arc<registry::DirectQueue>,
-    mut kick_rx: mpsc::Receiver<Kick>,
+    kicks: mpsc::Receiver<Kick>,
     quic: quinn::Connection,
     registry: Arc<ConnectionRegistry>,
-) -> Result<(), Error> {
-    loop {
-        let frame = match kick_rx.try_recv() {
-            Ok(kick) => {
-                notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
-                break;
+}
+
+impl Outbound {
+    async fn run(mut self, welcome: v1::ServerEnvelope) -> Result<(), Error> {
+        // A kick that came while the connection signed in wins over its
+        // snapshot: the `Hello` is refused instead, and the notice follows.
+        if let Ok(kick) = self.kicks.try_recv() {
+            let refusal = hello_refused_by(welcome.request_id, &kick);
+            let _ = timeout(NOTICE_TIMEOUT, self.sender.send(&refusal)).await;
+            self.carry_out(&kick).await;
+            return Ok(());
+        }
+        let mut frame = welcome;
+        while self.write(&frame).await? {
+            let Some(next) = self.next().await else { break };
+            frame = next;
+        }
+        Ok(())
+    }
+
+    /// The next frame to write: a kick before anything (carried out here,
+    /// `None`), then frames addressed to the connection, then its own queue.
+    /// `None` also when the session has ended.
+    async fn next(&mut self) -> Option<v1::ServerEnvelope> {
+        loop {
+            match self.kicks.try_recv() {
+                Ok(kick) => {
+                    self.carry_out(&kick).await;
+                    return None;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {}
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => break,
-            Err(mpsc::error::TryRecvError::Empty) => direct.pop(),
-        };
-        let frame = if let Some(frame) = frame {
-            frame
-        } else {
+            if let Some(frame) = self.direct.pop() {
+                return Some(frame);
+            }
             tokio::select! {
                 biased;
-                kick = kick_rx.recv() => {
-                    let Some(kick) = kick else { break };
-                    notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
-                    break;
+                kick = self.kicks.recv() => {
+                    self.carry_out(&kick?).await;
+                    return None;
                 }
-                () = direct.ready() => continue,
-                frame = outgoing.recv() => {
-                    let Some(frame) = frame else { break };
-                    frame
-                }
+                () = self.direct.ready() => {}
+                frame = self.outgoing.recv() => return frame,
             }
-        };
+        }
+    }
+
+    /// Writes one frame. `false` when the connection was closed meanwhile,
+    /// for a stalled write or a kick.
+    async fn write(&mut self, frame: &v1::ServerEnvelope) -> Result<bool, Error> {
         let outcome = {
-            let write = timeout(registry.slow_after(), sender.send(&frame));
+            let write = timeout(self.registry.slow_after(), self.sender.send(frame));
             tokio::pin!(write);
             tokio::select! {
                 biased;
                 written = &mut write => Written::Done(written),
-                kick = kick_rx.recv() => {
+                kick = self.kicks.recv() => {
                     let finished = timeout(NOTICE_TIMEOUT, &mut write).await;
                     Written::Kicked(kick.map(Box::new), matches!(finished, Ok(Ok(Ok(())))))
                 }
             }
         };
         match outcome {
-            Written::Done(Ok(Ok(()))) => {}
+            Written::Done(Ok(Ok(()))) => return Ok(true),
             Written::Done(Ok(Err(error))) => return Err(Error::Control(error)),
             Written::Done(Err(_)) => {
                 crate::observe::record_slow_disconnect();
                 notify_and_close(
-                    &mut sender,
-                    &quic,
+                    &mut self.sender,
+                    &self.quic,
                     &registry::notice("control consumer too slow"),
                     registry::CLOSE_SLOW,
                     b"control consumer too slow",
                 )
                 .await;
-                break;
             }
-            Written::Kicked(Some(kick), true) => {
-                notify_and_close(&mut sender, &quic, &kick.notice, kick.code, kick.reason).await;
-                break;
-            }
+            Written::Kicked(Some(kick), true) => self.carry_out(&kick).await,
             Written::Kicked(kick, _) => {
                 if let Some(kick) = kick {
-                    quic.close(kick.code.into(), kick.reason);
+                    self.quic.close(kick.code.into(), kick.reason);
                 }
-                break;
             }
         }
+        Ok(false)
     }
-    Ok(())
+
+    /// Sends the kick's notice, then closes.
+    async fn carry_out(&mut self, kick: &Kick) {
+        notify_and_close(
+            &mut self.sender,
+            &self.quic,
+            &kick.notice,
+            kick.code,
+            kick.reason,
+        )
+        .await;
+    }
+}
+
+/// The `Hello` refusal a kick that came during sign-in stands for, by the
+/// codes of `02-protocol.md` §1.2: a ban and a revoked session are final as
+/// they are; a kick is `FORBIDDEN`, final as its close code 3 is; a shutdown
+/// or a slow-consumer close is `INTERNAL`, which the client retries.
+fn hello_refused_by(request_id: u32, kick: &Kick) -> v1::ServerEnvelope {
+    let (code, message) = match kick.code {
+        registry::CLOSE_BANNED => (v1::ErrorCode::Banned, "banned".into()),
+        registry::CLOSE_KICKED => (v1::ErrorCode::Forbidden, "kicked".into()),
+        auth::CLOSE_SIGNED_OUT => (
+            v1::ErrorCode::Unauthenticated,
+            "signed out: this session was ended".into(),
+        ),
+        _ => (
+            v1::ErrorCode::Internal,
+            String::from_utf8_lossy(kick.reason).into_owned(),
+        ),
+    };
+    v1::ServerEnvelope::error(request_id, code, message)
 }
 
 enum Written {
@@ -1567,6 +1700,42 @@ impl Drop for CloseOnDrop {
     fn drop(&mut self) {
         if self.0.close_reason().is_none() {
             self.0.close(0_u32.into(), b"session ended");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kick(code: u32, reason: &'static [u8]) -> Kick {
+        Kick {
+            notice: registry::notice("notice"),
+            code,
+            reason,
+        }
+    }
+
+    #[test]
+    fn a_kick_during_sign_in_refuses_the_hello_with_the_code_it_implies() {
+        let cases = [
+            (registry::CLOSE_KICKED, v1::ErrorCode::Forbidden),
+            (registry::CLOSE_BANNED, v1::ErrorCode::Banned),
+            (auth::CLOSE_SIGNED_OUT, v1::ErrorCode::Unauthenticated),
+            (registry::CLOSE_SHUTDOWN, v1::ErrorCode::Internal),
+            (registry::CLOSE_SLOW, v1::ErrorCode::Internal),
+        ];
+        for (close, code) in cases {
+            let refusal = hello_refused_by(7, &kick(close, b"server shutting down"));
+            assert_eq!(refusal.request_id, 7);
+            assert!(
+                matches!(
+                    &refusal.msg,
+                    Some(server_envelope::Msg::Error(error))
+                        if error.request_id == 7 && error.code == i32::from(code)
+                ),
+                "close {close}: {refusal:?}"
+            );
         }
     }
 }
