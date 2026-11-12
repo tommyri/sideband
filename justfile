@@ -59,9 +59,26 @@ plan-index-check:
 protocol-doc-check:
     python3 scripts/check-protocol-doc.py
 
-# Script tests plus both plan checks. Part of `just check`.
+# Fails when a relative link or #anchor in the repository's Markdown is broken.
+# External URLs are not checked.
+doc-links:
+    python3 scripts/check-doc-links.py
+
+# Rewrite docs/protocol/messages.md from the .proto comments.
+proto-doc:
+    python3 scripts/proto-doc.py
+
+# Fails when docs/protocol/messages.md is stale.
+proto-doc-check:
+    python3 scripts/proto-doc.py --check
+
+# Script tests plus the plan and documentation checks. Part of `just check`.
 plan-check:
     python3 scripts/plan-index.test.py
     python3 scripts/check-protocol-doc.test.py
+    python3 scripts/check-doc-links.test.py
+    python3 scripts/proto-doc.test.py
     python3 scripts/plan-index.py --check
     python3 scripts/check-protocol-doc.py
+    python3 scripts/proto-doc.py --check
+    python3 scripts/check-doc-links.py
