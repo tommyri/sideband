@@ -2,134 +2,106 @@
 
 <img src="apps/desktop/public/brand/sideband-mark.svg" alt="Sideband offset-bands logo" width="96" />
 
+Self-hosted voice and text chat for a friend group. One small server you run
+yourself, and a desktop app for Windows, macOS and Linux. Built with Rust,
+QUIC, SQLite and Tauri.
+
 Previously developed as SocialSpeak. Sideband is the working product name;
-internal `ss-*` crates, existing data locations and application IDs remain stable.
+internal `ss-*` crates, existing data locations and application IDs remain
+stable.
 
-Self-hosted voice and text chat for a friend group, built with Rust, QUIC,
-SQLite, and a Tauri desktop client for Windows, macOS, and Linux.
+**Development preview.** The goal is TeamSpeak-class voice quality with a
+richer chat experience. That comparison has not yet passed its group
+acceptance gate; this is not a production-ready release or a claim of
+measured quality parity.
 
-**Development preview.** The goal is TeamSpeak-class voice quality with a richer
-chat experience. That comparison has not yet passed its group acceptance gate;
-this is not a production-ready release or a claim of measured quality parity.
+<!-- TODO(T-064): add screenshots once taken from an installed build, under
+docs/images/ (none exist yet):
+1. A server with a voice channel in use: channel tree, members with speaking
+   rings, the voice dock.
+2. Text chat: Markdown, a reply, an attachment and a link preview.
+3. The add-server dialog at the certificate fingerprint step.
+4. Audio settings with the processing section visible.
+5. Global shortcuts with the platform status panel.
+6. Roles and permissions with a channel override.
+Use sample accounts; show no real server address, fingerprint or invite. -->
 
-## Current state
+## Features
 
-- Server: authentication, invitations, roles/permissions, channels, voice routing,
-  text/history, attachments, DMs, moderation, link previews and incoming webhooks.
-- Desktop: onboarding, voice channels and controls, audio settings, global PTT,
-  rich channel chat and per-server DMs (Markdown, mentions, typing indicators,
-  history, replies, edits/deletes, drafts, attachments, media viewing, link previews,
-  unread state and group membership), invite, webhook and channel management, roles,
-  member role assignments, channel permission overrides, server settings, searchable members,
-  timed bans/unban, filtered audit history,
-  [message search](docs/message-search.md) with filters and jump-to-message,
-  notification preferences/DND, native alerts and sound cues, guided tests, diagnostics
-  and redacted local evidence exports.
+- **Voice:** push-to-talk, voice activation or open microphone; global
+  push-to-talk, mute and deafen shortcuts that do not steal the key from a
+  game; per-person volume; Opus with three channel profiles; optional echo
+  cancellation, noise suppression and gain control, all off by default.
+- **Chat:** text channels, DMs and group DMs with Markdown, mentions, replies,
+  edits and deletes, drafts, typing indicators, attachments with media
+  viewing, link previews, unread state and [message search](docs/message-search.md).
+- **Administration:** invites, roles and permissions with channel overrides,
+  channel management, member moderation with timed bans, server settings,
+  incoming webhooks and a filtered audit log.
+- **Operations:** one static Linux binary or a container image; self-signed
+  certificates with fingerprint pinning, ACME, or your own; consistent online
+  backups; Prometheus metrics and a Grafana dashboard.
+- **Testing aids:** guided tests, live diagnostics and redacted evidence
+  exports built into the app.
+
+The server forwards encoded media; it does not decode it. QUIC encrypts the
+transport between clients and the server; this is **not end-to-end encryption
+against the server operator**.
+
+## Status
+
+- Server and desktop features above are implemented and covered by automated
+  tests.
 - Signed update packaging and opt-in installation are implemented; see the
-  [release guide](docs/release.md) for key setup and manual-only workflows.
-- Still to finish: installed signing/upgrade acceptance and the screen-sharing experience.
-- Automated tests and local macOS package checks exist. Cross-platform installed
-  app acceptance, real group listening tests and production readiness remain open.
+  [release guide](docs/release.md). Installed signing and upgrade acceptance
+  remain.
+- Screen sharing is in progress.
+- Hands-on checks on installed apps, real group listening tests and
+  production readiness remain open. Every open check is in the
+  [acceptance matrix](docs/plan/tasks/ACCEPTANCE.md); local macOS package
+  checks exist, Windows and Linux installs are not yet verified by hand.
 
-Audio processing is opt-in and off by default. The server forwards encoded media;
-it does not decode it. QUIC encrypts transport between clients and the server;
-this is **not end-to-end encryption against the server operator**.
+## Quick start
 
-## Try a testing build
-
-Download development installers from [GitHub Releases](https://github.com/tommyri/sideband/releases).
-Use [manual releases](docs/desktop-releases.md) to select operating systems and
-publish or replace a version. See [testing builds and installation](docs/testing-app.md). The manually dispatched
-**Desktop test builds** GitHub Actions workflow produces Windows x64 installers,
-macOS Apple Silicon packages, and Linux x64 deb/AppImage packages. Download an
-artifact only from a build/source you trust. Test builds are unsigned or ad-hoc
-signed; public release binaries and production signing are not promised here.
-
-A local macOS package can be built with:
-
-```sh
-node scripts/build-test-desktop.mjs --debug --bundles app
-```
-
-Install the development prerequisites below first. Debug packages are for functional
-testing, not performance acceptance. Browser-only preview screens use sample data.
-
-## Develop
-
-Use the Rust version pinned in [rust-toolchain.toml](rust-toolchain.toml), Node 26.13.0,
-pnpm 12.18.0, CMake, a C/C++ toolchain, and [just](https://github.com/casey/just).
-Nightly Rust is used only for formatting:
-
-```sh
-rustup toolchain install nightly --profile minimal --component rustfmt
-cd apps/desktop
-pnpm install --frozen-lockfile
-cd ../..
-just check
-just check-desktop
-just dev-desktop
-```
-
-Native prerequisites:
-
-- **macOS:** Xcode Command Line Tools and CMake; deployment target macOS 13+.
-- **Windows:** Visual Studio C++ build tools, CMake and WebView2.
-- **Linux:** ALSA/PipeWire development headers, Clang, CMake, WebKitGTK 4.1,
-  appindicator and the other packages that
-  [`scripts/install-linux-deps.sh desktop`](scripts/install-linux-deps.sh) installs.
-  Current Linux test packages target Ubuntu 24.04; older-distribution portability
-  has not been established.
-
-`just check-desktop` stops first, with the reason, unless Node and pnpm match
-`apps/desktop/package.json`; another pnpm rewrites the lockfile.
-
-The standard-library Python repository checks run with
-`python3 scripts/check-public-repo.py`. The public repository workflow also scans
-Git history with Gitleaks.
-
-### CI runs only when dispatched
-
-Every GitHub Actions workflow is started by hand; pushes and pull requests run
-nothing (maintainer decision, 2026-11-11). The routine gate is local: `just check`,
-plus `just check-desktop` for desktop or frontend changes. A Mac does not see
-Windows or Linux breakage or leaked secrets, so dispatch:
-
-- **CI** (`ci.yml`) on the branch before merging changes to platform code, feature
-  flags, dependencies, `deploy/` or workflows: Ubuntu, macOS and Windows checks,
-  the container and Compose smoke test, `check-deps` and `cargo deny`. The release
-  workflows also run it for the commit they publish.
-- **Public repository checks** (`public-repo.yml`) before pushing to the public
-  repository and before every release: tracked-file hygiene and the Gitleaks scan.
-- **Desktop test builds** after packaging changes, and **Fuzz** after parser changes.
-
-## Run a server
+**Run a server.** On a Linux VPS, follow the
+[self-hosting guide](docs/self-hosting.md): Docker Compose or a static binary
+with systemd, both listening on UDP 443. To try one locally from a checkout
+(prerequisites in [contributing](CONTRIBUTING.md#development-setup)):
 
 ```sh
 cargo run -p ss-server -- init --data-dir ./data
-# Edit data/config.toml before running; for local development use unprivileged
-# loopback ports, e.g. bind_quic = "127.0.0.1:4433", bind_http = "127.0.0.1:8443".
+# Edit data/config.toml: for local development use unprivileged loopback
+# ports, e.g. bind_quic = "127.0.0.1:4433", bind_http = "127.0.0.1:8443".
 cargo run -p ss-server -- run --data-dir ./data
 ```
 
-`init` prints an owner invitation and certificate fingerprint. Keep the invitation
-private and compare the fingerprint independently when connecting a client.
-`ss-server` needs a subcommand; with none it prints usage and exits. The legacy
-**unauthenticated voice spike** that `ss-cli` speaks is the explicit `spike`
-subcommand (loopback `127.0.0.1:4433` by default); never expose it.
+`init` prints an owner invite and the certificate fingerprint. Keep the
+invite private; it makes the first account an administrator.
 
-See [deployment](deploy/README.md) for systemd/Docker and
-[server diagnostics](deploy/grafana/README.md) for metrics and live connection
-inspection. Keep the internal metrics/operator listener on loopback.
+**Connect.** Install the desktop app from
+[GitHub Releases](https://github.com/tommyri/sideband/releases)
+([installation and checksums](docs/testing-app.md#install-and-identify)), then
+**Add your first server** with `host:port` (for the local server above,
+`127.0.0.1:4433` and HTTPS port `8443` under **Advanced connection options**),
+compare the fingerprint, and create your account with the invite. The
+[user guide](docs/user-guide.md) covers the rest.
 
-## Project guide
+Test builds are unsigned or ad-hoc signed. Download them only from a source
+you trust. A local macOS package can be built with
+`node scripts/build-test-desktop.mjs --debug --bundles app`; see
+[testing builds](docs/testing-app.md#build-locally).
 
-- [Architecture and implementation plan](docs/plan/00-overview.md)
-- [Task status and remaining acceptance](docs/plan/tasks/INDEX.md)
-- [Codec contract and design decisions](docs/design/README.md)
-- [Testing and evidence collection](docs/testing-app.md)
-- [Contributing](CONTRIBUTING.md)
-- [Publishing this repository](docs/publishing.md)
-- [Security reporting](SECURITY.md) and [security design](docs/security.md)
+## Documentation
+
+| For | Read |
+|---|---|
+| Using the app | [User guide](docs/user-guide.md) |
+| Running a server | [Self-hosting guide](docs/self-hosting.md), [deployment](deploy/README.md), [server diagnostics](deploy/grafana/README.md) |
+| Writing a bot or client | [Protocol reference](docs/protocol/README.md) |
+| Contributing | [Contributing](CONTRIBUTING.md), [engineering conventions](docs/plan/04-conventions.md), [task index](docs/plan/tasks/INDEX.md) |
+| Design | [Architecture and plan](docs/plan/00-overview.md), [design decisions and codec contract](docs/design/README.md) |
+| Testing and releases | [Testing builds and evidence](docs/testing-app.md), [desktop releases](docs/desktop-releases.md), [release guide](docs/release.md), [publishing](docs/publishing.md) |
+| Security | [Reporting](SECURITY.md), [security design](docs/security.md) |
 
 ## License
 

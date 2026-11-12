@@ -120,6 +120,14 @@ jobs:
           python3 scripts/check-protocol-doc.test.py
           python3 scripts/plan-index.py --check
           python3 scripts/check-protocol-doc.py
+      # Relative links and anchors only; external URLs are not fetched.
+      - name: Documentation links and protocol reference
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/check-doc-links.test.py
+          python3 scripts/proto-doc.test.py
+          python3 scripts/proto-doc.py --check
+          python3 scripts/check-doc-links.py
       - name: Dependency graph
         if: runner.os == 'Linux'
         run: |

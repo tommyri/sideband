@@ -12,45 +12,14 @@ Audio settings (T-051), global shortcuts (T-058), and guided reports (T-076)
 are available.
 The browser-only design preview still contains sample data.
 
-Sessions and server order survive restarting the app. Select a saved server,
-choose **Reconnect / log in**, then **Reconnect with saved session** after
-the server check. Automatic reconnect handles temporary outages while the
-app remains open. **Remove server** forgets its session on this computer;
-it does not delete the account on the server. The native app-data directory
-contains private JSON session and pin files, not an encrypted keychain.
-Passwords are never saved. Do not include `sessions.json` in test reports.
-Open **Audio settings** from the server page, channel sidebar or call gear to
-choose devices and talking mode, then **Apply settings**. Settings persist and
-apply to an active call without leaving it. Defaults use system devices, PTT,
-and no processing. Open mic and voice activation can transmit without holding
-a button once applied; mute/deafen still close transmission.
-
-Click a voice channel to join. In PTT mode, hold **Hold to talk** with the mouse, or Space/Enter while it is focused, to transmit. Releasing,
-losing focus, muting or deafening closes transmission. Use **Leave** to leave
-voice or **Disconnect** to close the server connection. Ctrl/Cmd+Shift+M toggles mute; Ctrl/Cmd+Shift+Alt+D toggles deafen; Ctrl/Cmd+Shift+Up/Down select channels. Interaction settings offer
-double-click joining. Member menus expose playback and permitted moderation.
-The displayed latency is network RTT, not mouth-to-ear latency.
-
-For global PTT/mute/deafen, open **Audio settings → Global shortcuts**. Capture
-separate keys or mouse buttons, then **Save shortcuts**. Capture may request input
-permission; no listener starts automatically while saved bindings are empty.
-On Wayland, use system-managed shortcuts when the portal owns bindings. The
-screen reports capabilities and limitations; Linux evdev fallback requires
-explicit opt-in and user-managed device access. Global PTT uses the selected
-PTT transmission mode; it does not turn off VAD/open mic.
-
-Password fields and binding capture suspend the listener and immediately release
-PTT. The tray mirrors mute/deafen. The last ten semantic input events are shown
-locally for troubleshooting, without recording typed text or uploading anything.
-After fixing permissions, choose **Retry saved bindings**. The in-app custom
-binding remains available when global PTT is not configured. Actual gaming,
-permission/revocation and compositor behavior still need the T-058 manual matrix.
-
-Outside a call, **Test mic** provides 10 seconds of local raw microphone playback
-with a 1-second delay (use headphones), **Test output** plays a cue, and VAD
-auto-calibration listens to 2 seconds of background noise. Tests stop on close
-or **Stop test**, and do not send audio to a server. Device switching speed,
-permission flows and audible quality still need real-machine validation.
+How to add a server, talk, set up audio and push-to-talk, and use the
+keyboard shortcuts is in the [user guide](user-guide.md). Sessions and server
+order survive restarting the app. The native app-data directory contains
+private JSON session and pin files, not an encrypted keychain. Passwords are
+never saved. Do not include `sessions.json` in test reports. Actual gaming,
+permission/revocation and compositor behavior still need the T-058 manual
+matrix; device switching speed, permission flows and audible quality still
+need real-machine validation.
 
 ## Live diagnostics
 

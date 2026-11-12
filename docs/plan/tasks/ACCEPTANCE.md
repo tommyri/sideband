@@ -104,6 +104,7 @@ with the server on the VPS.
 | Load validation (2 h soak, 100 users with `perf`, worker threads, storms, UDP buffer errors, RSS); includes T-094's datagram latency rerun | [T-069](T-069-vps-load-validation.md) | – | – | – | VPS open |
 | Backup and restore with ownership recorded; renewal hook with a real certificate; `nginx -t` with `limit_req_zone` and `upstream` | [T-098](T-098-deploy-ci-hygiene.md) | – | – | – | VPS open |
 | Grafana/Prometheus dashboard imported into a running deployment | [T-063](T-063-diagnostics.md) | – | – | – | VPS open |
+| Someone unfamiliar with the project follows `docs/self-hosting.md` on a fresh VPS and connects a desktop client (note who and when) | [T-064](T-064-documentation.md) | – | – | – | VPS open |
 | One hour per fuzz target; second-person review of `docs/security.md`; MPL-2.0 exception decision | [T-067](T-067-security-acceptance.md) | – | – | – | open |
 
 ## Release and GitHub (maintainer)
