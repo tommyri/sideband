@@ -17,7 +17,9 @@ port UDP 443 (configurable). HTTPS on TCP 443 for REST.
 2. Client opens **one bidirectional stream**: the *control stream*. All control
    messages flow here, both directions, for the life of the connection.
 3. First client message must be `Hello`. Server replies `Welcome` or `Error`
-   and closes.
+   and closes. The reply is the first frame the server sends: events, a
+   kick or a revoked session that reach the connection while it signs in
+   follow the `Welcome`.
 4. Media: QUIC **datagrams** (audio) and **unidirectional streams** (video,
    phase 5). Clients must negotiate `max_datagram_frame_size`; server rejects
    connections without datagram support.
