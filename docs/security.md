@@ -490,23 +490,22 @@ nightly used for fuzzing, the `cargo-deny` and `cargo-fuzz` versions that
 `taiki-e/install-action` installs (the newest, unpinned), the runner images, or
 the NSIS and WiX tools that Tauri downloads while bundling.
 
-Release signing keys are kept out of jobs that build dependencies, with one
-exception: Windows code signing (see `docs/release.md`, "Release gates").
-Tauri signs the app, the NSIS plugins and uninstaller, and both installers
-while bundling, so the Windows build job imports the certificate into the
-runner user's store before any dependency code runs. No dependency step
-gets the PFX or its password. Every later step of that job runs with the
-key in the store: `pnpm install` with its install scripts, the desktop tests, and
-`tauri build` (the frontend build, build scripts and proc macros). Any of
-them can sign arbitrary files with the release certificate until the job
-ends. The key is imported non-exportable, but that flag is enforced inside
-the Windows crypto libraries, and code running as the same user (an
-administrator) can bypass it, so assume it can export the key too. The
-updater key, the Apple credentials and the server release have no such
-step. The fix is a separate signing job that bundles the unsigned build
-(T-110's notes). Until then, a compromised npm or crates.io dependency that
-runs in that job can obtain Windows signatures, or the key, under
-Sideband's certificate.
+Release signing keys are kept out of every job that installs or builds
+dependencies. The platform build jobs are in no environment and get no secret.
+Windows code signing has its own job since T-111 (see `docs/release.md`,
+"Windows"): the build runs `tauri build --no-bundle` without the certificate,
+and `windows-signing`, on a fresh runner, checks the uploaded executable before
+any secret, imports the PFX, and runs `tauri bundle`, which signs the
+executable, the NSIS plugins, the uninstaller and both installers. That job runs
+no package manager, `cargo build` or dependency script. The only third-party
+code it runs after the import is the Tauri CLI, fetched as the two tarballs
+`apps/desktop/pnpm-lock.yaml` pins and checked against their sha512 integrity,
+`cargo metadata --no-deps`, signtool, and the NSIS and WiX tools Tauri downloads
+and checks by hash. The key is imported non-exportable, which code running as
+the same administrator user could bypass, so the protection is that nothing
+from the build runs in that job. As for macOS and the updater key, the job signs
+whatever the build produced: a compromised npm or crates.io dependency can still
+ship code inside a signed release, but it cannot use or take the key.
 
 ## 12. Known gaps
 
@@ -514,10 +513,10 @@ Sideband's certificate.
   `fuzz.yml` has never been dispatched. Tracked as T-067.
 - Files saved from chat carry no download mark on Linux, which has no
   equivalent. macOS and Windows mark them (T-104).
-- Windows release signing imports the certificate for the whole Windows
-  build job, so `pnpm install` scripts, the desktop tests and `tauri build`
-  can all sign with it; assume they could export it too (section 11). Moving
-  signing to its own job is T-111.
+- The `windows-signing` job (section 11, T-111) has not run on GitHub yet.
+  Until a dispatched test build passes `signtool verify /pa` on the
+  executable, the uninstaller and both installers, Windows signing is
+  unverified.
 - RUSTSEC-2026-0459 (bundled SQLite before 3.54) is ignored in `deny.toml`
   until `sqlx` allows `libsqlite3-sys` 0.39; review by 2027-02-11 (section
   11, T-110).

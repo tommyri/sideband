@@ -228,7 +228,7 @@ the follow-ups wave 6 found:
 | [T-108](T-108-desktop-followups.md) | Desktop follow-ups from the review waves | S | T-096, T-105 | awaiting-acceptance |
 | [T-109](T-109-server-followups.md) | Server follow-ups from the review waves | S | T-094 | done |
 | [T-110](T-110-ci-release-followups.md) | CI, fuzzing and release follow-ups | S | T-097, T-098 | awaiting-acceptance |
-| [T-111](T-111-windows-signing-job.md) | Sign Windows releases in their own job | M | T-110 | todo |
+| [T-111](T-111-windows-signing-job.md) | Sign Windows releases in their own job | M | T-110 | awaiting-acceptance |
 | [T-112](T-112-channel-welcome-budget.md) | Cap channels so one member cannot fill the Welcome | S | T-109 | done |
 | [T-113](T-113-mention-count-at-sign-in.md) | Count a mention once when it arrives during sign-in | S | T-107, T-109 | done |
 | [T-114](T-114-migration-rebuild-trigger.md) | Rebuild the server when a migration is added | S | T-109 | done |
