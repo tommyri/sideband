@@ -1,12 +1,15 @@
 import type { ApiError, ProbeInput } from '../../lib/bindings'
 
+/** `ss_net::DEFAULT_PORT`: QUIC on UDP and HTTPS on TCP, as `ss-server init` writes. */
+export const DEFAULT_PORT = 443
+
 export function parseAddress(value: string, httpsPort?: string): ProbeInput {
   const raw = value.trim().replace(/^ss:\/\//i, '')
   if (!raw || /[\s/@?#]/.test(raw) || raw.includes('://'))
     throw new Error('Enter a host, host:port, or ss://host:port.')
   const match = raw.match(/^(\[[a-f\d:]+\]|[^:]+)(?::(\d+))?$/i)
   if (!match || !match[1]) throw new Error('Use [IPv6]:port for an IPv6 address.')
-  const port = Number(match[2] ?? 5781)
+  const port = match[2] ? Number(match[2]) : DEFAULT_PORT
   const https = httpsPort ? Number(httpsPort) : port
   if (![port, https].every((p) => Number.isInteger(p) && p > 0 && p <= 65535))
     throw new Error('Ports must be between 1 and 65535.')

@@ -1,8 +1,9 @@
 # Installing Sideband
 
 Two ways onto a VPS: a static binary with the systemd unit, or
-`docker compose up`. Both listen for QUIC on UDP 443. A fresh machine
-should be serving within a few minutes of the download.
+`docker compose up`. Both listen for QUIC on UDP 443 and HTTPS on TCP 443.
+Clients use one port number for both, so people can enter just the host name.
+A fresh machine should be serving within a few minutes of the download.
 
 Tags named `server-v*` carry `ss-server-x86_64-unknown-linux-musl` and
 `ss-server-aarch64-unknown-linux-musl`. Neither binary needs glibc.
@@ -20,8 +21,9 @@ sudo journalctl -u socialspeak -n 40
 The unit uses `DynamicUser` and stores the database under
 `/var/lib/socialspeak`. Optional overrides go in `/etc/socialspeak.env`
 (`SS_SERVER_NAME`, `SS_PUBLIC_HOST`, `SS_TLS_MODE`, and the other `SS_*`
-keys from `config.toml`). The first start writes that config and prints
-the owner invite and certificate fingerprint in the journal.
+keys from `config.toml`). The first start writes that config
+(`bind_quic` and `bind_http` both on port 443) and prints the owner invite
+and certificate fingerprint in the journal.
 
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` lets the dynamic user bind
 port 443. Do not run the process as root. If the service dies before it
@@ -136,8 +138,8 @@ the existing `deploy_socialspeak` volume. Do not use `down -v` during migration.
 
 5. Verify `curl --fail https://sideband.example.com/api/v1/server` and
    `curl --fail http://127.0.0.1:9101/healthz`. Open UDP 443 in the firewall and
-   connect the desktop app to `sideband.example.com:443` with both client ports set to
-   443. Public traffic is HTTPS at NGINX; its HTTPS upstream also validates the
+   connect the desktop app to `sideband.example.com`; it uses 443 for both QUIC
+   and HTTPS. Public traffic is HTTPS at NGINX; its HTTPS upstream also validates the
    hostname and certificate chain. Keep metrics out of the NGINX site.
 
 Updated clients use normal hostname/CA validation for public certificates; renewal
@@ -230,9 +232,12 @@ Relative paths are inside the data directory.
 HTTPS `bind_http` port. Do not set `bind_http` itself to port 80. The
 legacy `http_redirect` setting remains accepted for old config files but
 is no longer needed.
-`challenge = "tls-alpn-01"` also accepts TCP on the QUIC port for
-`acme-tls/1`. QUIC still needs UDP. The cache is `tls/acme/`. The
-issued leaf is used by both QUIC and HTTPS.
+`challenge = "tls-alpn-01"` answers the CA's `acme-tls/1` handshake on TCP
+at the QUIC port, which the CA reaches as TCP 443. With `bind_http` on that
+port (the default) the HTTPS listener answers it; otherwise a separate
+listener binds TCP on `bind_quic`. Either way the validation connection
+closes after its handshake. QUIC still needs UDP. The cache is `tls/acme/`.
+The issued leaf is used by both QUIC and HTTPS.
 
 ## Backup and restore
 
@@ -319,7 +324,10 @@ Use `-f deploy/docker-compose.nginx.yml` throughout for the NGINX variant.
 Migrations run on the next start.
 
 Binary: replace `/usr/local/bin/ss-server`, then
-`sudo systemctl restart socialspeak`.
+`sudo systemctl restart socialspeak`. An existing `config.toml` is never
+rewritten: one written by an older `init` keeps `bind_http = "0.0.0.0:4430"`.
+Move it to 443 or keep telling clients that HTTPS port; see
+[upgrading from an older release](../docs/self-hosting.md#3-ports).
 
 Image: `docker compose -f deploy/docker-compose.yml pull`, followed by
 `docker compose -f deploy/docker-compose.yml up -d`.
@@ -328,9 +336,10 @@ The volume keeps the database.
 ## Next to TeamSpeak
 
 TeamSpeak's default voice port is UDP 9987. Sideband's is UDP 443.
-They can share a host. If 443 is already taken, set `bind_quic` (or
-`SS_BIND_QUIC`) to another UDP port, publish that port, and open it in
-the firewall. Point clients at the port you chose. Do not move
+They can share a host. If 443 is already taken, set `bind_quic` and
+`bind_http` (or `SS_BIND_QUIC` and `SS_BIND_HTTP`) to one other port,
+publish it on UDP and TCP, and open both in the firewall. Point clients at
+`host:port`; they use that port for QUIC and HTTPS. Do not move
 Sideband onto 9987 just to share a number; the protocols are not
 interchangeable.
 

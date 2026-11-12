@@ -1,5 +1,6 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { searchForWorkspaceRoot } from 'vite'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -9,6 +10,8 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: '127.0.0.1',
+    // The onboarding test reads the server's default port from the Rust source.
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), '../../crates/ss-net/src'] },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_'],
   build: {

@@ -255,7 +255,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
               <input
                 required
                 disabled={pending}
-                placeholder="ss://friends.example:5781"
+                placeholder="friends.example"
                 value={address}
                 onChange={(e) => editAddress(e.target.value)}
               />

@@ -54,20 +54,25 @@ drops bursts of packets under load.
 | Purpose | Protocol | Setting (`config.toml`) | Environment | Written by `init` | Compose files | Public? |
 |---|---|---|---|---|---|---|
 | Voice and control (QUIC) | UDP | `server.bind_quic` | `SS_BIND_QUIC` | `0.0.0.0:443` | `0.0.0.0:443` | Yes |
-| HTTPS API: history, uploads, server info | TCP | `server.bind_http` | `SS_BIND_HTTP` | `0.0.0.0:4430` | `0.0.0.0:443` | Yes |
+| HTTPS API: history, uploads, server info | TCP | `server.bind_http` | `SS_BIND_HTTP` | `0.0.0.0:443` | `0.0.0.0:443` | Yes |
 | Health, metrics, connection list | TCP, plain HTTP | `internal.bind` | `SS_INTERNAL_BIND` | `127.0.0.1:9101` | published on host `127.0.0.1:9101` | **Never** |
 | ACME HTTP-01 challenge | TCP | only with `tls.mode = "acme"` and `challenge = "http-01"` | | port 80 | optional override file | Yes, while used |
 
-Two defaults trip people up:
+**One port number, both transports.** QUIC uses it on UDP and HTTPS on TCP.
+The app uses 443 when an address has no port, and otherwise uses the port
+given for both, so people can type just `voice.example.com`. If you move the
+server, move `bind_quic` and `bind_http` to the same new port and give people
+`host:port`. Only if HTTPS has to stay on another port does everyone need to
+enter it as the HTTPS port in the app's **Advanced connection options**.
 
-- **The systemd unit serves HTTPS on TCP 4430**, because that is what
-  `ss-server init` writes, while the firewall commands in the deployment guide
-  open TCP 443. Either put `SS_BIND_HTTP=0.0.0.0:443` in
-  `/etc/socialspeak.env` (then QUIC and HTTPS share port 443, as in the Compose
-  files), or open TCP 4430 and have everyone enter `4430` as the HTTPS port in
-  the app's **Advanced connection options**.
-- **The desktop app assumes port 5781** when an address has no port. Always
-  give people the full `host:port`, for example `voice.example.com:443`.
+**Upgrading from an older release:** `ss-server init` used to write
+`bind_http = "0.0.0.0:4430"`, and an existing `config.toml` is never
+rewritten. Check yours (`sudo cat /var/lib/socialspeak/config.toml` under
+systemd). Either move HTTPS to 443 (edit the file, or put
+`SS_BIND_HTTP=0.0.0.0:443` in `/etc/socialspeak.env`), open TCP 443 and
+restart, or keep 4430 and keep telling people to set it as the HTTPS port.
+The Compose files already set both to 443. Servers already saved in the app
+keep the ports they were added with.
 
 To use other ports (for example next to a web server or TeamSpeak), see
 [next to TeamSpeak](../deploy/README.md#next-to-teamspeak). Open the ports in
@@ -144,7 +149,7 @@ Pick one `tls.mode`:
 | Mode | Use it when | What clients do |
 |---|---|---|
 | `self-signed` (default) | No domain, or you are happy to share a fingerprint | Show the fingerprint on first connect and pin it; warn loudly if it ever changes |
-| `acme` | The server has a DNS name pointing straight at it, and TCP 80 (HTTP-01) or the QUIC port on TCP (TLS-ALPN-01) is free | Validate the hostname and CA chain; renewals need no action |
+| `acme` | The server has a DNS name pointing straight at it, and TCP 80 (HTTP-01) or TCP 443 (TLS-ALPN-01) reaches it | Validate the hostname and CA chain; renewals need no action |
 | `files` | You already manage certificates, for example with Certbot behind NGINX | As `acme` when the certificate is publicly trusted |
 
 Details of each mode, reloading and rotation are in

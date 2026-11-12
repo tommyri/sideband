@@ -34,7 +34,7 @@ use hyper_util::{
 };
 use serde_json::json;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::TcpListener,
     sync::Semaphore,
 };
@@ -222,6 +222,14 @@ async fn serve_with_acceptor(
         connections.spawn(async move {
             if let Some(acceptor) = acceptor {
                 match tokio::time::timeout(limits.header_timeout, acceptor.accept(stream)).await {
+                    // A TLS-ALPN-01 validation only needs the handshake.
+                    Ok(Ok(mut stream))
+                        if stream.get_ref().1.alpn_protocol()
+                            == Some(crate::tls::ACME_TLS_ALPN) =>
+                    {
+                        let _ =
+                            tokio::time::timeout(limits.header_timeout, stream.shutdown()).await;
+                    }
                     Ok(Ok(stream)) => drive(stream, service, limits).await,
                     Ok(Err(error)) => tracing::debug!(%error, "tls handshake rejected"),
                     Err(_) => tracing::debug!("tls handshake timed out"),

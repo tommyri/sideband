@@ -6,8 +6,11 @@
 //! stays bound.
 //!
 //! The ACME cache (`tls/acme`, which holds the certificate key) is owner-only.
-//! The `tls-alpn-01` listener has the public listener's per-address cap and
-//! handshake deadline, and closes each connection after its handshake.
+//! `tls-alpn-01` is answered on TCP at the QUIC port. When `bind_http` already
+//! listens there (the `init` default), the HTTPS listener also offers
+//! `acme-tls/1`; otherwise a separate listener does, with the public
+//! listener's per-address cap and handshake deadline. Either way a validation
+//! connection closes after its handshake.
 
 use std::{
     future::Future,
@@ -51,7 +54,7 @@ use crate::{
 };
 
 /// ALPN protocol of a TLS-ALPN-01 validation handshake (RFC 8737).
-const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
+pub(crate) const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
 type FingerprintSlot = Arc<ArcSwap<Option<Fingerprint>>>;
 
@@ -61,6 +64,7 @@ pub struct Identity {
     fingerprint: FingerprintSlot,
     challenge: Router,
     redirect: Option<(SocketAddr, Router)>,
+    alpn_on_https: bool,
     stop: Arc<AtomicBool>,
 }
 
@@ -69,6 +73,8 @@ struct Loaded {
     fingerprint: FingerprintSlot,
     challenge: Router,
     redirect: Option<(SocketAddr, Router)>,
+    /// The HTTPS listener answers TLS-ALPN-01 (it shares the QUIC port).
+    alpn_on_https: bool,
 }
 
 impl Identity {
@@ -79,9 +85,17 @@ impl Identity {
 
     /// Rustls configuration for the public HTTPS listener. The resolver is
     /// shared with QUIC, so certificate reloads affect new handshakes on both
-    /// transports without rebinding either socket.
+    /// transports without rebinding either socket. With `tls-alpn-01` on the
+    /// HTTPS port it also offers `acme-tls/1`, which the shared ACME resolver
+    /// answers with the challenge certificate.
     pub fn https_config(&self) -> Arc<rustls::ServerConfig> {
-        https_config(self.resolver())
+        let config = https_config(self.resolver());
+        if !self.alpn_on_https {
+            return config;
+        }
+        let mut config = Arc::unwrap_or_clone(config);
+        config.alpn_protocols.push(ACME_TLS_ALPN.to_vec());
+        Arc::new(config)
     }
 
     /// Leaf offered to the next handshake.
@@ -142,6 +156,7 @@ pub async fn prepare(config: &Config, data_dir: &Path) -> Result<Identity, Error
         fingerprint: loaded.fingerprint,
         challenge: loaded.challenge,
         redirect: loaded.redirect,
+        alpn_on_https: loaded.alpn_on_https,
         stop,
     })
 }
@@ -227,6 +242,7 @@ fn loaded(resolver: Arc<CertResolver>, fingerprint: FingerprintSlot) -> Loaded {
         fingerprint,
         challenge: Router::new(),
         redirect: None,
+        alpn_on_https: false,
     }
 }
 
@@ -264,6 +280,17 @@ async fn acme(config: &Config, data_dir: &Path, stop: &Arc<AtomicBool>) -> Resul
     );
     let loaded = match config.tls.challenge {
         AcmeChallenge::Http01 => http01_routes(&resolver, config, &fingerprint)?,
+        AcmeChallenge::TlsAlpn01
+            if shares_tcp_port(config.server.bind_quic, config.server.bind_http) =>
+        {
+            Loaded {
+                quic: resolver,
+                fingerprint: Arc::clone(&fingerprint),
+                challenge: Router::new(),
+                redirect: None,
+                alpn_on_https: true,
+            }
+        }
         AcmeChallenge::TlsAlpn01 => {
             let listener = TcpListener::bind(config.server.bind_quic).await?;
             let stopped = Arc::clone(stop);
@@ -282,6 +309,7 @@ async fn acme(config: &Config, data_dir: &Path, stop: &Arc<AtomicBool>) -> Resul
                 fingerprint: Arc::clone(&fingerprint),
                 challenge: Router::new(),
                 redirect: None,
+                alpn_on_https: false,
             }
         }
     };
@@ -297,6 +325,13 @@ async fn acme(config: &Config, data_dir: &Path, stop: &Arc<AtomicBool>) -> Resul
         }
     });
     Ok(loaded)
+}
+
+/// Whether a TCP listener on `quic` would take the port `http` listens on:
+/// the same port, and the same address or a wildcard on either side.
+fn shares_tcp_port(quic: SocketAddr, http: SocketAddr) -> bool {
+    quic.port() == http.port()
+        && (quic.ip() == http.ip() || quic.ip().is_unspecified() || http.ip().is_unspecified())
 }
 
 /// Creates `dir` and any missing parent owner-only, and narrows `dir` if it
@@ -350,6 +385,7 @@ fn http01_routes(
         fingerprint: Arc::clone(fingerprint),
         challenge,
         redirect,
+        alpn_on_https: false,
     })
 }
 
@@ -734,14 +770,24 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use std::net::SocketAddr;
+
     use rustls_acme::{CertCache, caches::DirCache};
     use ss_net::tls::CertResolver;
-    use tokio::{io::AsyncReadExt, net::TcpStream, time::timeout};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+        time::timeout,
+    };
 
     use super::{
-        cached_fingerprint, cert_file_name, challenge_config, private_dir, serve_challenges,
+        ACME_TLS_ALPN, cached_fingerprint, cert_file_name, challenge_config, private_dir,
+        serve_challenges,
     };
-    use crate::{config::ACME_DIRECTORY, http::hardening::ServeLimits};
+    use crate::{
+        config::{ACME_DIRECTORY, AcmeChallenge, TlsMode},
+        http::hardening::ServeLimits,
+    };
 
     #[tokio::test]
     async fn idle_alpn_connections_close_at_the_handshake_deadline_and_are_capped_per_address() {
@@ -834,6 +880,100 @@ mod tests {
             .path()
             .join(cert_file_name("other.example.com", ACME_DIRECTORY));
         assert_eq!(cached_fingerprint(&missing), None);
+    }
+
+    /// `init` puts HTTPS on the QUIC port number, and TLS-ALPN-01 answers on
+    /// TCP at the QUIC port. With those defaults the HTTPS listener must
+    /// answer the challenge itself instead of a second listener on its port.
+    #[tokio::test]
+    async fn tls_alpn_01_on_the_init_ports_leaves_the_https_port_to_the_https_listener() {
+        ss_net::tls::install_default_crypto_provider();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::parse(crate::config::TEMPLATE).unwrap();
+        assert_eq!(
+            config.server.bind_quic.port(),
+            config.server.bind_http.port(),
+            "this test expects init to share one port"
+        );
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        config.server.bind_quic = SocketAddr::from(([127, 0, 0, 1], port));
+        config.server.bind_http = config.server.bind_quic;
+        config.server.public_host = "sideband.example.com".to_owned();
+        config.tls.mode = TlsMode::Acme;
+        config.tls.challenge = AcmeChallenge::TlsAlpn01;
+        config.tls.acme_email = "ops@example.com".to_owned();
+        // Unreachable: no order completes, which this test does not need.
+        config.tls.acme_directory = "https://127.0.0.1:9/directory".to_owned();
+        let identity = super::prepare(&config, dir.path()).await.unwrap();
+        let https = tokio::net::TcpListener::bind(config.server.bind_http).await;
+        assert!(
+            https.is_ok(),
+            "TCP {} was bound twice: {:?}",
+            config.server.bind_http,
+            https.err()
+        );
+        assert!(
+            identity
+                .https_config()
+                .alpn_protocols
+                .contains(&ACME_TLS_ALPN.to_vec()),
+            "the HTTPS listener does not answer acme-tls/1"
+        );
+    }
+
+    /// A validation handshake on the HTTPS listener ends after the handshake;
+    /// the connection never reaches the HTTP routes.
+    #[tokio::test]
+    async fn the_https_listener_closes_an_acme_tls_handshake_without_serving_http() {
+        ss_net::tls::install_default_crypto_provider();
+        let dir = tempfile::tempdir().unwrap();
+        let identity = ss_net::tls::generate_self_signed(dir.path()).await.unwrap();
+        let resolver = Arc::new(CertResolver::new(identity).unwrap());
+        let fingerprint = resolver.fingerprint();
+        let mut offered = Arc::unwrap_or_clone(super::https_config(resolver));
+        offered.alpn_protocols.push(ACME_TLS_ALPN.to_vec());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let served = tokio::spawn(crate::http::hardening::serve_tls(
+            listener,
+            axum::Router::new().fallback(|| async { "served" }),
+            Arc::new(offered),
+            async move {
+                let _ = stop_rx.await;
+            },
+        ));
+
+        let mut client = ss_net::client::tls_config(ss_net::pins::TrustPolicy::PinnedCertificate {
+            fingerprint,
+        })
+        .unwrap();
+        client.alpn_protocols = vec![ACME_TLS_ALPN.to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut tls = connector.connect(name, tcp).await.unwrap();
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(ACME_TLS_ALPN));
+        let _ = tls
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut response = Vec::new();
+        let _ = timeout(Duration::from_secs(2), tls.read_to_end(&mut response))
+            .await
+            .expect("the validation connection stayed open");
+        assert!(
+            !String::from_utf8_lossy(&response).contains("200"),
+            "an acme-tls/1 connection reached the HTTP routes"
+        );
+        let _ = stop_tx.send(());
+        timeout(Duration::from_secs(2), served)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[cfg(unix)]

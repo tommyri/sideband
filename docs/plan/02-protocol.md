@@ -1,7 +1,11 @@
 # Wire protocol v1
 
 Everything on one QUIC connection per client. ALPN `socialspeak/1`. Default
-port UDP 443 (configurable). HTTPS on TCP 443 for REST.
+port 443 (`ss_net::DEFAULT_PORT`): QUIC on UDP and REST over HTTPS on TCP.
+Both are configurable. A client uses one port number for both: 443 when the
+address has none, otherwise the port given, unless it is told a separate
+HTTPS port. The server does not announce its HTTPS port, because a client
+reads `GET /api/v1/server` before it opens QUIC.
 
 ## 1. Connection lifecycle
 
