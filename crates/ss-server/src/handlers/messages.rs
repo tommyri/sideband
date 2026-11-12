@@ -33,6 +33,7 @@ const EVERYONE: &str = "@everyone";
 /// Text commands for one process.
 pub struct Messages {
     perms: Arc<PermissionService>,
+    bus: EventBus,
     sends: KeyedLimiter<Id>,
     typing: KeyedLimiter<(Id, Id)>,
     previews: PreviewQueue,
@@ -44,6 +45,7 @@ impl Messages {
     pub fn new(perms: Arc<PermissionService>, pool: Arc<db::Pool>, bus: EventBus) -> Self {
         Self {
             perms,
+            bus: bus.clone(),
             sends: KeyedLimiter::new(quota(SEND_BURST, Duration::from_secs(5))),
             typing: KeyedLimiter::new(quota(1, Duration::from_secs(5))),
             previews: PreviewQueue::new(pool, bus),
@@ -55,14 +57,21 @@ impl Messages {
         self.previews.clone()
     }
 
-    /// Dispatches a text command. Other messages return `None`.
+    /// Dispatches a text command from connection `origin`. Other messages
+    /// return `None`.
+    ///
+    /// `SendMessage` publishes its `MessageCreated` itself, under the bus
+    /// hold (see [`crate::events`]); the reply still carries it for `origin`.
     pub async fn dispatch(
         &self,
         actor: Id,
+        origin: Id,
         msg: &v1::client_envelope::Msg,
     ) -> Option<Result<CommandReply, Error>> {
         match msg {
-            v1::client_envelope::Msg::SendMessage(command) => Some(self.send(actor, command).await),
+            v1::client_envelope::Msg::SendMessage(command) => {
+                Some(self.send(actor, origin, command).await)
+            }
             v1::client_envelope::Msg::EditMessage(command) => Some(self.edit(actor, command).await),
             v1::client_envelope::Msg::DeleteMessage(command) => {
                 Some(self.delete(actor, command).await)
@@ -75,7 +84,12 @@ impl Messages {
         }
     }
 
-    async fn send(&self, actor: Id, command: &v1::SendMessage) -> Result<CommandReply, Error> {
+    async fn send(
+        &self,
+        actor: Id,
+        origin: Id,
+        command: &v1::SendMessage,
+    ) -> Result<CommandReply, Error> {
         let channel_id = required_id(&command.channel_id, "channel id must be 16 bytes")?;
         let content = body(&command.content, !command.attachment_ids.is_empty())?;
         let nonce = nonce(command.nonce.as_deref())?;
@@ -128,6 +142,9 @@ impl Messages {
         self.sends
             .check(&actor)
             .map_err(|wait| Error::RateLimited("sending messages too quickly", wait))?;
+        // From the commit to the publish, so a session signing in either
+        // counts this message in its snapshot or receives it, not both.
+        let hold = self.bus.hold().await;
         let id = Id::generate();
         let message = NewMessage {
             id,
@@ -149,6 +166,12 @@ impl Messages {
             attachments::set_message(&mut conn, file.id, Some(id)).await?;
         }
         let wire = to_proto(&mut conn, &stored).await?;
+        let event = server_envelope::Msg::MessageCreated(v1::MessageCreated {
+            message: Some(wire),
+            nonce,
+        });
+        self.bus.publish(Some(origin), event.clone());
+        drop(hold);
         drop(conn);
         self.previews.enqueue(PreviewJob {
             message_id: id,
@@ -156,10 +179,7 @@ impl Messages {
         });
         Ok(CommandReply {
             ack: ack::Result::MessageId(id_to_bytes(id)),
-            events: vec![server_envelope::Msg::MessageCreated(v1::MessageCreated {
-                message: Some(wire),
-                nonce,
-            })],
+            events: vec![event],
         })
     }
 
