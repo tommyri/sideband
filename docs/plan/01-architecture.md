@@ -98,7 +98,11 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
   in its own bounded queue. Each command runs on its own task so the session
   keeps draining the bus meanwhile; the task publishes the command's events
   and runs to the end even if its connection closes, so a commit is never
-  left without its permission reload or its event. A session that falls behind the bus, or
+  left without its permission reload or its event. A new message is
+  committed and published under the bus's exclusive hold, and a session
+  signing in fixes its snapshot read point and subscribes under the shared
+  side, so each message is either counted in the `Welcome` or delivered
+  after it, never both (T-113). A session that falls behind the bus, or
   whose queue for frames addressed to it by other tasks fills, is closed and
   resyncs from `Welcome`; no frame is dropped on an open connection. DM
   channel events are applied from the event by that DM's members only; role,
