@@ -14,6 +14,7 @@ const view = {
   ownUserId: 'me',
   members: [],
   directMessages: [],
+  moreDirectMessages: false,
   channels: [{ id: 'channel', name: 'general', kind: 2 }],
 } as unknown as ServerView
 const row: SearchResult = {

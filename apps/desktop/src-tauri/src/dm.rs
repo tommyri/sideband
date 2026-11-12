@@ -196,6 +196,17 @@ async fn perform(state: &AppState, server: &str, action: DmAction) -> Result<DmR
         warning,
     })
 }
+/// Load the next page of older conversations (`ListDms`) into the client
+/// state. Returns whether more remain; the webview then rereads the server
+/// view, which lists them.
+#[tauri::command]
+pub async fn load_dms(state: State<'_, AppState>, server_id: String) -> Result<bool, ApiError> {
+    let server = parse_server_id(&server_id)?;
+    let client = state
+        .client(&server)
+        .ok_or_else(|| ApiError::new("disconnected", "That server is not connected."))?;
+    client.list_dms().await.map_err(api_error)
+}
 fn valid_name(name: &str) -> Result<String, ApiError> {
     let name = name.trim();
     if name.chars().count() > 64 || name.chars().any(char::is_control) {

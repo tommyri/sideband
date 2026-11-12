@@ -225,7 +225,7 @@ the follow-ups wave 6 found:
 |---|---|---|---|---|
 | [T-106](T-106-review-decisions.md) | Decide the questions the review waves left open | S | — | todo |
 | [T-107](T-107-client-transport-cli-followups.md) | Client transport and CLI follow-ups from the review waves | M | T-089, T-101 | done |
-| [T-108](T-108-desktop-followups.md) | Desktop follow-ups from the review waves | S | T-096, T-105 | todo |
+| [T-108](T-108-desktop-followups.md) | Desktop follow-ups from the review waves | S | T-096, T-105 | awaiting-acceptance |
 | [T-109](T-109-server-followups.md) | Server follow-ups from the review waves | S | T-094 | done |
 | [T-110](T-110-ci-release-followups.md) | CI, fuzzing and release follow-ups | S | T-097, T-098 | awaiting-acceptance |
 | [T-111](T-111-windows-signing-job.md) | Sign Windows releases in their own job | M | T-110 | todo |

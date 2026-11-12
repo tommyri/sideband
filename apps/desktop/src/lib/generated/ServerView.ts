@@ -5,4 +5,9 @@ import type { DmView } from "./DmView";
 import type { MemberView } from "./MemberView";
 import type { ParticipantView } from "./ParticipantView";
 
-export type ServerView = { canModerateMembers: boolean, canManageServer: boolean, canManageRoles: boolean, canManageChannels: boolean, canManageWebhooks: boolean, canViewAuditLog: boolean, canCreateInvites: boolean, canManageInvites: boolean, ownUserId: string, channels: Array<ChannelView>, directMessages: Array<DmView>, members: Array<MemberView>, participants: Array<ParticipantView>, activeVoice: ActiveVoiceView | null, };
+export type ServerView = { canModerateMembers: boolean, canManageServer: boolean, canManageRoles: boolean, canManageChannels: boolean, canManageWebhooks: boolean, canViewAuditLog: boolean, canCreateInvites: boolean, canManageInvites: boolean, ownUserId: string, channels: Array<ChannelView>, directMessages: Array<DmView>, 
+/**
+ * The server has older conversations than `direct_messages`
+ * (`Snapshot.direct_messages_next`); `load_dms` loads the next page.
+ */
+moreDirectMessages: boolean, members: Array<MemberView>, participants: Array<ParticipantView>, activeVoice: ActiveVoiceView | null, };

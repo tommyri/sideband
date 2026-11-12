@@ -9,7 +9,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 import { chatAction, errorText, messageContext } from './api'
 import { useChat } from './useChat'
-import { atBottom, canEdit, day, grouped } from './model'
+import { afterTrim, atBottom, canEdit, day, grouped } from './model'
 import { Composer } from './Composer'
 import './chat.css'
 
@@ -71,6 +71,29 @@ export function Chat({
     scrollEndThreshold: 8,
   })
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages])
+  // Where the reader was, kept for the next change of the newest run.
+  const reading = useRef({ messages: empty, latest: true, row: null as string | null, end: true })
+  const noteReading = useCallback(() => {
+    const row = virtual.getVirtualItemForOffset(virtual.scrollOffset ?? 0)
+    reading.current = {
+      messages,
+      latest,
+      row: row ? String(row.key) : null,
+      end: scroll.current ? atBottom(scroll.current) : true,
+    }
+  }, [messages, latest, virtual])
+  useLayoutEffect(() => {
+    const before = reading.current
+    if (before.messages !== messages && before.latest && latest && !pendingJump) {
+      const move = afterTrim(before.messages, messages, before.row, before.end)
+      if (move === 'end') virtual.scrollToEnd()
+      else if (move === 'start') {
+        virtual.scrollToIndex(0, { align: 'start' })
+        setBottom(false)
+      }
+    }
+    noteReading()
+  }, [messages, latest, pendingJump, virtual, noteReading])
   useLayoutEffect(() => {
     if (view && initialRead.current === undefined) {
       initialRead.current = view.lastRead
@@ -282,6 +305,7 @@ export function Chat({
         }}
         onScroll={() => {
           if (scroll.current) setBottom(atBottom(scroll.current))
+          noteReading()
           void markRead()
         }}
       >

@@ -10,3 +10,10 @@ export async function openDm(server: string, user: string) {
   await refreshVoice(server)
   useVoiceStore.getState().select(server, result.channelId)
 }
+// Load the next page of older conversations, then reread the server view,
+// which lists them. Resolves to whether more remain.
+export async function loadOlderDms(server: string) {
+  const more = await invokeBridge<boolean>('load_dms', { serverId: server })
+  await refreshVoice(server)
+  return more
+}

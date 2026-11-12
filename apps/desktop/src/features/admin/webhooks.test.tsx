@@ -40,6 +40,7 @@ const view: ServerView = {
     },
   ],
   directMessages: [],
+  moreDirectMessages: false,
   members: [],
   participants: [],
   activeVoice: null,
