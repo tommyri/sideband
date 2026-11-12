@@ -1,7 +1,8 @@
 //! The first frame a connection receives after `Hello` is the reply to it.
 //! Frames other tasks address to a connection while it signs in (a read
-//! state from the user's other session, a kick, a revoked session) follow
-//! its `Welcome`.
+//! state from the user's other session) follow its `Welcome`. A kick, ban or
+//! revoked session that lands while it signs in refuses the `Hello` instead,
+//! and no snapshot is sent.
 //!
 //! Each test holds sign-ins with [`connection::Server::hold_sign_ins`], so
 //! the frame is queued after the connection is registered and before its
@@ -191,7 +192,7 @@ async fn a_read_state_from_another_session_reaches_a_signing_in_session_after_it
 }
 
 #[tokio::test]
-async fn a_kick_aimed_at_a_signing_in_connection_follows_its_welcome() {
+async fn a_member_kicked_while_signing_in_is_refused_without_a_snapshot() {
     let world = World::new().await;
     let (_ada_conn, mut ada, welcome) = world.ada().await;
     let (bea_id, bea_token) = world.bea_token(user_id(&welcome)).await;
@@ -210,21 +211,45 @@ async fn a_kick_aimed_at_a_signing_in_connection_follows_its_welcome() {
     assert!(matches!(ack.msg, Some(Event::Ack(_))), "{ack:?}");
     drop(hold);
 
-    let first = next_frame(&mut bea).await;
+    let notices = refused(&mut bea, v1::ErrorCode::Forbidden).await;
     assert!(
-        first.request_id == 1 && matches!(first.msg, Some(Event::Welcome(_))),
-        "the first frame after Hello must be its Welcome, got {first:?}"
+        matches!(notices.as_slice(), [Event::Kicked(kicked)] if kicked.reason == "out"),
+        "{notices:?}"
     );
-    until(
-        &mut bea,
-        |event| matches!(event, Event::Kicked(kicked) if kicked.reason == "out"),
-    )
-    .await;
     assert_closed_with(&bea_conn, registry::CLOSE_KICKED).await;
 }
 
 #[tokio::test]
-async fn a_session_revoked_while_it_signs_in_is_closed_after_its_welcome() {
+async fn a_member_banned_while_signing_in_is_refused_without_a_snapshot() {
+    let world = World::new().await;
+    let (_ada_conn, mut ada, welcome) = world.ada().await;
+    let (bea_id, bea_token) = world.bea_token(user_id(&welcome)).await;
+
+    let hold = world.server.hold_sign_ins().await;
+    let (bea_conn, mut bea, _) = world.start_sign_in(bea_id, token(&bea_token)).await;
+    let ack = command(
+        &mut ada,
+        2,
+        Msg::BanUser(v1::BanUser {
+            user_id: id_to_bytes(bea_id),
+            reason: "gone".into(),
+            expires_at: None,
+        }),
+    )
+    .await;
+    assert!(matches!(ack.msg, Some(Event::Ack(_))), "{ack:?}");
+    drop(hold);
+
+    let notices = refused(&mut bea, v1::ErrorCode::Banned).await;
+    assert!(
+        matches!(notices.as_slice(), [Event::Banned(banned)] if banned.reason == "gone"),
+        "{notices:?}"
+    );
+    assert_closed_with(&bea_conn, registry::CLOSE_BANNED).await;
+}
+
+#[tokio::test]
+async fn a_session_revoked_while_it_signs_in_is_refused_without_a_snapshot() {
     let world = World::new().await;
     let (_ada_conn, _ada, welcome) = world.ada().await;
     let (bea_id, bea_token) = world.bea_token(user_id(&welcome)).await;
@@ -241,13 +266,95 @@ async fn a_session_revoked_while_it_signs_in_is_closed_after_its_welcome() {
     assert_eq!(world.server.sessions().sweep().await.unwrap(), 1);
     drop(hold);
 
-    let first = next_frame(&mut bea).await;
+    let notices = refused(&mut bea, v1::ErrorCode::Unauthenticated).await;
     assert!(
-        first.request_id == 1 && matches!(first.msg, Some(Event::Welcome(_))),
-        "the first frame after Hello must be its Welcome, got {first:?}"
+        matches!(notices.as_slice(), [Event::SessionRevoked(_)]),
+        "{notices:?}"
     );
-    until(&mut bea, |event| matches!(event, Event::SessionRevoked(_))).await;
     assert_closed_with(&bea_conn, auth::CLOSE_SIGNED_OUT).await;
+}
+
+/// A ban or revoke that sent the connection no kick (committed before it
+/// was registered, or by another process before the sweep) is caught by
+/// the recheck after the snapshot.
+#[tokio::test]
+async fn a_ban_or_revoke_without_a_kick_is_caught_before_the_welcome() {
+    let world = World::new().await;
+    let (_ada_conn, _ada, welcome) = world.ada().await;
+    let ada_id = user_id(&welcome);
+    let (bea_id, bea_token) = world.bea_token(ada_id).await;
+
+    let hold = world.server.hold_sign_ins().await;
+    let (bea_conn, mut bea, _) = world.start_sign_in(bea_id, token(&bea_token)).await;
+    {
+        let mut conn = world.pool.write().await;
+        db::bans::insert(
+            &mut conn,
+            db::NewBan {
+                id: Id::generate(),
+                user_id: bea_id,
+                banned_by: ada_id,
+                reason: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    drop(hold);
+    let notices = refused(&mut bea, v1::ErrorCode::Banned).await;
+    assert!(
+        matches!(notices.as_slice(), [Event::Banned(_)]),
+        "{notices:?}"
+    );
+    assert_closed_with(&bea_conn, registry::CLOSE_BANNED).await;
+
+    let (cal_id, cal_token) = {
+        let (_conn, mut stream) = world.connect().await;
+        let welcome = hello(&mut stream, invite(&world, ada_id, "cal").await).await;
+        (user_id(&welcome), welcome.resume_token)
+    };
+    let hold = world.server.hold_sign_ins().await;
+    let (cal_conn, mut cal, _) = world.start_sign_in(cal_id, token(&cal_token)).await;
+    // No sweep: the connection is never told.
+    assert_eq!(
+        auth::revoke_sessions(&world.pool, "cal", None)
+            .await
+            .unwrap(),
+        1
+    );
+    drop(hold);
+    let notices = refused(&mut cal, v1::ErrorCode::Unauthenticated).await;
+    assert!(
+        matches!(notices.as_slice(), [Event::SessionRevoked(_)]),
+        "{notices:?}"
+    );
+    assert_closed_with(&cal_conn, auth::CLOSE_SIGNED_OUT).await;
+}
+
+/// Reads everything the server sends until the stream ends. The first frame
+/// must refuse the `Hello` (request 1) with `code`; no `Welcome` or other
+/// snapshot data may come at all. Returns the events after the refusal.
+async fn refused(stream: &mut ss_net::control::ClientStream, code: v1::ErrorCode) -> Vec<Event> {
+    let first = next_frame(stream).await;
+    assert!(
+        first.request_id == 1
+            && matches!(&first.msg, Some(Event::Error(error)) if error.code == i32::from(code)),
+        "the Hello must be refused with {code:?} first, got {first:?}"
+    );
+    let mut events = Vec::new();
+    while let Ok(frame) = timeout(DEADLINE, stream.recv()).await.unwrap() {
+        let event = frame.msg.expect("a frame with a message");
+        assert!(
+            !matches!(
+                event,
+                Event::Welcome(_) | Event::ReadStateUpdated(_) | Event::PresenceUpdated(_)
+            ),
+            "no snapshot data after a refused Hello, got {event:?}"
+        );
+        events.push(event);
+    }
+    events
 }
 
 async fn assert_closed_with(connection: &ss_net::Connection, code: u32) {

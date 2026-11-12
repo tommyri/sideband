@@ -17,9 +17,15 @@ port UDP 443 (configurable). HTTPS on TCP 443 for REST.
 2. Client opens **one bidirectional stream**: the *control stream*. All control
    messages flow here, both directions, for the life of the connection.
 3. First client message must be `Hello`. Server replies `Welcome` or `Error`
-   and closes. The reply is the first frame the server sends: events, a
-   kick or a revoked session that reach the connection while it signs in
-   follow the `Welcome`.
+   and closes. The reply is the first frame the server sends: events that
+   reach the connection while it signs in follow the `Welcome`. A kick, ban
+   or revoked session that lands before the `Welcome` is written refuses
+   the `Hello` instead, and no snapshot is sent: `Error` `FORBIDDEN`
+   (kicked), `BANNED` or `UNAUTHENTICATED` (signed out), then the
+   `Kicked`, `Banned` or `SessionRevoked` notice and close code 3, 4 or 6.
+   The server checks the ban and the session again after building the
+   snapshot, so one committed before the connection was registered, or by
+   another process, is refused the same way.
 4. Media: QUIC **datagrams** (audio) and **unidirectional streams** (video,
    phase 5). Clients must negotiate `max_datagram_frame_size`; server rejects
    connections without datagram support.

@@ -549,7 +549,72 @@ impl Server {
             );
             return reject(connection, stream, &error).await;
         }
+        self.admit_again(connection, stream, authed, request_id)
+            .await?;
         Ok((welcome, subscription))
+    }
+
+    /// Checks again, once the snapshot is built, what `Hello` checked: the
+    /// account is not banned and the session still exists. A ban or revoke
+    /// committed before this connection was registered, or by another
+    /// process, sent it no kick. Refuses the `Hello` as such a kick would
+    /// have: the `Error`, the notice, then the close code.
+    async fn admit_again(
+        &self,
+        connection: &Connection,
+        stream: &mut ServerStream,
+        authed: &auth::Authenticated,
+        request_id: u32,
+    ) -> Result<(), Error> {
+        let checked = async {
+            let mut conn = self.pool.read().await?;
+            let now = Timestamp::now();
+            let ban = crate::db::bans::list_for_user(&mut conn, authed.user.id)
+                .await?
+                .into_iter()
+                .find(|ban| ban.lifted_at.is_none() && ban.expires_at.is_none_or(|end| end > now));
+            let alive = crate::db::sessions::get(&mut conn, authed.session_id)
+                .await?
+                .is_some_and(|session| auth::session_alive(&session, now));
+            Ok::<_, crate::db::Error>((ban, alive))
+        }
+        .await;
+        let kick = match checked {
+            Ok((None, true)) => return Ok(()),
+            Ok((Some(ban), _)) => Kick {
+                notice: event_frame(server_envelope::Msg::Banned(v1::Banned {
+                    reason: ban.reason.unwrap_or_default(),
+                    expires_at: ban.expires_at.map(Timestamp::as_millis),
+                })),
+                code: registry::CLOSE_BANNED,
+                reason: b"banned",
+            },
+            Ok((None, false)) => Kick {
+                notice: event_frame(server_envelope::Msg::SessionRevoked(v1::SessionRevoked {
+                    reason: "signed out: this session was ended".into(),
+                })),
+                code: auth::CLOSE_SIGNED_OUT,
+                reason: b"signed out",
+            },
+            Err(error) => {
+                tracing::debug!(%error, "sign-in recheck failed");
+                let envelope = v1::ServerEnvelope::error(
+                    request_id,
+                    v1::ErrorCode::Internal,
+                    "internal error",
+                );
+                return reject(connection, stream, &envelope).await;
+            }
+        };
+        let _ = timeout(
+            NOTICE_TIMEOUT,
+            stream.send(&hello_refused_by(request_id, &kick)),
+        )
+        .await;
+        let _ = timeout(NOTICE_TIMEOUT, stream.send(&kick.notice)).await;
+        tokio::time::sleep(NOTICE_GRACE).await;
+        connection.quic().close(kick.code.into(), kick.reason);
+        Err(Error::Protocol)
     }
 
     async fn pump(
@@ -1181,11 +1246,13 @@ async fn deliver(
 /// Writes the session's own queue and frames addressed to it by other tasks,
 /// and carries out a kick.
 ///
-/// The `Welcome` goes first, so the reply to `Hello` is the first frame the
-/// client reads. Until it is written, frames other tasks addressed to the
-/// connection while it signed in wait in its [`registry::DirectQueue`] (with
-/// that queue's bounds), and a kick or revoked session waits in its kick
-/// slot; both follow the `Welcome`. A write that stalls past the
+/// The reply to `Hello` is the first frame the client reads. Until it is
+/// written, frames other tasks addressed to the connection while it signed
+/// in wait in its [`registry::DirectQueue`] (with that queue's bounds) and
+/// follow the `Welcome`. A kick, ban or revoked session that is already in
+/// the kick slot replaces the `Welcome` with the `Error` it implies
+/// ([`hello_refused_by`]), so the snapshot is never sent; one that arrives
+/// while the `Welcome` is being written follows it. A write that stalls past the
 /// slow-consumer grace closes the connection; a kick that arrives during a
 /// stalled write closes it without the notice, since the stream is
 /// mid-frame.
@@ -1200,6 +1267,14 @@ struct Outbound {
 
 impl Outbound {
     async fn run(mut self, welcome: v1::ServerEnvelope) -> Result<(), Error> {
+        // A kick that came while the connection signed in wins over its
+        // snapshot: the `Hello` is refused instead, and the notice follows.
+        if let Ok(kick) = self.kicks.try_recv() {
+            let refusal = hello_refused_by(welcome.request_id, &kick);
+            let _ = timeout(NOTICE_TIMEOUT, self.sender.send(&refusal)).await;
+            self.carry_out(&kick).await;
+            return Ok(());
+        }
         let mut frame = welcome;
         while self.write(&frame).await? {
             let Some(next) = self.next().await else { break };
@@ -1286,6 +1361,26 @@ impl Outbound {
         )
         .await;
     }
+}
+
+/// The `Hello` refusal a kick that came during sign-in stands for, by the
+/// codes of `02-protocol.md` §1.2: a ban and a revoked session are final as
+/// they are; a kick is `FORBIDDEN`, final as its close code 3 is; a shutdown
+/// or a slow-consumer close is `INTERNAL`, which the client retries.
+fn hello_refused_by(request_id: u32, kick: &Kick) -> v1::ServerEnvelope {
+    let (code, message) = match kick.code {
+        registry::CLOSE_BANNED => (v1::ErrorCode::Banned, "banned".into()),
+        registry::CLOSE_KICKED => (v1::ErrorCode::Forbidden, "kicked".into()),
+        auth::CLOSE_SIGNED_OUT => (
+            v1::ErrorCode::Unauthenticated,
+            "signed out: this session was ended".into(),
+        ),
+        _ => (
+            v1::ErrorCode::Internal,
+            String::from_utf8_lossy(kick.reason).into_owned(),
+        ),
+    };
+    v1::ServerEnvelope::error(request_id, code, message)
 }
 
 enum Written {
@@ -1605,6 +1700,42 @@ impl Drop for CloseOnDrop {
     fn drop(&mut self) {
         if self.0.close_reason().is_none() {
             self.0.close(0_u32.into(), b"session ended");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kick(code: u32, reason: &'static [u8]) -> Kick {
+        Kick {
+            notice: registry::notice("notice"),
+            code,
+            reason,
+        }
+    }
+
+    #[test]
+    fn a_kick_during_sign_in_refuses_the_hello_with_the_code_it_implies() {
+        let cases = [
+            (registry::CLOSE_KICKED, v1::ErrorCode::Forbidden),
+            (registry::CLOSE_BANNED, v1::ErrorCode::Banned),
+            (auth::CLOSE_SIGNED_OUT, v1::ErrorCode::Unauthenticated),
+            (registry::CLOSE_SHUTDOWN, v1::ErrorCode::Internal),
+            (registry::CLOSE_SLOW, v1::ErrorCode::Internal),
+        ];
+        for (close, code) in cases {
+            let refusal = hello_refused_by(7, &kick(close, b"server shutting down"));
+            assert_eq!(refusal.request_id, 7);
+            assert!(
+                matches!(
+                    &refusal.msg,
+                    Some(server_envelope::Msg::Error(error))
+                        if error.request_id == 7 && error.code == i32::from(code)
+                ),
+                "close {close}: {refusal:?}"
+            );
         }
     }
 }

@@ -1386,10 +1386,10 @@ async fn a_sign_in_behind_hundreds_of_addressed_frames_still_succeeds() {
     );
 }
 
-/// A kick aimed at a connection that is still signing in reaches the
-/// client as a kick: it signs in, then is removed and does not reconnect.
+/// A kick aimed at a connection that is still signing in refuses its
+/// `Hello` with `FORBIDDEN`: a first sign-in fails with that error.
 #[tokio::test]
-async fn a_member_kicked_while_signing_in_is_removed() {
+async fn a_member_kicked_while_signing_in_is_refused() {
     let world = World::new().await;
     let owner = world.owner().await;
     let guest = world.guest(&owner).await;
@@ -1414,24 +1414,55 @@ async fn a_member_kicked_while_signing_in_is_removed() {
         .await
         .unwrap();
     drop(hold);
-    let guest = timeout(WAIT, signing_in)
+    let refused = timeout(WAIT, signing_in)
         .await
         .expect("sign-in hung")
-        .unwrap()
-        .expect("the sign-in itself succeeded");
-    let mut events = guest.subscribe();
-    until(&guest, &mut events, |state| {
+        .unwrap();
+    assert!(
         matches!(
-            state.connection,
-            ConnectionState::Disconnected | ConnectionState::Failed(_)
-        )
+            refused,
+            Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Forbidden)
+        ),
+        "{:?}",
+        refused.map(|_| ())
+    );
+}
+
+/// The same kick while the client reconnects ends its session: the refused
+/// `Hello` is final, so it stops and does not try again.
+#[tokio::test]
+async fn a_member_kicked_while_reconnecting_stops_reconnecting() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let mut events = guest.subscribe();
+    let user = own_id(&guest);
+    let before = world.server.registry().connection_ids(user);
+    let hold = world.server.hold_sign_ins().await;
+    drop_without_lease(&world, before[0]);
+    let _ = registered(&world, user, &before).await;
+    owner
+        .kick_user(v1::KickUser {
+            user_id: wire(user),
+            reason: "out".into(),
+        })
+        .await
+        .unwrap();
+    drop(hold);
+    until(&guest, &mut events, |state| {
+        matches!(state.connection, ConnectionState::Failed(_))
     })
     .await;
     tokio::time::sleep(Duration::from_millis(1400)).await;
-    assert!(!matches!(
-        guest.state().read().connection,
-        ConnectionState::Connected | ConnectionState::Reconnecting { .. }
-    ));
+    assert!(
+        matches!(guest.state().read().connection, ConnectionState::Failed(_)),
+        "{:?}",
+        guest.state().read().connection
+    );
+    assert_eq!(
+        world.server.registry().connection_ids(user),
+        Vec::<Id>::new()
+    );
 }
 
 #[tokio::test]
