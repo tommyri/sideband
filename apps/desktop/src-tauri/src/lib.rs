@@ -103,6 +103,7 @@ pub fn run() {
             attachments::attachment_transfer,
             attachments::cancel_attachment,
             dm::dm_action,
+            dm::load_dms,
             onboarding::probe_server,
             onboarding::use_public_certificate,
             onboarding::remove_server,
@@ -171,13 +172,34 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Whether `event` on window `label` should recheck global input access.
+fn rechecks_input(label: &str, event: &WindowEvent) -> bool {
+    label == "main" && matches!(event, WindowEvent::Focused(true))
+}
+
 /// Closing the main window hides it to the tray when that is enabled.
+/// Focusing it rechecks global input access (Input Monitoring on macOS).
 fn window_event(window: &tauri::Window, event: &WindowEvent) {
+    if rechecks_input(window.label(), event) {
+        input::recheck(window.app_handle());
+    }
     if let WindowEvent::CloseRequested { api, .. } = event {
         let state = window.state::<AppState>();
         if window.label() == "main" && state.close_to_tray.load(Ordering::Relaxed) {
             api.prevent_close();
             let _ = window.hide();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focusing_the_main_window_rechecks_input_access() {
+        assert!(rechecks_input("main", &WindowEvent::Focused(true)));
+        assert!(!rechecks_input("main", &WindowEvent::Focused(false)));
+        assert!(!rechecks_input("viewer-1", &WindowEvent::Focused(true)));
     }
 }

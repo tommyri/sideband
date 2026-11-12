@@ -1,15 +1,19 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ServerView } from '../../lib/generated/ServerView'
+import { errorText } from '../../lib/errors'
+import { loadOlderDms } from './api'
 import { dmName, dmOnline, sortedDms } from './model'
 import './dm.css'
 
 export function DmList({
+  server,
   view,
   selected,
   connected,
   select,
   create,
 }: {
+  server: string
   view: ServerView
   selected: string | undefined
   connected: boolean
@@ -18,6 +22,34 @@ export function DmList({
 }) {
   const members = useMemo(() => new Map(view.members.map((m) => [m.id, m])), [view.members])
   const conversations = useMemo(() => sortedDms(view.directMessages), [view.directMessages])
+  const more = view.moreDirectMessages && connected
+  const end = useRef<HTMLButtonElement>(null)
+  const loading = useRef(false)
+  const [error, setError] = useState('')
+  const loadMore = useCallback(async () => {
+    if (loading.current) return
+    loading.current = true
+    setError('')
+    try {
+      await loadOlderDms(server)
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      loading.current = false
+    }
+  }, [server])
+  // The Welcome lists the newest 100 conversations; the next page loads when
+  // the end of the list scrolls into view. A new observer per page reports
+  // at once if the end is still in view.
+  useEffect(() => {
+    const target = end.current
+    if (!more || !target || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMore()
+    })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [more, conversations.length, loadMore])
   return (
     <section className="dm-list" aria-label="Direct messages">
       <div className="dm-list-title">
@@ -65,6 +97,16 @@ export function DmList({
           </button>
         )
       })}
+      {more && (
+        <button ref={end} className="dm-more" onClick={() => void loadMore()}>
+          Load older conversations
+        </button>
+      )}
+      {error && (
+        <p className="dm-empty" role="alert">
+          {error}
+        </p>
+      )}
     </section>
   )
 }

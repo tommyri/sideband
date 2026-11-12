@@ -73,6 +73,7 @@ const fixture = (): ServerView => ({
   canCreateInvites: false,
   canManageInvites: false,
   directMessages: [],
+  moreDirectMessages: false,
   channels: [{ ...channel, id: 'category', parentId: null, kind: 1, name: 'Social' }, channel],
   members: [{ ...member, id: 'own', username: 'me' }, member],
   participants: [

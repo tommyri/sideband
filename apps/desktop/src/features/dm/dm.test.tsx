@@ -59,6 +59,7 @@ const view: ServerView = {
   canManageInvites: false,
   channels: [],
   directMessages: [conversation],
+  moreDirectMessages: false,
   members: ['own', 'alice', 'bob', 'carol'].map(member),
   participants: [],
   activeVoice: null,
@@ -90,6 +91,7 @@ it('sorts by last activity, resolves participant labels and keeps presence/unrea
   const select = vi.fn()
   render(
     <DmList
+      server="s"
       view={{ ...view, directMessages: [conversation, pair] }}
       selected="pair"
       connected
@@ -199,4 +201,56 @@ it('opening a partner selects the returned existing DM only on its own server', 
   })
   expect(refreshVoice).toHaveBeenCalledWith('server-a')
   expect(useVoiceStore.getState().selected).toEqual({ other: 'keep-this', 'server-a': 'existing' })
+})
+it('loads the next page of conversations when the end of the list scrolls into view', async () => {
+  const observed: { callback: IntersectionObserverCallback; target?: Element }[] = []
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      entry: { callback: IntersectionObserverCallback; target?: Element }
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback }
+        observed.push(this.entry)
+      }
+      observe(target: Element) {
+        this.entry.target = target
+      }
+      disconnect() {
+        this.entry.target = undefined
+      }
+    },
+  )
+  const reach = () =>
+    observed
+      .filter((o) => o.target)
+      .forEach((o) =>
+        o.callback(
+          [{ isIntersecting: true, target: o.target! } as IntersectionObserverEntry],
+          {} as IntersectionObserver,
+        ),
+      )
+  vi.mocked(invokeBridge).mockResolvedValue(false)
+  const older: DmView = { ...conversation, id: 'older', name: 'Older raid', lastActivity: 1 }
+  const props = { selected: undefined, connected: true, select: vi.fn(), create: vi.fn() }
+  const { rerender } = render(
+    <DmList server="server-a" view={{ ...view, moreDirectMessages: true }} {...props} />,
+  )
+  expect(screen.queryByRole('button', { name: 'Open group message Older raid' })).toBeNull()
+  reach()
+  reach()
+  await waitFor(() => expect(refreshVoice).toHaveBeenCalledWith('server-a'))
+  expect(invokeBridge).toHaveBeenCalledOnce()
+  expect(invokeBridge).toHaveBeenCalledWith('load_dms', { serverId: 'server-a' })
+  rerender(
+    <DmList
+      server="server-a"
+      view={{ ...view, directMessages: [conversation, older], moreDirectMessages: false }}
+      {...props}
+    />,
+  )
+  expect(screen.getByRole('button', { name: 'Open group message Older raid' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Load older conversations' })).toBeNull()
+  reach()
+  expect(invokeBridge).toHaveBeenCalledOnce()
+  vi.unstubAllGlobals()
 })

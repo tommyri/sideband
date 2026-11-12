@@ -101,12 +101,14 @@ fn display(value: &[u8]) -> Result<String, ApiError> {
         .map(|v| v.to_string())
         .map_err(|_| invalid("Invalid identifier"))
 }
+/// A permission mask as the webview sends it, a decimal `u64`. Bits this
+/// build has no name for are kept (`02-protocol.md` §7): a role from a newer
+/// server keeps its grants through an edit, and the server, which rejects
+/// bits it does not know with `INVALID`, validates them.
 fn mask(value: &str) -> Result<u64, ApiError> {
     value
         .parse::<u64>()
-        .ok()
-        .filter(|v| Permissions::from_bits(*v).is_some())
-        .ok_or_else(|| invalid("Invalid permissions"))
+        .map_err(|_| invalid("Invalid permissions"))
 }
 fn fields(value: &RoleFields) -> Result<(String, Option<u32>, u64), ApiError> {
     let name = value.name.trim().to_owned();

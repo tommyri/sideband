@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from './Composer'
 import { Chat } from './Chat'
 import { useChat } from './useChat'
-import { grouped, canEdit, atBottom } from './model'
+import { grouped, canEdit, atBottom, afterTrim } from './model'
 import { receiveChatEvent } from './api'
 import { invokeBridge } from '../../lib/tauri'
 import { sendMessage } from '../../lib/api'
@@ -297,4 +297,20 @@ it('offers newer pages below a jumped-to run and does not mark it read', async (
   expect(
     vi.mocked(invokeBridge).mock.calls.some(([, args]) => JSON.stringify(args).includes('"read"')),
   ).toBe(false)
+})
+
+it('moves the reader only when a resync dropped the row being read', () => {
+  const run = (...ids: string[]) => ids.map((id) => ({ ...message, id }))
+  const before = run('01', '02', '03', '04')
+  // Older pages loaded above, or newer messages below: the virtualizer keeps the row.
+  expect(afterTrim(before, run('00', ...before.map((m) => m.id)), '02', false)).toBeNull()
+  expect(afterTrim(before, run('02', '03', '04', '05'), '02', false)).toBeNull()
+  // The row being read was dropped with the older messages.
+  expect(afterTrim(before, run('03', '04', '05'), '02', false)).toBe('start')
+  expect(afterTrim(before, run('07', '08', '09'), '04', true)).toBe('end')
+  expect(afterTrim(before, run('07', '08', '09'), '02', false)).toBe('start')
+  // A live delete of the row being read, with the oldest message kept, is not a trim.
+  expect(afterTrim(before, run('01', '03', '04'), '02', false)).toBeNull()
+  expect(afterTrim(before, [], '02', false)).toBeNull()
+  expect(afterTrim([], run('01'), null, true)).toBeNull()
 })

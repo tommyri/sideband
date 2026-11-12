@@ -28,6 +28,7 @@ const view: ServerView = {
   canManageInvites: false,
   channels: [],
   directMessages: [],
+  moreDirectMessages: false,
   members: [],
   participants: [],
   activeVoice: null,

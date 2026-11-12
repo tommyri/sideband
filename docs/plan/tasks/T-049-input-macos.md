@@ -55,8 +55,9 @@ just surface it).
   that attempt and return PermissionRequired with the Privacy_ListenEvent
   settings deep link. Capability checks never prompt. The app rechecks them
   on focus. T-058 will wire those focus events into the T-042 desktop shell.
-  (T-099, 2026-11-11: not wired yet; the 250 ms runtime check and "refresh
-  capabilities" cover it meanwhile. Tracked in T-108.)
+  (T-099, 2026-11-11: not wired yet. T-108, 2026-11-12: wired. Focusing
+  the main window restarts a listener that stopped for want of access, once
+  the capability check finds the access granted.)
 - Disabled-by-timeout/user-input notifications and ring overflow force-release,
   discard stale queued input, repair missed ups from physical state, and
   re-enable the tap. Inputs still held stay suppressed until their matching up.

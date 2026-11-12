@@ -85,6 +85,10 @@ struct Runtime {
     generation: u64,
     error: String,
     events: VecDeque<String>,
+    /// The listener stopped for want of access: a start that found the
+    /// permission missing, or a running tap the backend stopped. Regaining
+    /// window focus then rechecks it (T-049, T-108).
+    retry_on_focus: bool,
     #[cfg(target_os = "linux")]
     portal_settings: ss_input::linux::portal::Settings,
 }
@@ -163,6 +167,8 @@ fn start(app: &tauri::AppHandle, rt: &mut Runtime) -> Result<(), ApiError> {
     }
     let backend = detect(app, rt);
     let caps = backend.capabilities();
+    // This attempt prompts once; a grant is picked up on the next focus.
+    rt.retry_on_focus = caps.needs_permission.is_some();
     if caps.binding_set_by_system && !rt.preferences.portal {
         rt.backend = Some(backend);
         return Err(error(
@@ -206,12 +212,45 @@ fn start(app: &tauri::AppHandle, rt: &mut Runtime) -> Result<(), ApiError> {
             .map_err(error)?;
     }
     rt.handle = Some(handle);
+    rt.retry_on_focus = false;
     app.state::<InputManager>()
         .inhibited
         .store(false, Ordering::Release);
     rt.error.clear();
     record(rt, "Listener started");
     Ok(())
+}
+/// Whether regaining window focus should start the listener again: it
+/// stopped for want of access, and the capability check, which never
+/// prompts, now finds the access there. A start while access is still
+/// missing would prompt again, so it waits for the next focus.
+fn restarts_on_focus(rt: &Runtime, caps: &ss_input::Caps) -> bool {
+    rt.retry_on_focus
+        && rt.handle.is_none()
+        && !rt.password
+        && !rt.capturing
+        && rt.preferences.enabled()
+        && caps.needs_permission.is_none()
+}
+/// Recheck input access when the main window gains focus, so a grant made
+/// in System Settings starts the listener without a restart (T-049).
+pub fn recheck(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(manager) = app.try_state::<InputManager>() else {
+            return;
+        };
+        let mut rt = manager.lock();
+        if !rt.retry_on_focus || rt.handle.is_some() {
+            return;
+        }
+        let backend = rt.backend.clone().unwrap_or_else(|| detect(&app, &mut rt));
+        if restarts_on_focus(&rt, &backend.capabilities())
+            && let Err(e) = start(&app, &mut rt)
+        {
+            rt.error = e.message;
+        }
+    });
 }
 fn snapshot(app: &tauri::AppHandle, rt: &mut Runtime) -> Snapshot {
     let backend = rt.backend.clone().unwrap_or_else(|| detect(app, rt));
@@ -377,9 +416,8 @@ fn accept(app: &tauri::AppHandle, generation: u64, event: PttEvent) -> bool {
 fn listener_failed(app: &tauri::AppHandle) -> bool {
     let manager = app.state::<InputManager>();
     let mut rt = manager.lock();
-    let failure = manager
-        .overflow
-        .swap(false, Ordering::AcqRel)
+    let overflow = manager.overflow.swap(false, Ordering::AcqRel);
+    let failure = overflow
         .then(|| "Input queue overflow; shortcuts stopped".to_owned())
         .or_else(|| {
             rt.handle
@@ -388,6 +426,10 @@ fn listener_failed(app: &tauri::AppHandle) -> bool {
                 .map(|e| e.to_string())
         });
     if let Some(e) = &failure {
+        // The backend stops the tap when access is revoked or secure input
+        // starts; regaining focus starts it again once access is back. A
+        // portal session is the compositor's, and restarting one can prompt.
+        rt.retry_on_focus = !overflow && !rt.preferences.portal;
         manager.inhibited.store(true, Ordering::Release);
         stop(&mut rt);
         rt.error.clone_from(e);
@@ -664,5 +706,42 @@ mod tests {
         let generation = rt.generation;
         stop(&mut rt);
         assert_ne!(rt.generation, generation);
+    }
+    #[test]
+    fn regaining_focus_restarts_a_listener_that_waited_for_access_once_it_is_granted() {
+        let granted = ss_input::Caps::mock();
+        let mut missing = ss_input::Caps::mock();
+        missing.needs_permission = Some(ss_input::Permission::InputMonitoring);
+        let mut rt = Runtime {
+            retry_on_focus: true,
+            ..Runtime::default()
+        };
+        assert!(!restarts_on_focus(&rt, &granted), "nothing is bound");
+        rt.preferences.ptt = Some(Binding::key(ss_input::Code::KeyV));
+        assert!(
+            !restarts_on_focus(&rt, &missing),
+            "a start while access is missing would prompt again"
+        );
+        assert!(
+            restarts_on_focus(&rt, &granted),
+            "access granted in System Settings starts the listener"
+        );
+        rt.password = true;
+        assert!(
+            !restarts_on_focus(&rt, &granted),
+            "suspended for a password"
+        );
+        rt.password = false;
+        rt.capturing = true;
+        assert!(
+            !restarts_on_focus(&rt, &granted),
+            "binding capture owns input"
+        );
+        rt.capturing = false;
+        rt.retry_on_focus = false;
+        assert!(
+            !restarts_on_focus(&rt, &granted),
+            "other start failures are not retried on every focus"
+        );
     }
 }

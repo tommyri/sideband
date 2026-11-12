@@ -67,6 +67,7 @@ with the server on the VPS.
 | X11 XI2, KDE Wayland, GNOME 48+, Hyprland `bindn`, Sway "unavailable", opt-in evdev (`crates/ss-input/linux.md`) | [T-050](T-050-input-linux.md) | – | – | open | – |
 | Global-shortcut matrix per platform and desktop, then the common list (no bindings no listener, three actions, gaming, tray, password field, capture, revoke, reconnect) | [T-058](T-058-global-app-shortcuts.md) | open | open | open | – |
 | Stuck-key reconcile: swallowed keys (AutoHotkey, PowerToys), XI 2.1, sleep (code first) | [T-087](T-087-input-stuck-key-reconcile.md) | open | open | open | – |
+| PTT bound, Input Monitoring denied: grant it in System Settings, switch back to Sideband; "Listening" without a restart or a second prompt | [T-108](T-108-desktop-followups.md) | open | – | – | – |
 
 ## Desktop app
 
@@ -82,6 +83,7 @@ with the server on the VPS.
 | Every cue heard (DM outside voice, output device, zero volume, deafen, lost/restored); trigger to onset under 50 ms | [T-055](T-055-notifications-sounds.md) | open | open | open | – |
 | Chat, rings, level meter and notifications still update with no ACL denial; window size and position survive restart; packaged build has no event inspector | [T-095](T-095-desktop-shell-hardening.md) | open | open | open | – |
 | Dropping a file on the composer attaches it; middle-clicking a link opens no window | [T-095](T-095-desktop-shell-hardening.md) | – | open | – | – |
+| More than 100 DMs: scrolling the DM list loads the older ones; a resync over its page budget while reading older chat lands on the oldest kept message, at the newest when at the bottom | [T-108](T-108-desktop-followups.md) | open | open | open | – |
 | A received `.command` and a zipped `.app` show the Gatekeeper prompt when opened; a `.bat` and an `.exe` from a received `.zip` show SmartScreen or the "downloaded from the internet" warning | [T-104](T-104-download-provenance-marks.md) | open | open | – | – |
 | Fresh install of a labelled test build; downloaded-artifact Gatekeeper result; AppImage on older distributions | [T-075](T-075-installable-test-builds.md) | open | open | open | – |
 | Guided test run and evidence export without a terminal, with a second participant (focus, device, sleep, reconnect) | [T-076](T-076-guided-voice-testing.md) | part | open | open | – |

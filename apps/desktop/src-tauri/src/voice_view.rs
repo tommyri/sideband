@@ -87,6 +87,9 @@ pub struct ServerView {
     pub own_user_id: String,
     pub channels: Vec<ChannelView>,
     pub direct_messages: Vec<crate::dm::DmView>,
+    /// The server has older conversations than `direct_messages`
+    /// (`Snapshot.direct_messages_next`); `load_dms` loads the next page.
+    pub more_direct_messages: bool,
     pub members: Vec<MemberView>,
     pub participants: Vec<ParticipantView>,
     pub active_voice: Option<ActiveVoiceView>,
@@ -242,7 +245,7 @@ pub fn snapshot(
             || allowed(Permissions::BAN_MEMBERS),
         can_manage_server: allowed(Permissions::MANAGE_SERVER),
         can_manage_roles: allowed(Permissions::MANAGE_ROLES),
-        can_manage_channels: allowed(Permissions::MANAGE_CHANNELS),
+        can_manage_channels: authority.can_manage_channels(),
         can_manage_webhooks: allowed(Permissions::MANAGE_SERVER),
         can_view_audit_log: allowed(Permissions::VIEW_AUDIT_LOG),
         can_create_invites: allowed(Permissions::CREATE_INVITES),
@@ -250,6 +253,7 @@ pub fn snapshot(
         own_user_id: authority.user().to_string(),
         channels,
         direct_messages: crate::dm::views(state)?,
+        more_direct_messages: state.direct_messages_next.is_some(),
         members,
         participants,
         active_voice,
@@ -322,6 +326,7 @@ mod tests {
         .unwrap();
         assert!(!view.channels[0].can_join);
         assert!(!view.channels[0].can_speak);
+        assert!(!view.more_direct_messages);
         let target = view
             .members
             .iter()
@@ -352,5 +357,14 @@ mod tests {
                 .unwrap()
                 .can_mute
         );
+        state.direct_messages_next = Some(bytes::Bytes::from_static(b"cursor"));
+        let view = snapshot(
+            &state,
+            &ServerId::new("localhost", 5781).unwrap(),
+            &MemoryStorage::default(),
+            None,
+        )
+        .unwrap();
+        assert!(view.more_direct_messages, "older DMs are offered");
     }
 }

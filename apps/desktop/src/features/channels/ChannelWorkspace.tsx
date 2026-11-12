@@ -286,6 +286,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
         </header>
         <div className="live-channel-scroll">
           <DmList
+            server={server}
             view={view}
             selected={selected}
             connected={connected}

@@ -217,6 +217,77 @@ async fn real_bridge_roles_assignments_reorder_clear_and_delete() {
     world.task.abort();
 }
 
+/// A mask from a newer server: one bit this build has no name for.
+fn newer_mask() -> u64 {
+    let mask = Permissions::SEND_MESSAGES.bits() | 1 << 62;
+    assert!(
+        Permissions::from_bits(mask).is_none(),
+        "bit 62 is unnamed here"
+    );
+    mask
+}
+#[test]
+fn edits_keep_permission_bits_this_build_has_no_name_for() {
+    let mut edited = input("Newer");
+    edited.permissions = newer_mask().to_string();
+    let (_, _, permissions) = fields(&edited).unwrap();
+    assert_eq!(permissions, newer_mask());
+    assert_eq!(mask(&newer_mask().to_string()).unwrap(), newer_mask());
+    for bad in ["", "-1", "0x10", "18446744073709551616", "send"] {
+        assert!(mask(bad).is_err(), "{bad:?} is not a mask");
+    }
+}
+#[tokio::test]
+async fn the_server_validates_the_bits_the_shell_passes_through() {
+    let world = World::new().await;
+    perform(
+        &world.owner,
+        &world.key,
+        RoleAction::Create {
+            fields: input("Helper"),
+        },
+    )
+    .await
+    .unwrap();
+    wait(&world.owner, &world.key, |s| {
+        s.roles.values().any(|r| r.name == "Helper")
+    })
+    .await;
+    let role = {
+        let client = world
+            .owner
+            .client(&parse_server_id(&world.key).unwrap())
+            .unwrap();
+        let store = client.state();
+        let state = store.read();
+        display(
+            &state
+                .roles
+                .values()
+                .find(|r| r.name == "Helper")
+                .unwrap()
+                .id,
+        )
+        .unwrap()
+    };
+    let mut edited = input("Helper");
+    edited.permissions = newer_mask().to_string();
+    let error = perform(
+        &world.owner,
+        &world.key,
+        RoleAction::Edit {
+            role,
+            fields: edited,
+        },
+    )
+    .await
+    .unwrap_err();
+    // This server does not know bit 62 either, so it refuses the edit.
+    assert_eq!(error.code, "server_4", "{}", error.message);
+    assert_eq!(error.message, "unknown permission bits");
+    world.task.abort();
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one fixture checked against every hierarchy rule"
