@@ -332,6 +332,65 @@ async fn a_ban_or_revoke_without_a_kick_is_caught_before_the_welcome() {
     assert_closed_with(&cal_conn, auth::CLOSE_SIGNED_OUT).await;
 }
 
+#[tokio::test]
+async fn a_bot_signs_in_and_one_revoked_while_signing_in_is_refused() {
+    use ss_core::Permissions;
+    use ss_server::handlers::bots;
+    let world = World::new().await;
+    let bot_hello = |token: &str| v1::Hello {
+        protocol_version: 1,
+        client_name: "test".into(),
+        auth: Some(v1::hello::Auth::BotToken(token.into())),
+        ..Default::default()
+    };
+
+    // The recheck after the snapshot must accept a bot's live token: a bot
+    // has a `bot_tokens` row, not a session.
+    let (bot, _, token) = bots::create_account(
+        &world.pool,
+        None,
+        "order.bot",
+        "",
+        Permissions::VIEW_CHANNEL,
+    )
+    .await
+    .unwrap();
+    let hold = world.server.hold_sign_ins().await;
+    let (_bot_conn, mut stream, _) = world.start_sign_in(bot.id, bot_hello(&token)).await;
+    drop(hold);
+    match next_frame(&mut stream).await.msg {
+        Some(Event::Welcome(_)) => {}
+        other => panic!("a bot with a live token was refused: {other:?}"),
+    }
+
+    // Revoked by the operator CLI while it signs in, with no sweep: refused.
+    let (other, _, token) =
+        bots::create_account(&world.pool, None, "gone.bot", "", Permissions::VIEW_CHANNEL)
+            .await
+            .unwrap();
+    let hold = world.server.hold_sign_ins().await;
+    let (conn, mut stream, _) = world.start_sign_in(other.id, bot_hello(&token)).await;
+    let revoked = bots::revoke_token(&world.pool, None, other.id)
+        .await
+        .unwrap();
+    let mut reader = world.pool.read().await.unwrap();
+    assert!(
+        db::bots::get(&mut reader, revoked)
+            .await
+            .unwrap()
+            .is_some_and(|token| token.revoked_at.is_some()),
+        "the token was not revoked"
+    );
+    drop(reader);
+    drop(hold);
+    let notices = refused(&mut stream, v1::ErrorCode::Unauthenticated).await;
+    assert!(
+        matches!(notices.as_slice(), [Event::SessionRevoked(_)]),
+        "{notices:?}"
+    );
+    assert_closed_with(&conn, auth::CLOSE_SIGNED_OUT).await;
+}
+
 /// Reads everything the server sends until the stream ends. The first frame
 /// must refuse the `Hello` (request 1) with `code`; no `Welcome` or other
 /// snapshot data may come at all. Returns the events after the refusal.

@@ -584,9 +584,17 @@ impl Server {
                 .await?
                 .into_iter()
                 .find(|ban| ban.lifted_at.is_none() && ban.expires_at.is_none_or(|end| end > now));
-            let alive = crate::db::sessions::get(&mut conn, authed.session_id)
-                .await?
-                .is_some_and(|session| auth::session_alive(&session, now));
+            // A bot signs in with a token, not a session: `session_id` is its
+            // `bot_tokens` row, which must still be the bot's live token.
+            let alive = if authed.bot {
+                crate::db::bots::live_for(&mut conn, authed.user.id)
+                    .await?
+                    .is_some_and(|token| token.id == authed.session_id)
+            } else {
+                crate::db::sessions::get(&mut conn, authed.session_id)
+                    .await?
+                    .is_some_and(|session| auth::session_alive(&session, now))
+            };
             Ok::<_, crate::db::Error>((ban, alive))
         }
         .await;
