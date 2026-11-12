@@ -231,7 +231,7 @@ the follow-ups wave 6 found:
 | [T-111](T-111-windows-signing-job.md) | Sign Windows releases in their own job | M | T-110 | todo |
 | [T-112](T-112-channel-welcome-budget.md) | Cap channels so one member cannot fill the Welcome | S | T-109 | todo |
 | [T-113](T-113-mention-count-at-sign-in.md) | Count a mention once when it arrives during sign-in | S | T-107, T-109 | todo |
-| [T-114](T-114-migration-rebuild-trigger.md) | Rebuild the server when a migration is added | S | T-109 | todo |
+| [T-114](T-114-migration-rebuild-trigger.md) | Rebuild the server when a migration is added | S | T-109 | done |
 
 Tasks that edit the same files are chained through "Depends on" so they do
 not run at once: T-082 → T-083 → T-084 share the voice worker; T-081 →

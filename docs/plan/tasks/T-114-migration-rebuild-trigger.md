@@ -1,6 +1,6 @@
 # T-114 — Rebuild the server when a migration is added
 
-Status: todo
+Status: done
 Phase: 4
 Size: S
 Depends on: T-109
@@ -27,3 +27,13 @@ Migration content.
   ss-server` recompiles `ss-server`; record the check in the notes.
 
 ## Notes from implementation
+
+Done on main by the maintainer's session (2026-11-12). `crates/ss-server/build.rs`
+prints `cargo:rerun-if-changed=migrations`, the form the sqlx `migrate!` docs
+give for stable Rust (`sqlx migrate build-script` generates the same file).
+Check: after a build, `cargo build -p ss-server -v` reported `Fresh ss-server`;
+after `touch crates/ss-server/migrations/9999_t114_probe.sql` it reported
+`Dirty ss-server … the file crates/ss-server/migrations has changed` and
+recompiled. The probe file was then removed. The nightly
+`--cfg sqlx_macros_unstable` alternative was not used: it needs nightly for
+every build and recompiles the whole dependency tree once.
