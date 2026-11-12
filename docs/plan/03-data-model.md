@@ -73,6 +73,13 @@ table with the `unicode61 remove_diacritics 2` tokenizer; deleting or
 soft-deleting a message removes it from the index, and `ss-server
 reindex-search` rebuilds it.
 
+Caps the handlers enforce, counted in the write transaction: at most 250
+roles, `@everyone` and Admin included (`limits::MAX_ROLES`, T-109); at most
+500 live guild channels, categories included, and 65,536 UTF-8 bytes of
+topic across them (`limits::MAX_CHANNELS`, `limits::CHANNEL_TOPIC_BYTES`,
+T-112). DMs and soft-deleted channels do not count. A database already past
+a cap keeps its rows; only additions are refused (`docs/security.md` §7).
+
 ## Permissions
 
 `ss_core::Permissions` is a `bitflags! u64`:

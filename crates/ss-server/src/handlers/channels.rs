@@ -6,6 +6,13 @@
 //! neither edit nor probe it. Sibling positions are dense and start at 0 for
 //! each parent. Deleting a category soft-deletes its descendants. Messages stay
 //! in the database. The connection evacuates voice seats in deleted channels.
+//!
+//! Every `Welcome` carries every guild channel, so a server holds at most
+//! [`limits::MAX_CHANNELS`] live guild channels, categories included, and
+//! [`limits::CHANNEL_TOPIC_BYTES`] bytes of topic across them. Both are
+//! checked under the writer. A server already past either keeps what it has:
+//! only a create past the count, or a create or update that adds topic bytes
+//! past the budget, is refused.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -18,6 +25,7 @@ use ss_proto::{
 
 use crate::{
     db::{self, ChannelUpdate, NewAuditEntry, NewChannel, audit_log, channels},
+    limits,
     perms::PermissionService,
     snapshot,
 };
@@ -82,6 +90,13 @@ impl Channels {
             let mut guard = self.perms.pool().write().await;
             let mut tx = guard.begin().await.map_err(db::Error::from)?;
             require_category(&mut tx, parent).await?;
+            let guild = guild_channels(&mut tx).await?;
+            if guild.len() >= limits::MAX_CHANNELS {
+                return Err(Error::Forbidden(
+                    "the server already has the maximum number of channels",
+                ));
+            }
+            ensure_topic_room(&guild, None, topic.as_deref())?;
             channels::insert(
                 &mut tx,
                 NewChannel {
@@ -149,6 +164,10 @@ impl Channels {
                 None => current.topic.clone(),
                 Some(topic) => stored_topic(Some(topic))?,
             };
+            if topic_len(topic.as_deref()) > topic_len(current.topic.as_deref()) {
+                let guild = guild_channels(&mut tx).await?;
+                ensure_topic_room(&guild, Some(id), topic.as_deref())?;
+            }
             let parent = match command.parent_id.as_deref() {
                 None => current.parent_id,
                 Some(bytes) => Some(required_id(bytes)?),
@@ -508,6 +527,43 @@ fn stored_topic(topic: Option<&str>) -> Result<Option<String>, Error> {
         }
         Some(topic) => Ok(Some(topic.to_owned())),
     }
+}
+
+/// Live guild channels, categories included. Read under the writer, so
+/// concurrent commands cannot both pass a cap.
+async fn guild_channels(conn: &mut sqlx::SqliteConnection) -> Result<Vec<db::Channel>, Error> {
+    let mut all = channels::list(conn).await?;
+    all.retain(|channel| !channel.kind.is_direct());
+    Ok(all)
+}
+
+/// UTF-8 bytes a topic costs in every `Welcome`.
+fn topic_len(topic: Option<&str>) -> usize {
+    topic.map_or(0, str::len)
+}
+
+/// Refuses `topic` on channel `replacing` (or a new channel) when the guild's
+/// topics would then pass [`limits::CHANNEL_TOPIC_BYTES`]. The replaced
+/// channel's current topic does not count.
+fn ensure_topic_room(
+    guild: &[db::Channel],
+    replacing: Option<Id>,
+    topic: Option<&str>,
+) -> Result<(), Error> {
+    if topic_len(topic) == 0 {
+        return Ok(());
+    }
+    let others: usize = guild
+        .iter()
+        .filter(|channel| Some(channel.id) != replacing)
+        .map(|channel| topic_len(channel.topic.as_deref()))
+        .sum();
+    if others.saturating_add(topic_len(topic)) > limits::CHANNEL_TOPIC_BYTES {
+        return Err(Error::Forbidden(
+            "the server's channel topics would pass their total length limit",
+        ));
+    }
+    Ok(())
 }
 
 fn guild_kind(value: i32) -> Result<ChannelKind, Error> {

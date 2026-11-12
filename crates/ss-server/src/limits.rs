@@ -67,6 +67,16 @@ pub const DM_PAGE: usize = 100;
 /// publishes one update per role, so this stays well under one frame and the
 /// 1024-event bus.
 pub const MAX_ROLES: usize = 250;
+/// Live guild channels on one server, categories included. Every `Welcome`
+/// carries all of them (at most about 390 bytes each without the topic, read
+/// state included), and deleting a category publishes one event per child,
+/// so this stays under the 1024-event bus. Deleted channels and DMs do not
+/// count.
+pub const MAX_CHANNELS: usize = 500;
+/// UTF-8 bytes of topic across every live guild channel. With
+/// [`MAX_CHANNELS`] and [`MAX_ROLES`] this leaves a `Welcome` room for 1,000
+/// members with every string at its longest (`docs/security.md` section 7).
+pub const CHANNEL_TOPIC_BYTES: usize = 64 * 1024;
 
 /// Keys are pruned once this many checks have passed since the last prune.
 const PRUNE_EVERY: u64 = 4096;

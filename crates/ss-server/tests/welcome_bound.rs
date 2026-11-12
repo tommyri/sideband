@@ -5,7 +5,8 @@
 //! four-byte characters, gives every member an avatar, and gives the members
 //! that can be online at once (one per connection, `MAX_CONNECTIONS`) a full
 //! presence activity. [`Strings::Typical`] uses short ASCII names, no topics,
-//! no avatars and no activity.
+//! no avatars and no activity. [`Topics`] says how the seeded channels carry
+//! topics under [`Strings::Longest`].
 
 use std::sync::Arc;
 
@@ -46,6 +47,34 @@ impl Strings {
     }
 }
 
+/// Topics on the seeded channels. [`Strings::Typical`] channels have none.
+#[derive(Clone, Copy)]
+enum Topics {
+    /// Every channel's topic at the 1,024-character limit.
+    Full,
+    /// No topic anywhere.
+    Absent,
+    /// This many topic bytes in all, spread as evenly as the four-byte
+    /// characters allow over every channel but the category. Each topic adds
+    /// a few bytes of framing, so the most topics is the largest `Welcome`
+    /// for a given budget.
+    Spread(usize),
+}
+
+impl Topics {
+    /// Characters in the topic of the `n`th of `channels` channels.
+    fn chars(self, n: usize, channels: usize) -> usize {
+        match self {
+            Self::Full => ss_server::text::MAX_TOPIC,
+            Self::Absent => 0,
+            Self::Spread(bytes) => {
+                let total = bytes / WIDE.len_utf8();
+                total / channels + usize::from(n < total % channels)
+            }
+        }
+    }
+}
+
 /// The guild a measurement seeds.
 #[derive(Clone, Copy)]
 struct Guild {
@@ -55,7 +84,9 @@ struct Guild {
     roles: usize,
     /// Of those roles, how many each member holds.
     held: usize,
+    /// Channels besides the one category they sit in.
     channels: usize,
+    topics: Topics,
 }
 
 struct Seeded {
@@ -101,14 +132,20 @@ async fn seed(guild: Guild) -> Seeded {
         }
     }
     let creator = viewer.unwrap();
-    let category = channels::insert(&mut tx, channel(strings, creator, None, 1))
+    let category = channels::insert(&mut tx, channel(strings, creator, None, 1, 0))
         .await
         .unwrap()
         .id;
+    let mut topic_bytes = 0;
     for n in 0..guild.channels {
         let position = i64::try_from(n).unwrap() + 10;
-        let row = channel(strings, creator, Some(category), position);
+        let chars = guild.topics.chars(n, guild.channels);
+        let row = channel(strings, creator, Some(category), position, chars);
+        topic_bytes += row.topic.as_ref().map_or(0, String::len);
         channels::insert(&mut tx, row).await.unwrap();
+    }
+    if let (Strings::Longest, Topics::Spread(bytes)) = (strings, guild.topics) {
+        assert_eq!(topic_bytes, bytes, "the seed spends the whole topic budget");
     }
     tx.commit().await.unwrap();
     drop(guard);
@@ -120,8 +157,15 @@ async fn seed(guild: Guild) -> Seeded {
 }
 
 /// A category without a parent, else the largest channel `strings` allows: a
-/// voice channel with a topic, every voice setting, and a parent.
-fn channel(strings: Strings, creator: Id, parent: Option<Id>, position: i64) -> NewChannel {
+/// voice channel with a topic of `topic_chars` (none when zero), every voice
+/// setting, and a parent.
+fn channel(
+    strings: Strings,
+    creator: Id,
+    parent: Option<Id>,
+    position: i64,
+    topic_chars: usize,
+) -> NewChannel {
     let longest = strings == Strings::Longest && parent.is_some();
     NewChannel {
         id: Id::generate(),
@@ -131,7 +175,7 @@ fn channel(strings: Strings, creator: Id, parent: Option<Id>, position: i64) -> 
             (Some(_), false) => ChannelKind::Text,
         },
         name: strings.text(64, "general-chat"),
-        topic: longest.then(|| strings.text(1024, "")),
+        topic: (longest && topic_chars > 0).then(|| strings.text(topic_chars, "")),
         parent_id: parent,
         position,
         voice_profile: longest.then_some(VoiceProfile::Music),
@@ -181,14 +225,16 @@ async fn welcome_len(guild: Guild) -> usize {
     .encoded_len()
 }
 
-/// Bytes per offline member, role, role held, and channel.
-async fn costs(strings: Strings) -> [usize; 4] {
+/// Bytes per offline member, role, role held, channel with a full topic, and
+/// channel without one.
+async fn costs(strings: Strings) -> [usize; 5] {
     let base = Guild {
         strings,
         members: 300,
         roles: 0,
         held: 0,
         channels: 0,
+        topics: Topics::Full,
     };
     let empty = welcome_len(base).await;
     let members = welcome_len(Guild {
@@ -208,12 +254,19 @@ async fn costs(strings: Strings) -> [usize; 4] {
         ..base
     })
     .await;
+    let topicless = welcome_len(Guild {
+        channels: 50,
+        topics: Topics::Absent,
+        ..base
+    })
+    .await;
     let per_role = (roles - empty) / 100;
     [
         (members - empty) / 1000,
         per_role,
         (held - empty - 10 * per_role) / (10 * 300),
         (channels - empty) / 50,
+        (topicless - empty) / 50,
     ]
 }
 
@@ -229,6 +282,7 @@ async fn welcome_costs_per_member_role_and_channel() {
         roles: 0,
         held: 0,
         channels: 0,
+        topics: Topics::Absent,
     })
     .await;
     let alone = welcome_len(Guild {
@@ -237,31 +291,37 @@ async fn welcome_costs_per_member_role_and_channel() {
         roles: 0,
         held: 0,
         channels: 0,
+        topics: Topics::Absent,
     })
     .await;
-    let read_state = v1::ReadState {
-        channel_id: id_to_bytes(Id::generate()),
-        last_read_message_id: id_to_bytes(Id::generate()),
-        mention_count: u32::MAX,
-    }
-    .encoded_len()
-        + 2;
+    let read_state = read_state_len();
     let seat = seat_len();
     eprintln!(
-        "[member, role, role held, channel] longest {longest:?} typical {typical:?}; \
+        "[member, role, role held, channel, channel without topic] longest {longest:?} typical {typical:?}; \
          {MAX_CONNECTIONS} online longest members {online} B; one member alone {alone} B; \
          read state {read_state} B; voice seat {seat} B"
     );
     // The costs the bound in `docs/security.md` is computed from.
-    for (cost, stated) in longest.into_iter().zip([360, 440, 18, 4_450]) {
+    for (cost, stated) in longest.into_iter().zip([360, 440, 18, 4_450, 345]) {
         assert!(cost <= stated, "longest {longest:?}");
     }
-    for (cost, stated) in typical.into_iter().zip([70, 45, 18, 90]) {
+    for (cost, stated) in typical.into_iter().zip([70, 45, 18, 90, 90]) {
         assert!(cost <= stated, "typical {typical:?}");
     }
     assert!(online <= 226_000, "{online}");
     assert!(read_state <= 45, "{read_state}");
     assert!(seat <= 140, "{seat}");
+}
+
+/// One read state in the snapshot, with its field header, at its largest.
+fn read_state_len() -> usize {
+    v1::ReadState {
+        channel_id: id_to_bytes(Id::generate()),
+        last_read_message_id: id_to_bytes(Id::generate()),
+        mention_count: u32::MAX,
+    }
+    .encoded_len()
+        + 2
 }
 
 /// One voice seat's `VoiceState` and audio `Track` in the snapshot, each with
@@ -292,27 +352,46 @@ fn seat_len() -> usize {
     state.encoded_len() + track.encoded_len() + 4
 }
 
-/// The examples stated in `docs/security.md` section 7 fit one frame.
+/// The typical example stated in `docs/security.md` section 7 fits one frame.
+/// The longest one is
+/// [`a_welcome_at_the_channel_and_role_caps_leaves_member_headroom`].
 #[tokio::test]
 async fn the_stated_welcome_examples_fit_one_frame() {
-    let roles = limits::MAX_ROLES - 2;
-    let longest = welcome_len(Guild {
-        strings: Strings::Longest,
-        members: 1_000,
-        roles,
-        held: 5,
-        channels: 50,
-    })
-    .await;
     let typical = welcome_len(Guild {
         strings: Strings::Typical,
         members: 8_000,
-        roles,
+        roles: limits::MAX_ROLES - 2,
         held: 2,
         channels: 200,
+        topics: Topics::Absent,
     })
     .await;
-    eprintln!("longest example {longest} B, typical example {typical} B");
-    assert!(longest <= ss_proto::MAX_FRAME_LEN, "{longest} B");
+    eprintln!("typical example {typical} B");
     assert!(typical <= ss_proto::MAX_FRAME_LEN, "{typical} B");
+}
+
+/// Longest members, each holding five roles, that `docs/security.md` section
+/// 7 promises still fit at the channel and role caps.
+const HEADROOM_MEMBERS: usize = 1_000;
+
+/// At the channel cap with the whole topic budget spent and at the role cap,
+/// every string at its longest, every connection online with a full activity
+/// and a voice seat, and a read state on every channel, a `Welcome` still has
+/// room for [`HEADROOM_MEMBERS`].
+#[tokio::test]
+async fn a_welcome_at_the_channel_and_role_caps_leaves_member_headroom() {
+    let guild = Guild {
+        strings: Strings::Longest,
+        members: HEADROOM_MEMBERS,
+        roles: limits::MAX_ROLES - 2,
+        held: 5,
+        // The seeded category is the last channel the cap allows.
+        channels: limits::MAX_CHANNELS - 1,
+        topics: Topics::Spread(limits::CHANNEL_TOPIC_BYTES),
+    };
+    let welcome = welcome_len(guild).await;
+    let total = welcome + MAX_CONNECTIONS * seat_len() + limits::MAX_CHANNELS * read_state_len();
+    let spare = ss_proto::MAX_FRAME_LEN.saturating_sub(total);
+    eprintln!("at the caps: {total} B with {HEADROOM_MEMBERS} longest members, {spare} B spare");
+    assert!(total <= ss_proto::MAX_FRAME_LEN, "{total} B");
 }
