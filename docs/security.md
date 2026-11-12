@@ -283,6 +283,8 @@ channels) closed every other session. Each has a test in
 | Channel topic | ≤ 1024 |
 | Role name | 1–100, same rules |
 | Roles | ≤ 250 per server, counting `@everyone` and Admin (`limits::MAX_ROLES`); `CreateRole` at the cap fails with `FORBIDDEN` |
+| Channels | ≤ 500 live guild channels per server, categories included (`limits::MAX_CHANNELS`); DMs and deleted channels do not count. `CreateChannel` at the cap fails with `FORBIDDEN` |
+| Channel topics, all together | ≤ 65,536 UTF-8 bytes across live guild channels (`limits::CHANNEL_TOPIC_BYTES`); a `CreateChannel` or `UpdateChannel` that adds topic bytes past it fails with `FORBIDDEN` |
 | Webhook name and `username` override | 1–80, same rules |
 | Message body | 1–4000 after trimming; webhook bodies ≤ 2000 |
 | Mentions per message | ≤ 50 distinct `<@ULID>` |
@@ -330,25 +332,40 @@ ASCII names of about 11 characters, no topic, avatar or activity.
 | Activity of an online member (at most 256, one per connection) | +516 B | 0 |
 | Role | 435 B | 43 B |
 | Role a member holds, besides `@everyone` | 18 B | 18 B |
-| Guild channel (voice, every setting, full topic) | 4,440 B | 85 B |
+| Guild channel without a topic (voice, every setting) | 341 B | 85 B |
+| Topic, on a channel that has one | its UTF-8 bytes + 3 B (a full one: 4,099 B) | 0 |
 | Read state, one per channel at most | 44 B | 44 B |
 | Voice seat (state and track), one per connection at most | 138 B | 138 B |
 | User, server info, token | about 2 KB | about 2 KB |
 
-The bound that holds, with M members, R roles, G role grants and C channels:
-with longest strings and all 256 connections online with a full activity and
-a voice seat, a `Welcome` fits one 1 MiB frame while
-359·M + 435·R + 18·G + 4,484·C ≤ 870,000 bytes (1 MiB less 132 KB of
-activities, 35 KB of seats, and the fixed part). With typical strings the
-same holds for 70·M + 43·R + 18·G + 129·C ≤ 1,000,000. Measured examples,
-each at the role cap (`@everyone`, Admin and 248 more): 50 channels and
-1,000 members holding five roles each, all longest, is 913 KB; 200 channels
-and 8,000 members holding two roles each, all typical, is 883 KB. The role cap holds roles to 109 KB at
-most. Members, channels and grants are not capped: past the bound, every
-`Hello` is refused with "welcome response is too large" (and logged) until
-the guild shrinks. Paging members would lift that; it is a protocol change
-and is not made. DMs never cause the refusal: they are halved until the
-frame fits.
+The bound that holds, with M members, R roles, G role grants, C channels
+and T topic bytes: with longest strings and all 256 connections online with
+a full activity and a voice seat, a `Welcome` fits one 1 MiB frame while
+359·M + 435·R + 18·G + 388·C + T ≤ 870,000 bytes (1 MiB less 132 KB of
+activities, 35 KB of seats, and the fixed part; 388 B is a channel, its read
+state and its topic's framing). With typical strings the same holds for
+70·M + 43·R + 18·G + 129·C ≤ 1,000,000.
+
+No member can reach the bound by creating content. Roles are capped at 250
+(109 KB at most), channels at 500 and their topics at 64 KiB together, so
+roles and channels take at most 368 KB however their strings are chosen;
+`UpdateChannel` cannot pass the topic budget, renames and voice settings are
+bounded per channel, and categories count as channels. That leaves members
+at least 501 KB: about 1,100 longest members holding five roles each, or
+(from the per-item costs) about 6,000 typical members holding two roles
+even when every role and channel string is longest. Measured at both caps,
+with the topic budget spread over every channel (the worst split), a read
+state on every channel, every connection seated and online, and every
+string longest, 1,000 members holding five roles each is 986 KB
+(`a_welcome_at_the_channel_and_role_caps_leaves_member_headroom`). With
+typical strings, 200 channels and 8,000 members holding two roles each,
+at the role cap, is 883 KB. A server already past a cap (created before
+T-112) keeps its channels and topics and can rename, move, shrink, clear and
+delete them; it only cannot add a channel, or topic bytes, until it is back
+under. Members and grants are not capped: past the bound, every `Hello` is
+refused with "welcome response is too large" (and logged) until the guild
+shrinks. Paging members would lift that; it is a protocol change and is not
+made. DMs never cause the refusal: they are halved until the frame fits.
 
 ## 8. Transport and HTTP hardening
 
@@ -504,10 +521,11 @@ Sideband's certificate.
 - RUSTSEC-2026-0459 (bundled SQLite before 3.54) is ignored in `deny.toml`
   until `sqlx` allows `libsqlite3-sys` 0.39; review by 2027-02-11 (section
   11, T-110).
-- Members, channels and role grants are not capped, so past the bound in
-  section 7 every `Hello` is refused. About 230 channels with full topics
-  reach it alone, so a member with `MANAGE_CHANNELS` can lock everyone out.
-  T-112.
+- Members and role grants are not capped, so a guild past the bound in
+  section 7 (about 1,000 members with the longest strings, 8,000 typical)
+  refuses every `Hello` until it shrinks. Roles and channels are capped so
+  that no member can reach the bound by creating them (T-109, T-112);
+  member paging, a protocol change, would lift the rest.
 
 ## 13. Review of 2026-11-09
 
