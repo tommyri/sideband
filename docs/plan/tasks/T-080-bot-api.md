@@ -229,11 +229,33 @@ red step.
 - A bot with only an HTTPS stream shows offline: presence comes from
   registered QUIC connections.
 
+**Security review follow-up** (second commit). Each fix has a test that
+failed with the fix disabled:
+
+| Finding | Fix | Test |
+|---|---|---|
+| A stream request that signed in, then saw its token revoked or reset before it took a slot, opened on the dead token (`open_stream` inserted a fresh, unsignalled entry) and lived until the 30 s recheck | `Bots` remembers the token ids it revoked and `open_stream` refuses them; the stream takes its slot, then rechecks the token in the database before the `Welcome`, so a revoke commits before that check or signals the slot. Refused: `401`, no `Welcome`. A slot ended while the snapshot is read sends its last frame instead of the `Welcome` | `connection::bots::tests::a_token_revoked_before_its_stream_takes_a_slot_gets_no_welcome` (in-process revoke) and `..._another_process_revoked_before_the_slot_gets_no_welcome` (CLI revoke), with a test-only pause (`Bots::gate`) between sign-in and slot |
+| The recheck kept a stream when the database errored | Fails closed: one retry a second later, then the stream ends with a `serverNotice` (the client reconnects; a dead token then gets `401`); at open the request is `503` with `Retry-After` | not tested (no seam for a database error) |
+| A ban ended a bot's streams only at the 30 s recheck | `Moderation` holds `Bots`; a kick or ban ends the bot's streams at once with the same `Kicked` or `Banned` frame its QUIC connections get (`Moderation::disconnect`). The CLI's `user ban` (another process) is still the 30 s recheck | `a_kick_or_ban_ends_a_bots_streams_at_once` |
+| Role or override changes | Already re-filtered at once (the stream runs the session's debounced channel diff and checks each event against the live snapshot); now pinned | `losing_a_role_hides_a_channel_from_the_stream_at_once` (passed before the change too) |
+| `Logout` on a bot connection closed it with code 6, so the client stopped reconnecting, while the token kept working | `Logout`, `ListSessions` and `RevokeSession` are `FORBIDDEN` for a bot ("a bot has no session: revoke its token with RevokeBotToken"); the connection stays up. `auth::live::Caller` carries a `bot` flag | `session_commands_are_refused_for_a_bot` |
+
+After the follow-up, `just check` passes (763 tests passed and 6 ignored
+in 63 binaries), `tests/bots.rs` (16 tests) passed 10 runs in a row, and
+desktop clippy and `cargo deny --all-features check` pass.
+
+The authorization audit pins the new guards (`open_stream` reaches
+`dead.contains(`, `bot_events` reaches `still_signed_in(`, kick and ban reach
+`Moderation::disconnect`, which reaches `end_streams_of(`).
+
+Files touched by the follow-up beyond the first commit's list:
+`crates/ss-server/src/handlers/moderation.rs` (the `bots` field and
+`disconnect`) and, again, `src/connection.rs` (`Moderation::new` gets the
+shared `Bots`; `sessions_caller` gets the bot flag), `src/auth/{mod,live}.rs`,
+`src/handlers/bots.rs`, `src/connection/bots.rs`, `src/http/bots.rs`,
+`tests/{bots,authorization_audit}.rs`, `docs/bots.md`, `docs/security.md`,
+`docs/plan/02-protocol.md`.
+
 **Open questions**
-- `Logout` on a bot's QUIC connection closes that bot token's connections
-  with code 6, which tells `ss-client-core` not to reconnect, but does not
-  revoke the token. Refuse it for bots instead?
-- A ban ends a bot's open streams only at their 30 s recheck, because
-  moderation does not know about streams; its requests are refused at once.
 - Should bot tokens expire? They do not; revocation is the remedy, as for
-  webhooks.
+  webhooks. (Asked of the maintainer.)

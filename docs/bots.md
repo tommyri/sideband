@@ -54,8 +54,16 @@ old one. `RevokeBotToken` (`ss-server bot revoke`) revokes it without a
 replacement. A revoked token is refused on the next request. Open
 connections and event streams that used it get `SessionRevoked` and close at
 once when a member revoked it, and within 30 seconds when the operator CLI
-did. A ban refuses the bot's requests at once, closes its QUIC connections
-like any member's, and ends its event streams within 30 seconds.
+did. A stream request that signed in just before a revoke gets `401` and no
+`welcome`.
+
+A kick or a ban from a moderator ends the bot's event streams at once, with
+`{"kicked": …}` or `{"banned": …}` as the last event, as it closes its QUIC
+connections. A kick is only a disconnect: the bot may reconnect. A ban
+refuses every request while it lasts. A ban the operator CLI records is
+picked up within 30 seconds. Losing a role or a channel override takes
+effect at once: the stream sends `channelDeleted` for channels the bot can
+no longer see and nothing from them afterwards.
 
 ## Signing in over QUIC
 
@@ -73,8 +81,10 @@ In Rust:
 let client = Client::connect(address, Credentials::Bot(token), pins).await?;
 ```
 
-`Logout`, `ListSessions` and `RevokeSession` do not apply to bots: a bot has
-no sessions.
+`Logout`, `ListSessions` and `RevokeSession` are refused for bots
+(`FORBIDDEN`): a bot has no sessions, and a `Logout` would only have told
+the client to stop reconnecting while the token kept working. Revoke the
+token with `RevokeBotToken`.
 
 ## HTTPS
 
@@ -136,8 +146,16 @@ with `!` (1 to 32 characters); every other kind of event still arrives.
 
 The stream ends:
 
-- with `{"sessionRevoked": …}` when the token is revoked or the bot is
-  banned or disabled. Stop; the token is dead.
+- with `{"sessionRevoked": …}` when the token is revoked or replaced, or
+  the account is disabled or banned outside the app. Stop; the token is
+  dead.
+- with `{"kicked": …}` or `{"banned": …}` when a moderator kicks or bans the
+  bot. After a kick you may reconnect; after a ban, requests fail until it
+  is lifted.
+- with `{"serverNotice": …}` when the server could not confirm the token
+  is still live (its 30-second check failed twice). Reconnect: a live token
+  gets a new stream, a dead one `401`. Opening a stream at such a moment is
+  `503` with `Retry-After`.
 - with `{"serverNotice": …}` after 9 minutes, or when the bot reads too
   slowly and falls behind. Reconnect: the new stream starts with a fresh
   `welcome`. Events between two streams are not replayed.

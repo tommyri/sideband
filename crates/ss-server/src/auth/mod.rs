@@ -11,12 +11,14 @@ mod token;
 
 pub use live::{CLOSE_SIGNED_OUT, Sessions, list_sessions, revoke_sessions};
 
-/// The connection a session command arrived on.
-pub(crate) const fn sessions_caller(user: Id, session: Id, conn: Id) -> live::Caller {
+/// The connection a session command arrived on. `bot` when `user` is a bot
+/// account, whose `session` is a bot token row.
+pub(crate) const fn sessions_caller(user: Id, session: Id, conn: Id, bot: bool) -> live::Caller {
     live::Caller {
         user,
         session,
         conn,
+        bot,
     }
 }
 

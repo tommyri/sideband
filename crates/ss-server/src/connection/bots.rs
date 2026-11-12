@@ -9,9 +9,10 @@
 //! bus subscription at the snapshot's read point, then forwards bus events
 //! through the filters a QUIC session uses: [`snapshot::delivers`], the DM
 //! membership rules, the debounced guild channel diff, and the voice-state
-//! gate (a leave only after its arrival). It ends when the token is revoked,
-//! when the bot stops being able to sign in, when it falls behind the bus,
-//! or after [`STREAM_LIFETIME`].
+//! gate (a leave only after its arrival). It ends when the token is revoked
+//! (and never opens on one revoked before it took its slot), when the bot is
+//! kicked or banned, when its account can no longer sign in, when it falls
+//! behind the bus, or after [`STREAM_LIFETIME`].
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -29,7 +30,12 @@ use super::{
     AuthedContext, Server, View, announce_direct, apply_direct, channel_event, direct_channel,
     event_frame, publish, refreshes_guild, replies, sync_channels, welcome_envelope,
 };
-use crate::{Error, auth, events::ServerEvent, handlers::bots::StreamSlot, snapshot};
+use crate::{
+    Error, auth,
+    events::ServerEvent,
+    handlers::bots::{StreamRefused, StreamSlot, revoked_frame},
+    snapshot,
+};
 
 /// How long one event stream lives before the client must reconnect. Below
 /// the public listener's connection age, so the stream ends cleanly.
@@ -37,6 +43,8 @@ pub(crate) const STREAM_LIFETIME: Duration = Duration::from_mins(9);
 /// How often a stream rechecks its token and account, for changes another
 /// process (the operator CLI) or a ban made.
 const RECHECK_EVERY: Duration = Duration::from_secs(30);
+/// Wait before the one retry of a recheck that failed.
+const RECHECK_RETRY: Duration = Duration::from_secs(1);
 /// Frames a stream may hold for a slow client before it waits.
 pub(crate) const STREAM_QUEUE: usize = 32;
 
@@ -123,14 +131,25 @@ impl Server {
 
     /// Opens an event stream for `bot`: a slot (at most
     /// [`crate::limits::BOT_STREAMS`] per token) and the receiver its
-    /// frames arrive on, `Welcome` first. `None` when the bot has every
-    /// slot in use.
-    pub(crate) fn bot_events(
+    /// frames arrive on, `Welcome` first.
+    ///
+    /// The slot is taken before the token is checked again in the database:
+    /// a revoke that committed after `bot` signed in is seen by that check,
+    /// and one that commits later signals the slot. Either way no `Welcome`
+    /// goes out on a dead token.
+    pub(crate) async fn bot_events(
         self: &Arc<Self>,
         bot: auth::Authenticated,
         filter: StreamFilter,
-    ) -> Option<mpsc::Receiver<v1::ServerEnvelope>> {
-        let slot = self.bots.open_stream(bot.session_id)?;
+    ) -> Result<mpsc::Receiver<v1::ServerEnvelope>, StreamRefused> {
+        #[cfg(test)]
+        self.bots.gate.pass().await;
+        let slot = self.bots.open_stream(bot.user.id, bot.session_id)?;
+        match self.still_signed_in(bot.session_id, bot.user.id).await {
+            Recheck::Live => {}
+            Recheck::Dead => return Err(StreamRefused::Revoked),
+            Recheck::Unknown => return Err(StreamRefused::Unavailable),
+        }
         let (outbound, receiver) = mpsc::channel(STREAM_QUEUE);
         let server = Arc::clone(self);
         tokio::spawn(async move {
@@ -138,7 +157,7 @@ impl Server {
                 tracing::debug!(%error, "bot event stream ended");
             }
         });
-        Some(receiver)
+        Ok(receiver)
     }
 
     async fn stream(
@@ -170,6 +189,11 @@ impl Server {
             .iter()
             .filter_map(|state| id_from_bytes(&state.conn_id).ok())
             .collect();
+        // Ended while the snapshot was read: the last frame instead of it.
+        let last = slot.end.borrow().clone();
+        if let Some(last) = last {
+            return ended(&outbound, last).await;
+        }
         let server_name = self.auth.server_name().await;
         // The stream does not hand the token back.
         bot.resume_token.clear();
@@ -183,14 +207,23 @@ impl Server {
             tokio::select! {
                 biased;
                 () = outbound.closed() => return Ok(()),
-                changed = slot.revoked.changed() => {
-                    if changed.is_err() || *slot.revoked.borrow() {
-                        return ended(&outbound, revoked()).await;
+                changed = slot.end.changed() => {
+                    let last = slot.end.borrow().clone();
+                    match (changed, last) {
+                        (_, Some(last)) => return ended(&outbound, last).await,
+                        (Err(_), None) => return ended(&outbound, revoked_frame()).await,
+                        (Ok(()), None) => {}
                     }
                 }
                 _ = recheck.tick() => {
-                    if !self.still_signed_in(bot.session_id, user).await {
-                        return ended(&outbound, revoked()).await;
+                    // Fails closed: unconfirmed ends the stream too, but as a
+                    // notice, so a bot with a live token reconnects.
+                    match self.still_signed_in(bot.session_id, user).await {
+                        Recheck::Live => {}
+                        Recheck::Dead => return ended(&outbound, revoked_frame()).await,
+                        Recheck::Unknown => {
+                            return ended(&outbound, notice("could not confirm the bot token; reconnect")).await;
+                        }
                     }
                 }
                 () = tokio::time::sleep_until(ends) => {
@@ -212,16 +245,23 @@ impl Server {
         }
     }
 
-    /// The token row is still live and the account may still sign in.
-    async fn still_signed_in(&self, token: Id, bot: Id) -> bool {
-        match self.auth.bot_token_live(token, bot).await {
-            Ok(live) => live,
-            // A database hiccup does not end a stream; the next check decides.
-            Err(error) => {
-                tracing::debug!(%error, "bot token recheck failed");
-                true
+    /// Whether the token row is still live and the account may still sign
+    /// in. A check that errors is retried once, a second later; a second
+    /// error is [`Recheck::Unknown`], which callers treat as not signed in.
+    async fn still_signed_in(&self, token: Id, bot: Id) -> Recheck {
+        for attempt in 0..2 {
+            match self.auth.bot_token_live(token, bot).await {
+                Ok(true) => return Recheck::Live,
+                Ok(false) => return Recheck::Dead,
+                Err(error) => {
+                    tracing::debug!(%error, attempt, "bot token recheck failed");
+                    if attempt == 0 {
+                        tokio::time::sleep(RECHECK_RETRY).await;
+                    }
+                }
             }
         }
+        Recheck::Unknown
     }
 
     /// [`super::on_event`] for a stream: the same filters, with the voice
@@ -260,6 +300,14 @@ impl Server {
         }
         send(outbound, event_frame(msg.clone())).await
     }
+}
+
+/// The outcome of rechecking a stream's token.
+enum Recheck {
+    Live,
+    Dead,
+    /// The check failed twice; the stream is not kept.
+    Unknown,
 }
 
 impl StreamFilter {
@@ -311,14 +359,94 @@ async fn ended(
     Ok(())
 }
 
-fn revoked() -> v1::ServerEnvelope {
-    event_frame(server_envelope::Msg::SessionRevoked(v1::SessionRevoked {
-        reason: "bot token revoked".into(),
-    }))
-}
-
 fn notice(text: &str) -> v1::ServerEnvelope {
     event_frame(server_envelope::Msg::ServerNotice(v1::ServerNotice {
         text: text.to_owned(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use ss_core::Permissions;
+    use tower::ServiceExt;
+
+    use super::Server;
+    use crate::{
+        db,
+        handlers::bots::{create_account, revoke_token},
+    };
+
+    async fn server() -> (tempfile::TempDir, Arc<db::Pool>, Arc<Server>) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(db::Pool::open(dir.path().join("t.db")).await.unwrap());
+        let server = Arc::new(Server::open(Arc::clone(&pool)).await.unwrap());
+        (dir, pool, server)
+    }
+
+    fn events(token: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/api/v1/events")
+            .header(header::AUTHORIZATION, format!("Bot {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Signs a stream request in, then lets `revoke` run before the stream
+    /// takes its slot, and returns the response status.
+    async fn revoked_between_sign_in_and_slot(
+        revoke: impl AsyncFnOnce(&db::Pool, &Server, ss_core::Id),
+    ) -> StatusCode {
+        let (_dir, pool, server) = server().await;
+        let (user, _, token) = create_account(&pool, None, "racer", "", Permissions::VIEW_CHANNEL)
+            .await
+            .unwrap();
+        let (reached, release) = server.bots.gate.arm();
+        let app = crate::http::bots::router(Arc::clone(&server));
+        let request = tokio::spawn(app.oneshot(events(&token)));
+        reached.await.unwrap();
+        revoke(&pool, &server, user.id).await;
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .expect("the stream request did not end at once")
+            .unwrap()
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_token_revoked_before_its_stream_takes_a_slot_gets_no_welcome() {
+        // As `RevokeBotToken` does: commit, reload, then end what used it.
+        let status = revoked_between_sign_in_and_slot(async |pool, server, bot| {
+            let old = revoke_token(pool, None, bot).await.unwrap();
+            server.perms.reload().await.unwrap();
+            server.bots.end(old);
+        })
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "a stream opened on a dead token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_another_process_revoked_before_the_slot_gets_no_welcome() {
+        // The operator CLI: the row changes, nothing in this process is told.
+        let status = revoked_between_sign_in_and_slot(async |pool, _, bot| {
+            let _old = revoke_token(pool, None, bot).await.unwrap();
+        })
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "a stream opened on a dead token"
+        );
+    }
 }

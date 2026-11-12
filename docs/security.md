@@ -145,7 +145,17 @@ It does not protect against:
   dummy hash) and never gets a session. Revoking or replacing a token
   closes its QUIC connections (`SessionRevoked`, code 6) and ends its event
   streams at once; the CLI's changes are picked up by the 30 s sweep, and
-  streams recheck their token and account every 30 s. Issuing needs
+  streams recheck their token and account every 30 s, failing closed (a
+  recheck that errors twice, a second apart, ends the stream with a notice,
+  and a stream that cannot be checked at open is not opened: `503`). A stream
+  cannot open on a token revoked after its request signed in: the process
+  remembers the token ids it revoked, and the stream takes its slot before
+  it rechecks the token in the database, so a revoke either commits before
+  that recheck or signals the slot (tested with a pause between sign-in and
+  slot). A kick or ban from a moderator ends the bot's streams at once with
+  `Kicked` or `Banned`, as it closes the bot's QUIC connections; a role or
+  override change re-filters them at once, as for a QUIC session. Issuing
+  needs
   `MANAGE_SERVER`, a bot never issues, scopes are limited to the issuer's
   bits, and resetting or revoking another member's bot also needs a role
   above it. The issued plaintext is held in a `Zeroizing` buffer; the copy
@@ -557,11 +567,10 @@ ship code inside a signed release, but it cannot use or take the key.
 - RUSTSEC-2026-0459 (bundled SQLite before 3.54) is ignored in `deny.toml`
   until `sqlx` allows `libsqlite3-sys` 0.39; review by 2027-02-11 (section
   11, T-110).
-- A ban ends a bot's open event streams only at their next 30 s recheck;
-  its requests and QUIC connections are refused at once. Events between two
-  of a bot's streams are not replayed (T-080).
-- Bots cannot upload attachments, and `Logout` on a bot's QUIC connection
-  only closes it; revoking is `RevokeBotToken` (T-080).
+- A ban recorded by the operator CLI ends a bot's open event streams only
+  at their next 30 s recheck (a ban from the app ends them at once). Events
+  between two of a bot's streams are not replayed (T-080).
+- Bots cannot upload attachments (T-080).
 - Members and role grants are not capped, so a guild past the bound in
   section 7 (about 1,000 members with the longest strings, 8,000 typical)
   refuses every `Hello` until it shrinks. Roles and channels are capped so

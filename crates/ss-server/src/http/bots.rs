@@ -39,6 +39,7 @@ use crate::{
     auth,
     connection::{Server, StreamFilter},
     db::{self, EVERYONE_ROLE_ID, roles, users},
+    handlers::bots::StreamRefused,
     snapshot,
 };
 
@@ -281,11 +282,25 @@ async fn events(
     let filter = StreamFilter {
         prefix: query.prefix,
     };
-    let Some(frames) = server.bot_events(bot, filter) else {
-        return rate_limited(
-            "too many event streams for this bot",
-            Duration::from_secs(1),
-        );
+    let frames = match server.bot_events(bot, filter).await {
+        Ok(frames) => frames,
+        Err(StreamRefused::Busy) => {
+            return rate_limited(
+                "too many event streams for this bot",
+                Duration::from_secs(1),
+            );
+        }
+        // Revoked after this request signed in: no `Welcome` goes out.
+        Err(StreamRefused::Revoked) => return unauthorized(),
+        Err(StreamRefused::Unavailable) => {
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "could not confirm the bot token; try again" })),
+            )
+                .into_response();
+            retry_after(&mut response, Duration::from_secs(1));
+            return response;
+        }
     };
     let stream = futures::stream::unfold(frames, |mut frames| async move {
         let frame = frames.recv().await?;

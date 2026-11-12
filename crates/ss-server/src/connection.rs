@@ -139,10 +139,11 @@ impl Server {
             bus.clone(),
         ));
         let sessions = Arc::new(auth::Sessions::new(Arc::clone(&pool)));
+        let bots = Arc::new(Bots::new(Arc::clone(&perms), Arc::clone(&sessions)));
         Ok(Self {
             pool: Arc::clone(&pool),
             auth: Auth::new(Arc::clone(&pool)),
-            bots: Arc::new(Bots::new(Arc::clone(&perms), Arc::clone(&sessions))),
+            bots: Arc::clone(&bots),
             sessions,
             roles: Roles::new(Arc::clone(&perms)),
             dms: DirectMessages::new(Arc::clone(&perms)),
@@ -155,6 +156,7 @@ impl Server {
                 Arc::clone(&perms),
                 Arc::clone(&registry),
                 Arc::clone(&voice),
+                bots,
             ),
             files,
             perms,
@@ -1305,7 +1307,12 @@ async fn replies(
     if let Some(refused) = bot_budget(server, context, request_id) {
         return refused;
     }
-    let caller = auth::sessions_caller(context.user_id, context.session_id, context.conn_id);
+    let caller = auth::sessions_caller(
+        context.user_id,
+        context.session_id,
+        context.conn_id,
+        server.perms.is_bot(context.user_id),
+    );
     if let Some(result) = server.sessions.dispatch(caller, request_id, msg).await {
         return session_answer(request_id, result);
     }

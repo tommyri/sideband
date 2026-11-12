@@ -69,6 +69,9 @@ pub(crate) struct Caller {
     pub user: Id,
     pub session: Id,
     pub conn: Id,
+    /// A bot account: it has no sessions, and its token is revoked with
+    /// `RevokeBotToken`, so these commands are refused.
+    pub bot: bool,
 }
 
 impl Sessions {
@@ -122,9 +125,18 @@ impl Sessions {
         msg: &Msg,
     ) -> Option<Result<Option<ack::Result>, handlers::Error>> {
         match msg {
-            Msg::Logout(_) => Some(self.logout(caller, request_id).await.map(|()| None)),
-            Msg::ListSessions(_) => Some(self.list(caller).await.map(Some)),
-            Msg::RevokeSession(command) => Some(self.revoke(caller, request_id, command).await),
+            Msg::Logout(_) => Some(match no_bot(caller) {
+                Ok(()) => self.logout(caller, request_id).await.map(|()| None),
+                Err(error) => Err(error),
+            }),
+            Msg::ListSessions(_) => Some(match no_bot(caller) {
+                Ok(()) => self.list(caller).await.map(Some),
+                Err(error) => Err(error),
+            }),
+            Msg::RevokeSession(command) => Some(match no_bot(caller) {
+                Ok(()) => self.revoke(caller, request_id, command).await,
+                Err(error) => Err(error),
+            }),
             _ => None,
         }
     }
@@ -284,6 +296,19 @@ impl Sessions {
                 },
             }
         }
+    }
+}
+
+/// Refuses session commands from a bot. A bot `Logout` would close its
+/// connections with code 6, which tells the client not to reconnect, while
+/// the token kept working.
+fn no_bot(caller: Caller) -> Result<(), handlers::Error> {
+    if caller.bot {
+        Err(handlers::Error::Forbidden(
+            "a bot has no session: revoke its token with RevokeBotToken",
+        ))
+    } else {
+        Ok(())
     }
 }
 

@@ -869,6 +869,165 @@ async fn rest_reads_page_members_and_list_visible_channels() {
 }
 
 #[tokio::test]
+async fn a_kick_or_ban_ends_a_bots_streams_at_once() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let (bot, token) = create_bot(&owner, "unruly", CHAT).await;
+
+    let mut stream = world.events(&token, "").await;
+    stream.next_of("welcome").await;
+    owner
+        .kick_user(v1::KickUser {
+            user_id: wire(bot),
+            reason: "calm down".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(stream.next_of("kicked").await["reason"], "calm down");
+    assert!(
+        stream.next().await.is_none(),
+        "the stream outlived the kick"
+    );
+
+    // A kick is only a disconnect; a ban refuses everything at once.
+    let mut stream = world.events(&token, "").await;
+    stream.next_of("welcome").await;
+    let native = world
+        .connect(Credentials::Bot(token.clone()))
+        .await
+        .unwrap();
+    let mut native_events = native.subscribe();
+    owner
+        .ban_user(v1::BanUser {
+            user_id: wire(bot),
+            reason: "spam".into(),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    stream.next_of("banned").await;
+    assert!(stream.next().await.is_none(), "the stream outlived the ban");
+    timeout(WAIT, async {
+        while !matches!(
+            native_events.recv().await,
+            Ok(ClientEvent::Removed { banned: true, .. })
+        ) {}
+    })
+    .await
+    .expect("the banned bot stayed connected");
+    let (status, _) = world
+        .rest("GET", "/api/v1/events", &format!("Bot {token}"), None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn losing_a_role_hides_a_channel_from_the_stream_at_once() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let (bot, token) = create_bot(&owner, "lurker", CHAT).await;
+    let lounge = owner
+        .create_channel(v1::CreateChannel {
+            kind: i32::from(v1::ChannelKind::Text),
+            name: "lounge".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let regulars = owner
+        .create_role(v1::CreateRole {
+            name: "Regulars".into(),
+            color: None,
+            permissions: 0,
+            position: 2,
+        })
+        .await
+        .unwrap();
+    for (role, allow, deny) in [
+        (
+            wire(db::EVERYONE_ROLE_ID),
+            0,
+            Permissions::VIEW_CHANNEL.bits(),
+        ),
+        (regulars.id.clone(), Permissions::VIEW_CHANNEL.bits(), 0),
+    ] {
+        owner
+            .set_channel_override(v1::SetChannelOverride {
+                channel_id: wire(lounge),
+                role_id: role,
+                allow,
+                deny,
+            })
+            .await
+            .unwrap();
+    }
+    owner
+        .set_user_roles(v1::SetUserRoles {
+            user_id: wire(bot),
+            role_ids: vec![regulars.id.clone()],
+        })
+        .await
+        .unwrap();
+    let mut stream = world.events(&token, "").await;
+    let welcome = stream.next_of("welcome").await;
+    assert!(
+        welcome["snapshot"]["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|channel| channel["name"] == "lounge")
+    );
+
+    owner
+        .set_user_roles(v1::SetUserRoles {
+            user_id: wire(bot),
+            role_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    for (channel, content) in [(lounge, "after the demotion"), (general(&owner), "public")] {
+        let _sent = owner
+            .send_message(v1::SendMessage {
+                channel_id: wire(channel),
+                content: content.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let removed = stream.next_of("channelDeleted").await;
+    assert_eq!(removed["channel"]["name"], "lounge");
+    let created = stream.next_of("messageCreated").await;
+    assert_eq!(created["message"]["content"], "public");
+}
+
+#[tokio::test]
+async fn session_commands_are_refused_for_a_bot() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let (_, token) = create_bot(&owner, "sessionless", CHAT).await;
+    let native = world.connect(Credentials::Bot(token)).await.unwrap();
+    for msg in [
+        v1::client_envelope::Msg::Logout(v1::Logout {}),
+        v1::client_envelope::Msg::ListSessions(v1::ListSessions {}),
+        v1::client_envelope::Msg::RevokeSession(v1::RevokeSession {
+            session_id: wire(Id::generate()),
+        }),
+    ] {
+        let refused = native.command(msg).await.unwrap_err();
+        assert_eq!(code(&refused), i32::from(v1::ErrorCode::Forbidden));
+        assert!(refused.to_string().contains("RevokeBotToken"), "{refused}");
+    }
+    // Still connected and signed in.
+    native
+        .typing(v1::Typing {
+            channel_id: wire(general(&owner)),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn per_bot_limits_apply_across_transports() {
     let world = World::new().await;
     let owner = world.owner().await;

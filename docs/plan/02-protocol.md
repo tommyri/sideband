@@ -558,7 +558,10 @@ when both have it; every check and visibility filter applies this cap.
 Revoking or replacing a token closes the QUIC connections that used it
 (`SessionRevoked`, code 6) and ends its event streams with a
 `sessionRevoked` event, at once; the operator CLI's changes are picked up
-within 30 s (section 1.1). An event stream gets the events a QUIC session of
+within 30 s (section 1.1). A stream request that signed in before a revoke
+is refused (`401`) without a `welcome`. A kick or ban ends a bot's streams
+at once with `kicked` or `banned`. `Logout`, `ListSessions` and
+`RevokeSession` are `FORBIDDEN` for a bot. An event stream gets the events a QUIC session of
 the bot would, with the same filters, and also the bot's own actions. It
 ends after 9 minutes or when it falls behind the event bus, with a
 `serverNotice` event, and the bot reconnects for a new `welcome`; events

@@ -682,6 +682,18 @@ const OUTBOUND: &[(&str, &str, &[&str])] = &[
     ),
     // A bot is capped by the scopes of the token it signed in with.
     ("connection/bots.rs", "bot_caller", &["bot_token("]),
+    // A stream never opens on a revoked token: refused if this process
+    // revoked it, rechecked in the database after its slot is taken.
+    ("handlers/bots.rs", "open_stream", &["dead.contains("]),
+    ("connection/bots.rs", "bot_events", &["still_signed_in("]),
+    // A kick or ban ends a bot's streams with its connections.
+    (
+        "handlers/moderation.rs",
+        "disconnect",
+        &["disconnect_user(", "end_streams_of("],
+    ),
+    ("handlers/moderation.rs", "kick", &["self.disconnect("]),
+    ("handlers/moderation.rs", "ban", &["self.disconnect("]),
     // A leave names no channel; only connections that saw the arrival get it.
     ("registry.rs", "enqueue", &["admit("]),
     // Seats are rechecked after every role, grant, override or guild channel

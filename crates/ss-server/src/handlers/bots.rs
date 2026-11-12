@@ -7,10 +7,16 @@
 //! [`crate::perms`] caps the bot by them on every check.
 //!
 //! Revoking or replacing a token closes the QUIC connections that used it
-//! (`SessionRevoked`, code 6) and ends its HTTPS event streams at once.
+//! (`SessionRevoked`, code 6) and ends its HTTPS event streams at once; a
+//! stream never opens on a token revoked before it took its slot. A kick or
+//! ban ends the bot's streams as it closes its connections.
 //! [`Bots::spend`] is the per-bot request budget, shared by both transports.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use parking_lot::Mutex;
 use sqlx::Connection;
@@ -40,33 +46,57 @@ pub struct Bots {
     perms: Arc<PermissionService>,
     sessions: Arc<auth::Sessions>,
     requests: KeyedLimiter<Id>,
-    streams: Arc<Mutex<HashMap<Id, Streams>>>,
+    streams: Arc<Mutex<StreamTable>>,
+    #[cfg(test)]
+    pub(crate) gate: Gate,
+}
+
+/// Open event streams by token, and the tokens this process revoked.
+#[derive(Default)]
+struct StreamTable {
+    open: HashMap<Id, Streams>,
+    /// Token ids revoked or replaced in this process. A stream never opens
+    /// on one, even if it signed in just before the revoke. Ids are never
+    /// reused, and one is added per revoke, so this stays small.
+    dead: HashSet<Id>,
 }
 
 /// Event streams open with one token.
 struct Streams {
-    revoked: watch::Sender<bool>,
+    bot: Id,
+    end: watch::Sender<Option<v1::ServerEnvelope>>,
     open: usize,
 }
 
 /// One open event stream. Dropping it frees the slot.
 pub(crate) struct StreamSlot {
-    streams: Arc<Mutex<HashMap<Id, Streams>>>,
+    streams: Arc<Mutex<StreamTable>>,
     token: Id,
-    /// Becomes `true` when the token is revoked or replaced.
-    pub revoked: watch::Receiver<bool>,
+    /// Set to the stream's last frame when it must end: `SessionRevoked`
+    /// on a revoke or reset, `Kicked` or `Banned` on moderation.
+    pub end: watch::Receiver<Option<v1::ServerEnvelope>>,
 }
 
 impl Drop for StreamSlot {
     fn drop(&mut self) {
         let mut streams = self.streams.lock();
-        if let Some(entry) = streams.get_mut(&self.token) {
+        if let Some(entry) = streams.open.get_mut(&self.token) {
             entry.open = entry.open.saturating_sub(1);
             if entry.open == 0 {
-                streams.remove(&self.token);
+                streams.open.remove(&self.token);
             }
         }
     }
+}
+
+/// Why a stream did not open.
+pub(crate) enum StreamRefused {
+    /// The token has every slot in use.
+    Busy,
+    /// The token was revoked or replaced.
+    Revoked,
+    /// The token could not be checked; nothing was opened.
+    Unavailable,
 }
 
 impl Bots {
@@ -81,6 +111,8 @@ impl Bots {
                 limits::BOT_REQUEST_PERIOD,
             )),
             streams: Arc::default(),
+            #[cfg(test)]
+            gate: Gate::default(),
         }
     }
 
@@ -93,30 +125,51 @@ impl Bots {
         }
     }
 
-    /// Opens an event stream for `token`, at most
-    /// [`limits::BOT_STREAMS`] at once per token.
-    pub(crate) fn open_stream(&self, token: Id) -> Option<StreamSlot> {
+    /// Takes an event-stream slot for `bot`'s `token`, at most
+    /// [`limits::BOT_STREAMS`] at once per token. A token this process has
+    /// revoked is refused. The slot is registered before the caller rechecks
+    /// the token in the database, so a revoke either commits before that
+    /// recheck or signals this slot.
+    pub(crate) fn open_stream(&self, bot: Id, token: Id) -> Result<StreamSlot, StreamRefused> {
         let mut streams = self.streams.lock();
-        let entry = streams.entry(token).or_insert_with(|| Streams {
-            revoked: watch::channel(false).0,
+        if streams.dead.contains(&token) {
+            return Err(StreamRefused::Revoked);
+        }
+        let entry = streams.open.entry(token).or_insert_with(|| Streams {
+            bot,
+            end: watch::channel(None).0,
             open: 0,
         });
         if entry.open >= limits::BOT_STREAMS {
-            return None;
+            return Err(StreamRefused::Busy);
         }
         entry.open += 1;
-        Some(StreamSlot {
+        Ok(StreamSlot {
             streams: Arc::clone(&self.streams),
             token,
-            revoked: entry.revoked.subscribe(),
+            end: entry.end.subscribe(),
         })
     }
 
-    /// Closes everything that used `token`: QUIC connections and streams.
+    /// Closes everything that used `token`: QUIC connections and streams,
+    /// and refuses streams on it from now on.
     pub(crate) fn end(&self, token: Id) {
         self.sessions.end(token);
-        if let Some(entry) = self.streams.lock().get(&token) {
-            let _ = entry.revoked.send(true);
+        let mut streams = self.streams.lock();
+        streams.dead.insert(token);
+        if let Some(entry) = streams.open.get(&token) {
+            let _ = entry.end.send(Some(revoked_frame()));
+        }
+    }
+
+    /// Ends every event stream of account `user` with `last` (`Kicked` or
+    /// `Banned`), as moderation closes its QUIC connections. Not a bot, or
+    /// no stream: nothing happens.
+    pub(crate) fn end_streams_of(&self, user: Id, last: &v1::ServerEnvelope) {
+        for entry in self.streams.lock().open.values() {
+            if entry.bot == user {
+                let _ = entry.end.send(Some(last.clone()));
+            }
         }
     }
 
@@ -373,6 +426,53 @@ async fn issue(
         },
     )
     .await?)
+}
+
+/// A pause a test arms to run code between a stream's sign-in and its slot.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Gate(
+    Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+);
+
+#[cfg(test)]
+impl Gate {
+    /// The next [`Self::pass`] signals the first receiver, then waits for
+    /// the second sender.
+    pub(crate) fn arm(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached, reached_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self.0.lock() = Some((reached, release_rx));
+        (reached_rx, release)
+    }
+
+    pub(crate) async fn pass(&self) {
+        let armed = self.0.lock().take();
+        if let Some((reached, release)) = armed {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
+    }
+}
+
+/// The last frame of a stream whose token was revoked or replaced.
+pub(crate) fn revoked_frame() -> v1::ServerEnvelope {
+    v1::ServerEnvelope {
+        request_id: 0,
+        msg: Some(server_envelope::Msg::SessionRevoked(v1::SessionRevoked {
+            reason: "bot token revoked".into(),
+        })),
+    }
 }
 
 fn display(name: &str) -> Result<String, Error> {
