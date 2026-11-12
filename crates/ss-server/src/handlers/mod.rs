@@ -2,9 +2,10 @@
 //!
 //! [`roles`] answers role and override commands. [`presence`] answers
 //! `SetPresence`. [`profile`] answers `UpdateProfile`. [`dm`] answers
-//! direct messages. The connection sends
+//! direct messages. [`bots`] answers bot account commands. The connection sends
 //! the ack, then the event, and publishes the event for other sessions.
 
+pub mod bots;
 mod channels;
 mod dm;
 pub(crate) mod messages;
@@ -14,6 +15,7 @@ mod profile;
 mod roles;
 mod webhooks;
 
+pub(crate) use bots::Bots;
 pub use channels::Channels;
 pub(crate) use dm::DirectMessages;
 pub use messages::Messages;

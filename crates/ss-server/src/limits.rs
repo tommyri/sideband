@@ -36,6 +36,16 @@ pub const HELLO_PERIOD: Duration = Duration::from_secs(2);
 pub const COMMAND_BURST: u32 = 100;
 /// Refill interval for [`COMMAND_BURST`].
 pub const COMMAND_PERIOD: Duration = Duration::from_millis(50);
+/// Requests per bot account, QUIC commands and HTTPS calls together: a
+/// burst of 50, then five a second. On top of the per-account command
+/// budget and each command's own quota, so a bot is never looser than a
+/// member (T-080).
+pub const BOT_REQUEST_BURST: u32 = 50;
+/// Refill interval for [`BOT_REQUEST_BURST`].
+pub const BOT_REQUEST_PERIOD: Duration = Duration::from_millis(200);
+/// HTTPS event streams open at once with one bot token. Each holds a bus
+/// subscription and was sent a full snapshot.
+pub const BOT_STREAMS: usize = 2;
 /// Concurrent QUIC sessions, pending handshakes included, from one address.
 pub const SESSIONS_PER_IP: usize = 32;
 /// Public HTTP requests from one address: a burst of 200, then fifty a second.

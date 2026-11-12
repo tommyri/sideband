@@ -1,10 +1,10 @@
 # ss-server
 
-The server owns control dispatch, voice membership (`voice::Voice`, seats in
+The server owns control dispatch, voice (`voice::Voice`, seats in
 `voice::rooms::Rooms`), opaque audio fan-out (`media::Router`), accounts
 (`auth`, `connection`), permissions (`perms`), channels, presence, text, DMs,
-search, link previews, attachments, moderation, webhooks, and SQLite (`db`).
-Media is never decoded.
+search, previews, attachments, moderation, webhooks, bots (`handlers::bots`,
+`http::bots`) and SQLite (`db`). Media is never decoded.
 
 `init` writes `config.toml`, the database and a TLS identity, then prints the
 owner invite and fingerprint. `run` serves authenticated QUIC and HTTPS;
@@ -15,10 +15,10 @@ unknown key; `backup` tars the database and attachments.
 
 A subcommand is required; with none, usage is printed and the exit code is 2.
 `spike --bind 127.0.0.1:4433` is the unauthenticated spike. `invite create
---owner`, `user list|set-password|ban|unban|sessions`, `role grant-admin`,
-`fingerprint` and `tls rotate` recover access; `conn list`, `reindex-search` and
-`check-migrations` never listen. The data dir defaults to
-`$XDG_DATA_HOME/socialspeak`, else `./data`.
+--owner`, `user list|set-password|ban|unban|sessions`, `bot create|reset|…`,
+`role grant-admin`, `fingerprint` and `tls rotate` manage access; `conn list`,
+`reindex-search` and `check-migrations` never listen. The data dir defaults
+to `$XDG_DATA_HOME/socialspeak`, else `./data`.
 
 One audio track per joined connection; joins announce tracks both ways, and
 leave, switch and disconnect remove it. Mute/deaf flags gate forwarding; joins

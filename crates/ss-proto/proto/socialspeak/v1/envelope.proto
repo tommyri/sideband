@@ -3,6 +3,7 @@ syntax = "proto3";
 package socialspeak.v1;
 
 import "socialspeak/v1/auth.proto";
+import "socialspeak/v1/bots.proto";
 import "socialspeak/v1/channels.proto";
 import "socialspeak/v1/common.proto";
 import "socialspeak/v1/messages.proto";
@@ -70,6 +71,10 @@ message ClientEnvelope {
     ListSessions list_sessions = 43;
     RevokeSession revoke_session = 44;
     ListDms list_dms = 45;
+    CreateBot create_bot = 46;
+    ResetBotToken reset_bot_token = 47;
+    RevokeBotToken revoke_bot_token = 48;
+    ListBots list_bots = 49;
   }
 }
 
@@ -141,6 +146,11 @@ message Ack {
     SessionList sessions = 11;
     // `ListDms` returned this page.
     DmPage dm_page = 13;
+    // `CreateBot` or `ResetBotToken` returned this bot. The token is only
+    // here.
+    Bot bot = 14;
+    // `ListBots` returned every bot account.
+    BotList bots = 15;
   }
 }
 

@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 ss-core = { workspace = true, features = ["sqlx"] }
 ss-net.workspace = true
-ss-proto.workspace = true
+ss-proto = { workspace = true, features = ["json"] }
 
 anyhow.workspace = true
 arc-swap.workspace = true
@@ -56,6 +56,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 ss-client-core.workspace = true
+# The example bots run against a test server (`tests/bots.rs`).
+sideband-bot-example.workspace = true
 allocation-counter.workspace = true
 hyper = { workspace = true, features = ["client", "http2"] }
 rcgen.workspace = true

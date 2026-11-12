@@ -1,7 +1,7 @@
 # Data model
 
 SQLite, WAL mode, `sqlx` with embedded migrations in
-`crates/ss-server/migrations/` (0001 to 0007; the listing below is the schema
+`crates/ss-server/migrations/` (0001 to 0008; the listing below is the schema
 after all of them). All ids are ULIDs stored as 16-byte BLOBs
 (`ss_core::Id`). Timestamps are `INTEGER` Unix milliseconds. Soft deletes only
 where history matters (messages).
@@ -56,6 +56,10 @@ audit_log        (id PK, actor_id FK NULL, action TEXT, target_kind TEXT,
                   target_id BLOB NULL, details TEXT /*json*/, created_at)
 webhooks         (id PK, channel_id FK, name, token_hash UNIQUE, created_by FK,
                   created_at, revoked_at NULL)
+bot_tokens       (id PK, bot_id FK users, token_hash UNIQUE /*SHA-256 hex*/,
+                  scopes INTEGER /*u64 bitflags*/, created_by FK users NULL
+                  /*NULL: operator CLI*/, created_at, revoked_at NULL)
+                  -- 0008 (T-080): at most one live token per bot
 server_settings  (key PK, value TEXT)  -- name, description, icon, registration_mode,
                                          -- owner_invite until the first account
 ```
@@ -65,7 +69,12 @@ Indexes: `messages(channel_id, id DESC)`, `messages(author_id)`,
 `audit_log(created_at)`, `link_previews(expires_at)`,
 `message_nonces(created_at)`, `channel_members(user_id, channel_id)`
 (migration 0007, T-109: the DM page and the group-DM count look members up
-by user).
+by user), and the partial unique `bot_tokens(bot_id) WHERE revoked_at IS
+NULL` (migration 0008).
+
+A bot (`users.kind = 1`, T-080) has no usable password (`password_hash` is
+not a PHC string, and login skips bot accounts) and never a `sessions` row.
+It signs in with its live `bot_tokens` row.
 
 Nonces are kept 5 minutes after the message was stored (`02-protocol.md`
 §1.2). Message search (T-065, migration 0006) is an FTS5 external-content
@@ -121,6 +130,13 @@ for each role r of u (plus @everyone), override = channel_overrides[c][r]:
     base = (base & ~override.deny) | override.allow
 DM channels: VIEW_CHANNEL|SEND_MESSAGES|ATTACH_FILES iff u ∈ channel_members
 ```
+
+Bots: a bot account holds only the bits that its roles grant (as above,
+overrides included) and its live token's `scopes` contain, and never
+`CONNECT`, `SPEAK` or `STREAM`. `ADMINISTRATOR` applies only when both grant
+it. Without a live token its scopes are empty. A token's scopes may only hold
+bits its issuer holds on the server (the operator CLI may issue any). Role
+positions, and so the hierarchy rule, are unchanged.
 
 Hierarchy rule: an actor may kick/ban/mute/move/edit-roles-of a target only if
 `actor.highest_role.position > target.highest_role.position`. An administrator

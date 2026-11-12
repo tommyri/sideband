@@ -36,6 +36,7 @@ const member = (id: string): MemberView => ({
   canMove: false,
   volume: 100,
   localMuted: false,
+  bot: false,
 })
 const conversation: DmView = {
   id: 'group',

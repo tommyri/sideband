@@ -23,7 +23,8 @@ server parses.
    fingerprint pinned on first use (§1 and security §3).
 2. Open one bidirectional stream. Every control message travels on it as a
    length-prefixed protobuf `ClientEnvelope` or `ServerEnvelope` (§2).
-3. Send `Hello` with a login, an invite registration or a saved session token.
+3. Send `Hello` with a login, an invite registration, a saved session token,
+   or a bot token.
    The server answers `Welcome` with a full `Snapshot`, or an `Error` and a
    close.
 4. Send commands with increasing `request_id`s. Each gets exactly one `Ack` or
@@ -32,29 +33,28 @@ server parses.
 5. Send `Ping` when idle (the desktop sends one every 15 seconds); the idle
    timeout is 30 seconds. After a drop, reconnect with `Hello{resume_token}`.
 6. History, uploads, attachments and search use HTTPS with
-   `Authorization: Bearer <session token>` (§6).
+   `Authorization: Bearer <session token>` (§6). The bot API uses
+   `Authorization: Bot <token>`.
 
 Unknown fields and unknown `oneof` variants must be ignored, not treated as
 errors: the schema only ever grows (§7). Check `Welcome` server features
 before using a command an older server may not have.
 
-## Bots today
+## Bots
 
-There is no bot account type, bot token or event API yet; that is
-[T-080](../plan/tasks/T-080-bot-api.md). Until then a bot can:
-
-- post into one channel with an **incoming webhook** (`POST
-  /api/v1/webhooks/{id}/{token}`, §6). A user with Manage server creates it in
-  the desktop app under **Webhooks**. No QUIC and no session are needed.
-- log in as an ordinary user over QUIC, with an account registered from an
-  invite like any person. It holds that user's permissions and counts as a
-  member.
+A bot is an account of its own with a bot token (T-080). It can speak this
+protocol natively, signing in with `Hello{bot_token}`, or use the HTTPS bot
+API: REST actions and a server-sent event stream of the same
+`ServerEnvelope` events as protobuf JSON. [Writing a bot](../bots.md) covers
+both, with a Python example (standard library only) and a Rust one
+(`ss-client-core`). An **incoming webhook** (`POST
+/api/v1/webhooks/{id}/{token}`, §6) still suits a script that only posts into
+one channel.
 
 `ss-cli` is not an example client for `ss-server run`: `ss-cli connect`
 speaks only the unauthenticated test spike. `ss-cli load` does drive the real
-server and is a working Rust example of login, voice and text
-([`crates/ss-cli/`](../../crates/ss-cli/)); `ss-client-core` is the library the
-desktop app uses.
+server ([`crates/ss-cli/`](../../crates/ss-cli/)); `ss-client-core` is the
+library the desktop app and the Rust example bot use.
 
 ## Regenerating the message reference
 

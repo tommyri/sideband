@@ -264,6 +264,11 @@ impl Voice {
     }
 
     async fn join(&self, conn: Id, user: Id, command: &v1::JoinVoice) -> Result<Outcome, Error> {
+        // Bots do not join voice in v1; their permissions never hold the
+        // voice bits either (`perms::BOT_DENIED`).
+        if self.perms.is_bot(user) {
+            return Err(Error::Forbidden("bots cannot join voice"));
+        }
         let channel_id = id_from_bytes(&command.channel_id)
             .map_err(|_| Error::Invalid("channel id must be 16 bytes"))?;
         let channel = self.channel(channel_id).await?;

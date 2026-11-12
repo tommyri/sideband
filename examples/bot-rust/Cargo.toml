@@ -1,0 +1,19 @@
+[package]
+name = "sideband-bot-example"
+description = "Example Sideband bot over the native QUIC protocol: echo and dice."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+getrandom.workspace = true
+ss-client-core.workspace = true
+ss-core.workspace = true
+ss-net.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

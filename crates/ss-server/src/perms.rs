@@ -8,6 +8,11 @@
 //! read every role, channel and membership on the server. `Hello` still
 //! records the role OR on the connection; command checks do not read that
 //! copy.
+//!
+//! A bot account holds only the bits that are both granted by its roles and
+//! in its live token's scopes, and never [`BOT_DENIED`]. The cap is applied
+//! to every resolution here, so commands, visibility filters and channel
+//! views all see the same, smaller set (T-080).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -17,7 +22,13 @@ use std::{
 use arc_swap::ArcSwap;
 use ss_core::{ChannelKind, Id, PermissionOverride, Permissions};
 
-use crate::db::{self, EVERYONE_ROLE_ID, channels, roles};
+use crate::db::{self, EVERYONE_ROLE_ID, bots, channels, roles};
+
+/// Bits a bot never holds, whatever its roles and scopes: bots do not join
+/// voice in v1.
+pub const BOT_DENIED: Permissions = Permissions::CONNECT
+    .union(Permissions::SPEAK)
+    .union(Permissions::STREAM);
 
 /// Why a permission check failed.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -124,6 +135,8 @@ struct Snapshot {
     roles: Arc<HashMap<Id, RoleView>>,
     grants: Arc<HashMap<Id, Vec<Id>>>,
     channels: HashMap<Id, Arc<ChannelView>>,
+    /// Every bot account, with its live token's id and scopes.
+    bots: Arc<HashMap<Id, Option<(Id, Permissions)>>>,
 }
 
 impl PermissionService {
@@ -294,6 +307,26 @@ impl PermissionService {
         self.cache.load().is_administrator(user)
     }
 
+    /// Whether `user` is a bot account.
+    #[must_use]
+    pub fn is_bot(&self, user: Id) -> bool {
+        self.cache.load().bots.contains_key(&user)
+    }
+
+    /// The live token this snapshot caps bot `user` by. A caller signed in
+    /// with another token must reload first: the operator CLI changes tokens
+    /// from another process.
+    #[must_use]
+    pub fn bot_token(&self, user: Id) -> Option<Id> {
+        self.cache
+            .load()
+            .bots
+            .get(&user)
+            .copied()
+            .flatten()
+            .map(|(token, _)| token)
+    }
+
     /// Channels `user` can see. Direct channels require membership.
     /// Soft-deleted channels are omitted.
     #[must_use]
@@ -333,10 +366,26 @@ impl Snapshot {
                 base = base.union(role.permissions);
             }
         }
-        if base.contains(Permissions::ADMINISTRATOR) {
+        let held = if base.contains(Permissions::ADMINISTRATOR) {
             Permissions::all()
         } else {
             base
+        };
+        self.cap(user, held)
+    }
+
+    /// A bot's resolved bits, limited by its token's scopes. Administrator
+    /// survives only when both grant it, and then still not voice.
+    fn cap(&self, user: Id, held: Permissions) -> Permissions {
+        let Some(live) = self.bots.get(&user) else {
+            return held;
+        };
+        let scopes = live.map_or(Permissions::empty(), |(_, scopes)| scopes);
+        let capped = held.intersection(scopes);
+        if capped.contains(Permissions::ADMINISTRATOR) {
+            Permissions::all().difference(BOT_DENIED)
+        } else {
+            capped.difference(BOT_DENIED)
         }
     }
 
@@ -365,11 +414,14 @@ impl Snapshot {
                 .copied()
                 .unwrap_or_else(empty_override)
         });
-        Ok(Permissions::resolve(
-            role_permissions,
-            overrides,
-            view.kind,
-            view.members.contains(&user),
+        Ok(self.cap(
+            user,
+            Permissions::resolve(
+                role_permissions,
+                overrides,
+                view.kind,
+                view.members.contains(&user),
+            ),
         ))
     }
 }
@@ -417,9 +469,11 @@ async fn load(pool: &db::Pool) -> Result<Snapshot, db::Error> {
                 .insert(row.role_id, PermissionOverride::new(row.allow, row.deny));
         }
     }
+    let bot_scopes = bots::scopes(&mut conn).await?.into_iter().collect();
     Ok(Snapshot {
         roles: Arc::new(role_views),
         grants: Arc::new(grants),
+        bots: Arc::new(bot_scopes),
         channels: channel_views
             .into_iter()
             .map(|(id, view)| (id, Arc::new(view)))

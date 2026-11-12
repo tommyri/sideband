@@ -159,7 +159,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login{username,password}, Register{invite_code,username,password} }` | Must be first |
+| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login{username,password}, Register{invite_code,username,password}, bot_token }` | Must be first. `bot_token` (tag 9) signs a bot account in (section 7, Bot accounts) |
 | `Ping` | `sent_at` | Keepalive / RTT |
 | `JoinVoice` | `channel_id`, `self_mute`, `self_deaf` | Join or switch voice channel |
 | `LeaveVoice` | — | |
@@ -199,13 +199,17 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `Logout` | — | Ends this connection's session (section 1.1). The `Ack` is the last frame; the server then closes with code 6 and closes the session's other connections with `SessionRevoked` |
 | `ListSessions` | — | The caller's own live sessions; `Ack.sessions` lists `SessionInfo{id, device_name, created_at, last_seen_at, expires_at, current}`. Never tokens or hashes |
 | `RevokeSession` | `session_id` | Ends one of the caller's own sessions and closes its connections. Another account's id is `NOT_FOUND`; the current session behaves as `Logout` |
+| `CreateBot` | `username`, `display_name`, `scopes(u64)` | MANAGE_SERVER, never a bot; scopes only bits the caller holds. `Ack.bot` carries the token once (tag 46) |
+| `ResetBotToken` | `bot_id`, `scopes(u64)` | New token, old one revoked and its connections and streams closed; also needs a role above the bot's (tag 47) |
+| `RevokeBotToken` | `bot_id` | Revokes the live token and closes what used it (tag 48) |
+| `ListBots` | — | `Ack.bots`: every bot with scopes and token state, never a token (tag 49) |
 
 ### Server → Client
 
 | Message | Fields | Purpose |
 |---|---|---|
 | `Welcome` | `user`, `server_info{name, version, features[]}`, `resume_token` (the session token, section 1.1), `Snapshot`, `conn_id` | `Snapshot` = full channel tree, roles, members with presence, voice states, tracks, read states, the most recently active DMs with each conversation's last message id, and `direct_messages_next?` when there are more. `conn_id` names this connection (see below) |
-| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId, Sessions, DmPage }` | `Webhook.token` is only on `CreateWebhook`. `Sessions` answers `ListSessions`. `DmPage{channels[], read_states[], next?}` answers `ListDms` (tag 13) |
+| `Ack` | `request_id`, `oneof result { Empty, MessageId, ChannelId, Invite, DmChannel, Role, User, Webhook, TrackId, Sessions, DmPage, Bot, Bots }` | `Webhook.token` is only on `CreateWebhook`. `Sessions` answers `ListSessions`. `DmPage{channels[], read_states[], next?}` answers `ListDms` (tag 13). `Bot{user, scopes, active, token_created_by, token_created_at, token?}` answers `CreateBot` and `ResetBotToken`, the only place `token` is set (tag 14); `Bots` answers `ListBots` (tag 15) |
 | `Error` | `request_id`, `code` (enum), `message`, `min_version?`, `max_version?`, `retry_after_ms?` | Codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID`, `RATE_LIMITED`, `CONFLICT`, `BANNED`, `INTERNAL`, `PROTOCOL_VERSION`. `retry_after_ms` is set on every `RATE_LIMITED`: the wait, rounded up, before the same request can succeed |
 | `Pong` | `sent_at`, `server_time` | |
 | `ChannelCreated` / `ChannelUpdated` / `ChannelDeleted` | `Channel` | |
@@ -417,10 +421,21 @@ publisher, not promises that the server filters or re-encodes frames.
 | GET | `/api/v1/moderation/bans?before=&q=` | BAN_MEMBERS; 50-row active ban metadata/capability page, expired/lifted bans omitted |
 | GET | `/api/v1/audit-log?before=&limit=&actor=&action=&since=&until=` | Requires `VIEW_AUDIT_LOG` |
 | GET | `/api/v1/invites?before=&limit=` | Invite metadata: managers see all; creators see their own |
+| POST | `/api/v1/channels/{id}/messages` | Bot API (`Authorization: Bot`): `SendMessage` JSON → `{messageId}` |
+| PATCH / DELETE | `/api/v1/messages/{message_id}` | Bot API: `EditMessage` JSON, or delete → `204` |
+| POST | `/api/v1/dms` | Bot API: `CreateDm` JSON → `{dmChannel}` |
+| GET | `/api/v1/members?after=&limit=` | Bot API: `{members[], next?}`, by user id, at most 1000 |
+| GET | `/api/v1/channels` | Bot API: `{channels[], directMessages[]}` the bot can see |
+| GET | `/api/v1/events?prefix=` | Bot API: `text/event-stream` of `ServerEnvelope` JSON, `Welcome` first |
 | GET | `/healthz` | internal listener only (`127.0.0.1:9101`) |
 | GET | `/metrics` | internal listener only |
 | GET | `/connections` | internal listener only: live connections for `ss-server conn list` |
 | GET | `/.well-known/acme-challenge/{token}` | ACME HTTP-01 listener on TCP 80 only; every other path there redirects to HTTPS |
+
+The bot routes take `Authorization: Bot <token>` and refuse a session bearer;
+the other routes refuse a bot token. Their bodies and replies are canonical
+protobuf JSON (as below), generated from the `.proto` files by `pbjson`.
+They are described in [`docs/bots.md`](../bots.md) and in section 7.
 
 `scripts/check-protocol-doc.py` fails when this table and the axum routes in
 `ss-server`, or the message tables in section 3 and the envelope `oneof`s,
@@ -539,6 +554,32 @@ Servers advertise `sessions` in Welcome server features for `Logout`,
 `ListSessions`, `RevokeSession`, `SessionRevoked` and close code 6. An older
 server answers those commands `INVALID` ("unsupported command"); a client
 that is signing out then only forgets the token locally.
+
+### Bot accounts
+
+Servers advertise `bots` in Welcome server features (T-080). A bot is a
+`User` with kind `USER_KIND_BOT`, shown with a BOT tag. It has no password
+and no sessions: `Hello{bot_token}` signs it in, and `Welcome.resume_token`
+echoes that token, which a client presents as `bot_token` again after a
+drop. A bot token is never accepted as `session_token`, `resume_token` or a
+`Bearer`, and a session token never as `bot_token` or `Bot`. A bot holds the
+bits its roles grant that are also in its token's scopes, never `CONNECT`,
+`SPEAK` or `STREAM` (`JoinVoice` is `FORBIDDEN`), and `ADMINISTRATOR` only
+when both have it; every check and visibility filter applies this cap.
+
+Revoking or replacing a token closes the QUIC connections that used it
+(`SessionRevoked`, code 6) and ends its event streams with a
+`sessionRevoked` event, at once; the operator CLI's changes are picked up
+within 30 s (section 1.1). A stream request that signed in before a revoke
+is refused (`401`) without a `welcome`. A kick or ban ends a bot's streams
+at once with `kicked` or `banned`. `Logout`, `ListSessions` and
+`RevokeSession` are `FORBIDDEN` for a bot. An event stream gets the events a QUIC session of
+the bot would, with the same filters, and also the bot's own actions. It
+ends after 9 minutes or when it falls behind the event bus, with a
+`serverNotice` event, and the bot reconnects for a new `welcome`; events
+between two streams are not replayed. Each bot spends a budget of 50
+requests, then 5 a second, across both transports, and holds at most two
+streams.
 
 ### Server settings
 

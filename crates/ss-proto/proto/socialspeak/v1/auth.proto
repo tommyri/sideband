@@ -49,6 +49,9 @@ message Hello {
     Login login = 7;
     // Invite registration.
     Register register = 8;
+    // Bot token from `CreateBot` or `ResetBotToken`. Authenticates the bot
+    // account; never a user session. `Welcome.resume_token` echoes it.
+    string bot_token = 9;
   }
 }
 

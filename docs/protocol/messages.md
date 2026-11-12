@@ -11,6 +11,7 @@ connection lifecycle, limits and REST are in the
 ## Contents
 
 - [auth.proto](#authproto): [`Login`](#login), [`Register`](#register), [`Hello`](#hello), [`Ping`](#ping), [`Pong`](#pong), [`Snapshot`](#snapshot), [`ListDms`](#listdms), [`DmPage`](#dmpage), [`Welcome`](#welcome), [`UpdateProfile`](#updateprofile), [`Logout`](#logout), [`ListSessions`](#listsessions), [`RevokeSession`](#revokesession), [`SessionInfo`](#sessioninfo), [`SessionList`](#sessionlist), [`SessionRevoked`](#sessionrevoked)
+- [bots.proto](#botsproto): [`CreateBot`](#createbot), [`ResetBotToken`](#resetbottoken), [`RevokeBotToken`](#revokebottoken), [`ListBots`](#listbots), [`Bot`](#bot), [`BotList`](#botlist)
 - [channels.proto](#channelsproto): [`ChannelKind`](#channelkind), [`VoiceProfile`](#voiceprofile), [`VoiceSettings`](#voicesettings), [`Channel`](#channel), [`CreateChannel`](#createchannel), [`UpdateChannel`](#updatechannel), [`DeleteChannel`](#deletechannel), [`MoveChannel`](#movechannel), [`CreateDm`](#createdm), [`LeaveDm`](#leavedm), [`AddDmMembers`](#adddmmembers), [`ChannelCreated`](#channelcreated), [`ChannelUpdated`](#channelupdated), [`ChannelDeleted`](#channeldeleted)
 - [common.proto](#commonproto): [`Id`](#id), [`Timestamp`](#timestamp), [`Empty`](#empty), [`ErrorCode`](#errorcode), [`UserKind`](#userkind), [`User`](#user), [`PresenceStatus`](#presencestatus), [`Presence`](#presence), [`SetPresence`](#setpresence), [`Member`](#member), [`ServerInfo`](#serverinfo)
 - [envelope.proto](#envelopeproto): [`ClientEnvelope`](#clientenvelope), [`ServerEnvelope`](#serverenvelope), [`Ack`](#ack), [`Error`](#error), [`MemberJoined`](#memberjoined), [`MemberLeft`](#memberleft), [`MemberUpdated`](#memberupdated), [`PresenceUpdated`](#presenceupdated)
@@ -59,6 +60,7 @@ First message on the control stream.
 | `resume_token` | 6 | `string` | `oneof auth` | Token from a previous `Welcome`, used after a dropped connection. |
 | `login` | 7 | [`Login`](#login) | `oneof auth` | Password login. |
 | `register` | 8 | [`Register`](#register) | `oneof auth` | Invite registration. |
+| `bot_token` | 9 | `string` | `oneof auth` | Bot token from `CreateBot` or `ResetBotToken`. Authenticates the bot account; never a user session. `Welcome.resume_token` echoes it. |
 
 ### `Ping`
 
@@ -186,6 +188,75 @@ code 6. The token no longer works; do not reconnect with it.
 | Field | Number | Type | Label | Description |
 |---|---|---|---|---|
 | `reason` | 1 | `string` |  | Human-readable reason. Not a stable token. |
+
+## bots.proto
+
+Bot accounts and their tokens.
+Spec: docs/plan/02-protocol.md sections 3, 6 and 7, and docs/bots.md.
+
+A bot is a `User` with kind `USER_KIND_BOT`. It holds roles like anyone
+else and authenticates with `Hello.bot_token` or the HTTPS `Bot` scheme.
+It never has a password or a session token.
+
+### `CreateBot`
+
+Create a bot account and its first token. Requires `MANAGE_SERVER`; a bot
+cannot create bots. The token is returned once, on the ack.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `username` | 1 | `string` |  | Unique name: 3 to 32 characters of a-z, 0-9, underscore, or dot. |
+| `display_name` | 2 | `string` |  | Name shown in the member list. Empty uses the username. |
+| `scopes` | 3 | `uint64` |  | Permission bits the token may use. The bot holds only the bits that are both here and granted by its roles. Only bits the creator holds. |
+
+### `ResetBotToken`
+
+Issue a new token for a bot and revoke the old one. Connections and event
+streams that used the old token are closed at once. Requires
+`MANAGE_SERVER` and a role above the bot's.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `bot_id` | 1 | `bytes` |  | 16-byte user id of the bot. |
+| `scopes` | 2 | `uint64` |  | Scopes of the new token. Only bits the caller holds. |
+
+### `RevokeBotToken`
+
+Revoke a bot's token without issuing another. Its connections and event
+streams are closed at once. Requires `MANAGE_SERVER` and a role above the
+bot's.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `bot_id` | 1 | `bytes` |  | 16-byte user id of the bot. |
+
+### `ListBots`
+
+List every bot account. Requires `MANAGE_SERVER`. Answered with
+`Ack.bots`.
+
+No fields.
+
+### `Bot`
+
+A bot account. Token hashes are never sent.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `user` | 1 | [`User`](#user) |  | The bot's account. |
+| `scopes` | 2 | `uint64` |  | Scopes of the live token. Zero when there is none. |
+| `active` | 3 | `bool` |  | Whether the bot has a live token. |
+| `token_created_by` | 4 | `bytes` |  | 16-byte id of the member who issued the live token. Empty when there is none. |
+| `token_created_at` | 5 | `int64` |  | When the live token was issued, Unix milliseconds. Zero when there is none. |
+| `token` | 6 | `string` | `optional` | Plaintext token. Present only on the `CreateBot` and `ResetBotToken` acknowledgement. |
+
+### `BotList`
+
+`ListBots` result, ordered by user id.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `bots` | 1 | [`Bot`](#bot) | `repeated` | Every bot account, with or without a live token. |
 
 ## channels.proto
 
@@ -571,6 +642,10 @@ One client control message.
 | `list_sessions` | 43 | [`ListSessions`](#listsessions) | `oneof msg` |  |
 | `revoke_session` | 44 | [`RevokeSession`](#revokesession) | `oneof msg` |  |
 | `list_dms` | 45 | [`ListDms`](#listdms) | `oneof msg` |  |
+| `create_bot` | 46 | [`CreateBot`](#createbot) | `oneof msg` |  |
+| `reset_bot_token` | 47 | [`ResetBotToken`](#resetbottoken) | `oneof msg` |  |
+| `revoke_bot_token` | 48 | [`RevokeBotToken`](#revokebottoken) | `oneof msg` |  |
+| `list_bots` | 49 | [`ListBots`](#listbots) | `oneof msg` |  |
 
 ### `ServerEnvelope`
 
@@ -633,6 +708,8 @@ Positive response to a client request.
 | `track_id` | 10 | `uint32` | `oneof result` | StartStream assigned this video/screen track. |
 | `sessions` | 11 | [`SessionList`](#sessionlist) | `oneof result` | `ListSessions` returned the caller's sessions. |
 | `dm_page` | 13 | [`DmPage`](#dmpage) | `oneof result` | `ListDms` returned this page. |
+| `bot` | 14 | [`Bot`](#bot) | `oneof result` | `CreateBot` or `ResetBotToken` returned this bot. The token is only here. |
+| `bots` | 15 | [`BotList`](#botlist) | `oneof result` | `ListBots` returned every bot account. |
 
 ### `Error`
 

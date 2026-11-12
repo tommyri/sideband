@@ -7,6 +7,10 @@
 //! [`Sessions`] remembers which session each connection used: a revoke in
 //! this process closes them immediately, and [`Sessions::sweep`] closes the
 //! ones whose row another process (the CLI) deleted or that expired.
+//!
+//! A bot connection is attached under its `bot_tokens` row id instead of a
+//! session id; the sweep checks that row too, and a revoke closes it the
+//! same way (T-080).
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -20,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::{Error, SESSION_MAX_AGE_MS, session_alive};
 use crate::{
-    db::{self, sessions, users},
+    db::{self, bots, sessions, users},
     handlers,
     registry::Kick,
 };
@@ -65,6 +69,9 @@ pub(crate) struct Caller {
     pub user: Id,
     pub session: Id,
     pub conn: Id,
+    /// A bot account: it has no sessions, and its token is revoked with
+    /// `RevokeBotToken`, so these commands are refused.
+    pub bot: bool,
 }
 
 impl Sessions {
@@ -118,9 +125,18 @@ impl Sessions {
         msg: &Msg,
     ) -> Option<Result<Option<ack::Result>, handlers::Error>> {
         match msg {
-            Msg::Logout(_) => Some(self.logout(caller, request_id).await.map(|()| None)),
-            Msg::ListSessions(_) => Some(self.list(caller).await.map(Some)),
-            Msg::RevokeSession(command) => Some(self.revoke(caller, request_id, command).await),
+            Msg::Logout(_) => Some(match no_bot(caller) {
+                Ok(()) => self.logout(caller, request_id).await.map(|()| None),
+                Err(error) => Err(error),
+            }),
+            Msg::ListSessions(_) => Some(match no_bot(caller) {
+                Ok(()) => self.list(caller).await.map(Some),
+                Err(error) => Err(error),
+            }),
+            Msg::RevokeSession(command) => Some(match no_bot(caller) {
+                Ok(()) => self.revoke(caller, request_id, command).await,
+                Err(error) => Err(error),
+            }),
             _ => None,
         }
     }
@@ -188,6 +204,12 @@ impl Sessions {
         Ok(Some(ack::Result::Empty(v1::Empty {})))
     }
 
+    /// Closes every connection that used `credential` (a session or a bot
+    /// token row) with `SessionRevoked` and code 6.
+    pub(crate) fn end(&self, credential: Id) {
+        self.close(credential, None);
+    }
+
     /// Closes every connection that used `session`. `answer`, when set, is
     /// the connection and request that asked: it gets its `Ack` as the last
     /// frame instead of `SessionRevoked`.
@@ -234,7 +256,10 @@ impl Sessions {
             for id in ids {
                 let alive = sessions::get(&mut conn, id)
                     .await?
-                    .is_some_and(|session| session_alive(&session, now));
+                    .is_some_and(|session| session_alive(&session, now))
+                    || bots::get(&mut conn, id)
+                        .await?
+                        .is_some_and(|token| token.revoked_at.is_none());
                 if !alive {
                     dead.push(id);
                 }
@@ -271,6 +296,19 @@ impl Sessions {
                 },
             }
         }
+    }
+}
+
+/// Refuses session commands from a bot. A bot `Logout` would close its
+/// connections with code 6, which tells the client not to reconnect, while
+/// the token kept working.
+fn no_bot(caller: Caller) -> Result<(), handlers::Error> {
+    if caller.bot {
+        Err(handlers::Error::Forbidden(
+            "a bot has no session: revoke its token with RevokeBotToken",
+        ))
+    } else {
+        Ok(())
     }
 }
 

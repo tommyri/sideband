@@ -11,6 +11,7 @@ members = [
   "crates/ss-proto",
   "crates/ss-server",
   "crates/ss-video",
+  "examples/bot-rust",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ ss-input = { path = "crates/ss-input", version = "0.1.0" }
 ss-net = { path = "crates/ss-net", version = "0.1.0" }
 ss-proto = { path = "crates/ss-proto", version = "0.1.0" }
 ss-video = { path = "crates/ss-video", version = "0.1.0" }
+sideband-bot-example = { path = "examples/bot-rust", version = "0.1.0" }
 
 allocation-counter = "0.8"
 # Optional RNNoise denoising and speech probability; no CLI, C API, or signal adapters.
@@ -120,6 +122,11 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
   "CoreAudioBaseTypes",
 ] }
 parking_lot = "0.13.0"
+# Canonical protobuf JSON for the bot API (camelCase, base64 bytes, string
+# int64, enum names), generated from the same .proto files as prost. Behind
+# ss-proto's `json` feature; only the server enables it.
+pbjson = "0.9"
+pbjson-build = "0.9"
 prost = "0.14"
 prost-build = "0.14"
 proptest = "1"

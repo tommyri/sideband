@@ -32,21 +32,33 @@ pub struct Moderation {
     perms: Arc<PermissionService>,
     registry: Arc<ConnectionRegistry>,
     voice: Arc<Voice>,
+    /// A kick or ban ends a bot's event streams with its connections.
+    bots: Arc<super::Bots>,
 }
 
 impl Moderation {
-    /// Shares the permission snapshot, connection table, and voice rooms.
+    /// Shares the permission snapshot, connection table, voice rooms, and
+    /// bot event streams.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         perms: Arc<PermissionService>,
         registry: Arc<ConnectionRegistry>,
         voice: Arc<Voice>,
+        bots: Arc<super::Bots>,
     ) -> Self {
         Self {
             perms,
             registry,
             voice,
+            bots,
         }
+    }
+
+    /// Closes `target`'s connections and ends its bot event streams, each
+    /// with `last` as the final frame.
+    fn disconnect(&self, target: Id, last: &v1::ServerEnvelope, code: u32, reason: &'static [u8]) {
+        self.registry.disconnect_user(target, last, code, reason);
+        self.bots.end_streams_of(target, last);
     }
 
     /// Dispatches a moderator command. Other messages return `None`.
@@ -158,7 +170,7 @@ impl Moderation {
         let reason = reason_text(&command.reason)?;
         self.write_audit(actor, "user.kick", target, &reason_json(reason.as_deref()))
             .await?;
-        self.registry.disconnect_user(
+        self.disconnect(
             target,
             &notice(server_envelope::Msg::Kicked(v1::Kicked {
                 reason: reason.unwrap_or_default(),
@@ -181,7 +193,7 @@ impl Moderation {
         let revoked = self
             .insert_ban(actor, target, reason.clone(), expires_at)
             .await?;
-        self.registry.disconnect_user(
+        self.disconnect(
             target,
             &notice(server_envelope::Msg::Banned(v1::Banned {
                 reason: reason.unwrap_or_default(),
