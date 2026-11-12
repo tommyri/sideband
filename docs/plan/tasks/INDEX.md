@@ -54,6 +54,8 @@ before it is merged:
    other three are T-099's follow-ups and touch none of their files)
 7. T-108, T-111, T-112, T-113, T-064, with T-114 done by the maintainer's
    session (a one-file build script)
+8. T-115, T-116, T-080 (T-116 and T-080 both touch the server's sign-in
+   path; T-080 keeps its `connection.rs` edits to the `Hello` credential)
 
 Not agent work: T-106 (maintainer decisions) and T-100 (backend decision).
 T-067 needs a second reviewer and its 1 h fuzz runs need an otherwise idle
