@@ -132,6 +132,5 @@ Not hands-on tests, but they keep tasks open:
 
 | Item | Task |
 |---|---|
-| Ban and `MemberLeft`; owner above administrators; Linux rtkit priority; capture channel count; PTT arming rule; Windows hook fallback | [T-106](T-106-review-decisions.md) |
 | Review of this reconciliation (plan documents, statuses, this page) | [T-099](T-099-plan-doc-reconciliation.md) |
 | Second-person review of `docs/security.md` | [T-067](T-067-security-acceptance.md) |

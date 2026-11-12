@@ -1,6 +1,6 @@
 # T-106 — Decide the questions the review waves left open
 
-Status: todo
+Status: done
 Phase: 4
 Size: S
 Depends on: —
@@ -49,3 +49,16 @@ Implementing the answers; each one that changes code gets its own task.
   follows the hook answer.
 
 ## Notes from implementation
+
+Answered by the maintainer on 2026-11-12. The lasting rules are in
+`docs/design/decisions.md`, "Review decisions of 2026-11-12".
+
+| Item | Answer | Follow-up |
+|---|---|---|
+| Ban and the member list | Keep: a banned member stays in every `Welcome` and their messages keep their name; `MemberLeft` stays reserved | none |
+| Owner | Keep: administrators are peers, no owner above them (`03-data-model.md`) | none |
+| Real-time priority on Linux | Accept rtkit over D-Bus (`audio_thread_priority/with_dbus`) | T-117 |
+| Capture channel count | Fix both: report real input counts and open the full channel count for Input 2 or Average | T-118 |
+| PTT arming | Keep: a press for a call the 50 ms tick has not seen needs a release first | none |
+| Windows low-level hook fallback | Waive. T-048 becomes `awaiting-acceptance` | none |
+| Bot token lifetime (raised by T-080) | No expiry: a bot token lasts until it is reset or revoked | none |

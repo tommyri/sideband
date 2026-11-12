@@ -262,6 +262,26 @@ SSRF checks, so a link target sees the VPS and not a member's home address.
 Incoming webhooks are a POST that creates a message. The full bot API is
 later. It should be a client with a bot token, not a second protocol.
 
+## Review decisions of 2026-11-12
+
+Answers to the questions the review waves left open (T-106):
+
+- A ban keeps the member in every member list, and their messages keep
+  their name. `MemberLeft` stays reserved for a future account removal.
+- Administrators are peers. There is no owner above them.
+- On Linux the voice thread asks rtkit over D-Bus for real-time priority,
+  as macOS and Windows already get (T-117).
+- The capture input picker shows only the inputs a device has, and a
+  choice other than Input 1 opens the device's full channel count (T-118).
+- Push-to-talk arms only from a release: a key already held when a call
+  starts does not transmit until it is pressed again.
+- Windows push-to-talk uses Raw Input only. The low-level hook fallback is
+  waived: such hooks are often flagged by anti-cheat and antivirus.
+- Bot tokens do not expire. Resetting or revoking is the only way to end
+  one (T-080).
+- Screen sharing: the LiveKit experiment in T-100 runs before the backend
+  is chosen. Until then the rules below stand.
+
 ## Screen sharing must fit the transport we have
 
 These rules exist so phase 5 does not require a new voice protocol:

@@ -123,7 +123,7 @@ T-100 blocks only T-074.
 | [T-045C](T-045C-chat-attachments.md) | Chat attachments and previews | M | T-045A, T-027, T-029 | awaiting-acceptance |
 | [T-046](T-046-dm-ui.md) | DM UI | S | T-045A, T-028 | done |
 | [T-047](T-047-input-core.md) | `ss-input` core API and PTT state machine | S | T-003 | done |
-| [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | in-progress |
+| [T-048](T-048-input-windows.md) | `ss-input` Windows backend | S | T-047 | awaiting-acceptance |
 | [T-049](T-049-input-macos.md) | `ss-input` macOS backend | S | T-047 | awaiting-acceptance |
 | [T-050](T-050-input-linux.md) | `ss-input` Linux backends | M | T-047 | awaiting-acceptance |
 | [T-051](T-051-audio-settings-ui.md) | Audio and voice settings UI | M | T-044, T-041, T-047 | awaiting-acceptance |
@@ -221,11 +221,12 @@ move:
 
 Opened by T-099 for decisions the review waves left to the maintainer and
 follow-ups their notes named but no task owned. T-111 to T-114 are
-the follow-ups wave 6 found, T-115 and T-116 those of wave 7:
+the follow-ups wave 6 found, T-115 and T-116 those of wave 7, T-117 and T-118 the code
+follow-ups of T-106's answers:
 
 | ID | Task | Size | Depends on | Status |
 |---|---|---|---|---|
-| [T-106](T-106-review-decisions.md) | Decide the questions the review waves left open | S | — | todo |
+| [T-106](T-106-review-decisions.md) | Decide the questions the review waves left open | S | — | done |
 | [T-107](T-107-client-transport-cli-followups.md) | Client transport and CLI follow-ups from the review waves | M | T-089, T-101 | done |
 | [T-108](T-108-desktop-followups.md) | Desktop follow-ups from the review waves | S | T-096, T-105 | awaiting-acceptance |
 | [T-109](T-109-server-followups.md) | Server follow-ups from the review waves | S | T-094 | done |
@@ -236,6 +237,8 @@ the follow-ups wave 6 found, T-115 and T-116 those of wave 7:
 | [T-114](T-114-migration-rebuild-trigger.md) | Rebuild the server when a migration is added | S | T-109 | done |
 | [T-115](T-115-default-ports-agree.md) | Make the default ports agree | S | T-064, T-092 | todo |
 | [T-116](T-116-no-frames-before-welcome.md) | Send nothing to a connection before its Welcome | S | T-113 | todo |
+| [T-117](T-117-linux-realtime-audio.md) | Real-time voice priority on Linux through rtkit | S | T-083, T-106 | todo |
+| [T-118](T-118-capture-input-counts.md) | Show real capture inputs and open their full channel count | S | T-088, T-106 | todo |
 
 Tasks that edit the same files are chained through "Depends on" so they do
 not run at once: T-082 → T-083 → T-084 share the voice worker; T-081 →
@@ -351,7 +354,6 @@ flowchart TD
     T084 & T089 & T095 --> T103
     T095 & T096 --> T104
     T095 & T096 --> T105
-    T106
     T089 & T101 --> T107
     T096 & T105 --> T108
     T094 --> T109
@@ -362,6 +364,8 @@ flowchart TD
     T109 --> T114
     T064 & T092 --> T115
     T113 --> T116
+    T083 & T106 --> T117
+    T088 & T106 --> T118
 ```
 <!-- plan-index:graph:end -->
 
@@ -382,11 +386,11 @@ Generated from the tables above, so it ignores status and the priority in
 | 4 | T-011, T-012, T-013, T-015, T-016, T-021, T-022, T-048, T-049, T-050, T-052, T-053 |
 | 5 | T-017, T-023, T-024, T-032, T-054, T-059, T-087 |
 | 6 | T-019, T-025, T-026, T-033, T-034, T-088 |
-| 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-062, T-070, T-098 |
+| 7 | T-027, T-028, T-029, T-030, T-031, T-040, T-062, T-070, T-098, T-118 |
 | 8 | T-041, T-042, T-061, T-069 |
 | 9 | T-043, T-044, T-045, T-045A, T-055, T-056, T-056A, T-056B, T-056C, T-056D, T-056E, T-056F, T-060, T-066, T-067, T-068, T-071, T-075, T-082, T-090, T-091, T-093, T-101 |
 | 10 | T-045B, T-045C, T-046, T-051, T-056G, T-057, T-072, T-081, T-083, T-092, T-094 |
-| 11 | T-058, T-064, T-065, T-073, T-084, T-086, T-097, T-100, T-109 |
+| 11 | T-058, T-064, T-065, T-073, T-084, T-086, T-097, T-100, T-109, T-117 |
 | 12 | T-018, T-074, T-076, T-080, T-085, T-089, T-110, T-112, T-114, T-115 |
 | 13 | T-063, T-095, T-107, T-111 |
 | 14 | T-096, T-102, T-103, T-113 |

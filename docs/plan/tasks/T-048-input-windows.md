@@ -1,6 +1,6 @@
 # T-048 — `ss-input` Windows backend (low-level hooks / Raw Input)
 
-Status: in-progress
+Status: awaiting-acceptance
 Phase: 3
 Size: S
 Depends on: T-047
@@ -57,3 +57,7 @@ Push-to-talk on any key or mouse button that still reaches the game.
   fallback, then run the fullscreen Mouse5/pass-through and focus-change manual
   acceptance checks on Windows. Those interactive checks have not been run on
   this macOS development host.
+- 2026-11-12: the maintainer waived the `WH_KEYBOARD_LL`/`WH_MOUSE_LL`
+  fallback (T-106). Raw Input is the only Windows backend. What remains is
+  the fullscreen Mouse5 pass-through and focus-change check in
+  `ACCEPTANCE.md`.

@@ -51,3 +51,9 @@ The migration itself. Screen-share audio.
 - `docs/design/decisions.md` records the decision and its reasons.
 
 ## Notes from implementation
+
+2026-11-12: the maintainer chose to run the LiveKit experiment before
+deciding (T-106 round), rather than keep the QUIC backend with one stream or
+add a second rendition now. The prototype and the macOS measurements can be
+done here; the Windows gaming-capture and Linux (Wayland) measurements need
+those machines. T-074 stays blocked until the results are in.
