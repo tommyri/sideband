@@ -49,6 +49,9 @@ The permission names are the ones in
 
 ### Replacing or revoking a token
 
+Bot tokens do not expire (maintainer decision, 2026-11-12): a token is valid
+until it is reset or revoked, so an unattended bot keeps working.
+
 `ResetBotToken` (or `ss-server bot reset`) issues a new token and revokes the
 old one. `RevokeBotToken` (`ss-server bot revoke`) revokes it without a
 replacement. A revoked token is refused on the next request. Open

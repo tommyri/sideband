@@ -257,5 +257,5 @@ shared `Bots`; `sessions_caller` gets the bot flag), `src/auth/{mod,live}.rs`,
 `docs/plan/02-protocol.md`.
 
 **Open questions**
-- Should bot tokens expire? They do not; revocation is the remedy, as for
-  webhooks. (Asked of the maintainer.)
+- Should bot tokens expire? Answered 2026-11-12 (T-106): no. A token lasts
+  until it is reset or revoked, as for webhooks; `docs/bots.md` says so.
