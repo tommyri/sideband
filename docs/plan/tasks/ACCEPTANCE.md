@@ -120,6 +120,8 @@ with the server on the VPS.
 | Desktop release from a non-main branch fails; `server-v0.1.0` dry run, re-dispatch without `force` fails; first update-enabled release with no signing variables in the log and `gh attestation verify` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
 | Signing credentials provisioned; fresh install and N→N+1 updater upgrade of every package | [T-057](T-057-packaging-updater.md) | open | open | open | GitHub |
 | Developer ID notarization `Accepted`; `spctl` and `stapler validate` pass on the DMG; Input Monitoring survives an update | [T-057](T-057-packaging-updater.md), [T-097](T-097-release-pipeline-gating.md) | open | – | – | – |
+| Update-enabled release dispatch with `WINDOWS_CERTIFICATE`: `windows-signing` passes, its in-job `signtool verify /pa` passes on both installers and the MSI's executable, and its log shows no `pnpm`, `cargo build` or `tauri build` | [T-111](T-111-windows-signing-job.md) | – | – | – | GitHub open |
+| `signtool verify /pa` on the installed `socialspeak-desktop.exe` and `uninstall.exe` (NSIS) and on both downloaded installers | [T-111](T-111-windows-signing-job.md) | – | open | – | – |
 
 ## Maintainer decisions and reviews
 

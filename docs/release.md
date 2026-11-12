@@ -16,7 +16,7 @@ approved the publication.
 | Version | the `version` input (mutable during development) | from the tag; must equal the `ss-server` crate version |
 | Tested | `ci.yml` runs as a required job of the same run | `ci.yml` runs as a required job of the same run |
 | Approval | `desktop-release` environment: when the run starts (`prepare`) and before signing and publishing (`publish`) | `server-release` environment, before `publish` |
-| Secrets | updater key only in the `sign` step of `publish`; Apple certificate and notarization key only in the `macos-signing` job; Windows certificate in the Windows build job (`desktop-signing`) | none; `GITHUB_TOKEN` only |
+| Secrets | updater key only in the `sign` step of `publish`; Apple certificate and notarization key only in the `macos-signing` job; Windows certificate only in the `windows-signing` job (`desktop-signing`) | none; `GITHUB_TOKEN` only |
 | Overwrites | same-version assets are replaced; feeds never move backwards | an existing version tag or release fails unless `force` is set; `latest` only moves forward |
 | Provenance | `SHA256SUMS` per platform and a build provenance attestation for every asset | `SHA256SUMS` and attestations for the binaries and the image |
 
@@ -36,20 +36,11 @@ and are not fixed by any workflow file:
   GHCR. Restrict who has write access; protect `main` and `server-v*` tags.
 - Steps in one job share a runner. A build script or proc macro can leave a
   background process, a changed script or a PATH shim behind for later steps of
-  the same job. This is why the updater key and all Apple credentials are used
-  only in jobs on fresh runners that run no build output. Windows code signing
-  is the exception. Tauri signs the app, the NSIS plugins and uninstaller,
-  and both installers while bundling, so the certificate is imported into the
-  Windows build job's current-user store first, before any dependency code
-  runs. No dependency step gets the PFX or its password. But every later step
-  of that job runs with the key in the store: `pnpm install` with its install
-  scripts, `cargo test -p socialspeak-desktop`, and `tauri build` (the
-  frontend build, build scripts and proc macros). Code in any of them runs as
-  the runner user, an administrator, and can sign any file with the key until
-  the job ends. The key is imported non-exportable, but that flag is enforced
-  inside the Windows crypto libraries, and code running as the same
-  administrator user can bypass it, so assume it can export the key too. See
-  [Windows](#windows) for the planned fix.
+  the same job. This is why the updater key, the Apple credentials and the
+  Windows certificate are used only in jobs on fresh runners that run no build
+  output and no dependency code. The platform build jobs are in no environment
+  and get no secret. See [Windows](#windows) for how the Windows installers are
+  bundled and signed after the build.
 
 ### One-time GitHub setup (repository admin)
 
@@ -137,7 +128,9 @@ The platform builds run `tauri build` with the public key and endpoint only.
 Windows certificate, or notarization credential is in its environment, and
 Tauri's own updater signing is off (`createUpdaterArtifacts: false`). macOS
 builds are always ad-hoc signed there; Developer ID signing happens in
-`macos-signing` (see [macOS](#macos)). The installers are the update payloads
+`macos-signing` (see [macOS](#macos)). For an update-enabled release the Windows
+build runs `tauri build --no-bundle`, and `windows-signing` bundles and signs the
+installers (see [Windows](#windows)). The installers are the update payloads
 on Windows and Linux; on macOS the script writes `Sideband-test-X.Y.Z.app.tar.gz`
 in Tauri's layout. `build-info.json` lists the payloads unsigned.
 
@@ -361,30 +354,95 @@ Verify Input Monitoring permissions survive N→N+1, including background PTT.
 
 ### Windows
 
-Optional `desktop-signing` environment secrets `WINDOWS_CERTIFICATE` (base64 PFX) and
-`WINDOWS_CERTIFICATE_PASSWORD` import a signing certificate into the runner's
-current-user certificate store, as the first step of the Windows build job after
-the release checks. The build itself does not see either secret, but it runs
-with the imported key in the store; see [release gates](#release-gates). Packaging passes its thumbprint to Tauri and
-uses SHA-256 with a timestamp service. Hardware-token/cloud signing is not wired
-by this PFX path. Without a certificate, document/expect SmartScreen warnings;
-updater signatures do not establish Windows publisher reputation.
+Optional `desktop-signing` environment secrets `WINDOWS_CERTIFICATE` (base64 PFX)
+and `WINDOWS_CERTIFICATE_PASSWORD`. They are used only by the `windows-signing`
+job of the desktop build workflow, which runs for update-enabled releases. Tauri
+signs while it bundles, not after: it patches the executable per installer type
+and signs it, signs the NSIS plugin DLLs, has NSIS sign the uninstaller while the
+installer compiles (`!uninstfinalize`), signs the WiX extension DLLs, and signs
+both installers. Signing only the finished installers would leave the executable
+and the uninstaller inside them unsigned. So the build and the bundling are split:
 
-Planned fix (not implemented; recorded in T-110): build without the
-certificate (`tauri build --no-bundle`), then bundle in a separate
-`windows-signing` job on a fresh runner. That job would get the unsigned
-executable as its only build output, install the locked Tauri CLI with
-`--ignore-scripts`, check the executable against `build-info.json`, import
-the certificate, and run `tauri bundle --bundles nsis,msi` with the
-thumbprint. Tauri 2.12.4's `bundle` command compiles nothing. It signs the
-executable, the NSIS plugins, the uninstaller and both installers. It runs
-`cargo metadata` (no build scripts) and the NSIS and WiX tools it downloads.
-Signing only the finished installers afterwards is not enough: NSIS writes
-the uninstaller while compiling the installer and signs it then
-(`!uninstfinalize`), and the executable inside both installers would stay
-unsigned. A remote signing service does not fix this on its own: from the
-build job it is still a signing service that build scripts can call. It would
-only remove the key file from the runner.
+1. The Windows build job runs `tauri build --no-bundle` (through
+   `build-test-desktop.mjs --no-bundle`) with no certificate and no environment.
+   It uploads `socialspeak-desktop.exe`, `build-info.json` and `SHA256SUMS` as
+   `sideband-unbundled-x86_64-pc-windows-msvc-<commit>`. That name is not a
+   release asset: `publish` downloads only `sideband-test-*`.
+2. `windows-signing` runs on a fresh `windows-2025` runner in `desktop-signing`.
+   After the ref and environment checks, and before any secret,
+   `build-test-desktop.mjs prepare-windows`:
+   - refuses to start if a signing secret is in its environment;
+   - requires the download to be exactly those three regular files (no
+     directories, links or junctions), `build-info.json` to list only the
+     executable, both checksum files to match, and the identity to be this
+     run's: commit, version, `x86_64-pc-windows-msvc`, release profile, not
+     dirty, built on GitHub Actions. As on macOS, this catches corruption
+     between jobs, not tampering;
+   - requires an x64 PE32+ executable with an empty certificate table (not yet
+     signed) and Tauri's unpatched bundle-type marker;
+   - copies it into a fresh temporary target directory outside the checkout;
+   - downloads only `@tauri-apps/cli` and `@tauri-apps/cli-win32-x64-msvc` at the
+     version `apps/desktop/pnpm-lock.yaml` pins, from the npm registry, and
+     checks each tarball against the lockfile's sha512 integrity before it is
+     read. The CLI has no other dependency and no install script. Its tarballs
+     are read by the script itself: only regular files and directories under
+     `package/`, no links, `..`, absolute paths or duplicates. No package
+     manager runs;
+   - runs `rustc -vV`, so rustup installs any toolchain component now rather
+     than later.
+3. It records that the checkout is clean (`git status --porcelain --ignored
+   --untracked-files=all`) and the path and SHA-256 of `node`.
+4. The first step with secrets imports the PFX into the runner user's
+   current-user store, not exportable, from its own temporary directory, which
+   it then deletes. The PFX must hold exactly one code-signing certificate with
+   its private key. Without `WINDOWS_CERTIFICATE`, nothing is imported and the
+   installers are bundled unsigned in this job.
+5. In one step it rechecks the checkout and the `node` hash, then runs
+   `build-test-desktop.mjs bundle-windows` with that `node`. That checks the
+   download again, the staged executable's hash, and that the extracted CLI is
+   byte for byte the contents of its checked tarballs with nothing added. It
+   refuses a Tauri configuration with `build.beforeBundleCommand` (a package
+   script) or `bundle.windows.signCommand`. Then it runs `tauri bundle --bundles
+   nsis,msi` with the build's configuration plus the certificate thumbprint,
+   SHA-256 and the DigiCert timestamp service. `tauri bundle` compiles nothing:
+   it runs `cargo metadata --no-deps`, `rustc -vV`, signtool from the Windows
+   SDK, and the NSIS and WiX tools it downloads and checks by hash. It writes
+   the installers with a new `build-info.json` and `SHA256SUMS`.
+6. It always removes the imported certificates and their keys and the staged
+   files. Then, with the key gone, it runs `signtool verify /pa` on both
+   installers and on the executable from an administrative image of the MSI
+   (`msiexec /a`, which installs and runs nothing), and checks each signer's
+   thumbprint.
+7. It uploads the installers as `sideband-test-x86_64-pc-windows-msvc-<commit>`,
+   which `publish` signs for the updater, checksums, attests and uploads.
+
+`scripts/build-test-desktop.test.mjs` checks that no step of `windows-signing`
+before the import references a secret, the step order above, that the job runs
+no `pnpm`, `npm`, `cargo build` or other install or build command, that only it
+references `WINDOWS_CERTIFICATE`, and that the build job has no environment or
+secret and skips bundling exactly when `windows-signing` runs.
+
+Not verified inside the job: the NSIS uninstaller (written only when the
+installer runs) and the executable inside the NSIS installer. Check those on a
+test machine after installing:
+
+```powershell
+signtool verify /pa /v "$env:LOCALAPPDATA\Sideband\socialspeak-desktop.exe"
+signtool verify /pa /v "$env:LOCALAPPDATA\Sideband\uninstall.exe"
+signtool verify /pa /v .\Sideband-X.Y.Z-windows-x64-setup.exe
+signtool verify /pa /v .\Sideband-X.Y.Z-windows-x64.msi
+```
+
+The NSIS installer installs per user by default; for a per-machine install the
+folder is under `$env:ProgramFiles`. Sidecars or resources added later would be
+bundled from the checkout or not at all: they are not part of the upload, and
+the upload check refuses extra files.
+
+Hardware-token and cloud signing are not wired by this PFX path. A remote
+signing service would not need this split to keep the key off the runner, but
+called from the build job it would still sign for any build script there.
+Without a certificate, document and expect SmartScreen warnings; updater
+signatures do not establish Windows publisher reputation.
 
 ### Linux
 

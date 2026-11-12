@@ -93,7 +93,7 @@ jobs:
   build:
     needs: prepare
     uses: ./.github/workflows/test-desktop.yml
-    # actions: read lets the package jobs check their environment's protection.
+    # actions: read lets the signing jobs check their environment's protection.
     permissions:
       contents: read
       actions: read
@@ -101,7 +101,8 @@ jobs:
       matrix: ${{ needs.prepare.outputs.matrix }}
       version: ${{ inputs.version }}
       updates: ${{ inputs.updates }}
-      # OS code-signing and notarization credentials, if configured. No updater key.
+      # OS code-signing and notarization credentials, if configured, for the
+      # macos-signing and windows-signing jobs only. No updater key.
       environment: ${{ inputs.updates && 'desktop-signing' || '' }}
 
   publish:

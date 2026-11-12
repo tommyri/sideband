@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { deflateRawSync } from 'node:zlib'
+import { createHash } from 'node:crypto'
+import { deflateRawSync, gzipSync } from 'node:zlib'
 import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  assertNoSigningSecrets, buildEnvironment, checkAppArchive, checkExtractedApp, compareTree, createUpdaterArchive, listZip,
-  makeIdentity, notarizationKey, parseOptions, parseUpdaterPublicKey, signMacos, signUnpackedMacos, unpackMacos,
-  updateConfiguration, updaterPayloads, writeManifest,
+  assertNoBundleHooks, assertNoSigningSecrets, buildEnvironment, bundleWindows, checkAppArchive, checkExtractedApp, checkUnbundledWindows,
+  checkWindowsExecutable, compareTree, createUpdaterArchive, installTauriCli, listZip, mainBinaryName, makeIdentity,
+  notarizationKey, parseOptions, parseUpdaterPublicKey, prepareWindows, readTar, signMacos, signUnpackedMacos,
+  tauriCliPackages, unpackMacos, updateConfiguration, updaterPayloads, verifyTauriCli, windowsSigningConfig,
+  windowsTarget, writeManifest, writeUnbundledManifest,
 } from './build-test-desktop.mjs'
 
 // A real `tauri signer generate` public key (disposable; its private key was discarded).
@@ -398,9 +401,18 @@ test('the on-disk tree must match the listing in names, types and link targets',
   await assert.rejects(compareTree(relinked, entries), /target/)
 })
 
+// One job of a workflow, from its key to the next job at the same indentation.
+function jobText(workflow, name) {
+  const start = workflow.indexOf(`\n  ${name}:\n`)
+  assert(start >= 0, name)
+  const next = workflow.slice(start + 1).search(/\n  [a-z][\w-]*:\n/)
+  return next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next)
+}
+const withoutComments = (text) => text.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n')
+
 test('no step of the macOS signing job before the keychain import can see a secret', async () => {
   const workflow = await readFile(new URL('../.github/workflows/test-desktop.yml', import.meta.url), 'utf8')
-  const job = workflow.slice(workflow.indexOf('\n  macos-signing:\n'))
+  const job = jobText(workflow, 'macos-signing')
   const steps = job.split('\n      - ').slice(1)
   const at = (pattern) => steps.findIndex((step) => pattern.test(step))
   const keychain = at(/name: Import signing certificate/)
@@ -428,4 +440,335 @@ test('macOS signing without notarization keys skips notarytool; a rejected submi
   // Catches corruption between jobs; the manifest comes from the same build job.
   await assert.rejects(signMacos(corrupted, env, { run: fakeTools([]), entitlements: '/repo/Entitlements.plist' }), /does not match build-info/)
   await assert.rejects(signMacos(await macosArtifacts(), { ...env, APPLE_KEYCHAIN: '' }, { run: fakeTools([]), entitlements: '/repo/Entitlements.plist' }), /APPLE_KEYCHAIN/)
+})
+
+// --- Windows: no-bundle build, checks before the certificate, `tauri bundle` after ---
+
+test('--no-bundle is a Windows release option only', () => {
+  assert.deepEqual(parseOptions(['--no-bundle', '--updates', '--version', '0.2.0'], windowsTarget, 'win32'),
+    { target: windowsTarget, bundles: [], debug: false, noBundle: true, version: '0.2.0', updates: true })
+  assert.throws(() => parseOptions(['--no-bundle'], 'aarch64-apple-darwin', 'darwin'), /only for Windows/)
+  assert.throws(() => parseOptions(['--no-bundle', '--bundles', 'nsis'], windowsTarget, 'win32'), /only for Windows/)
+  assert.throws(() => parseOptions(['--no-bundle', '--debug'], windowsTarget, 'win32'), /only for Windows/)
+})
+
+test('the build never gets Windows signing configuration; only `tauri bundle` does', () => {
+  const env = { GITHUB_REPOSITORY: 'owner/repo', TAURI_UPDATER_PUBLIC_KEY: fixturePublicKey, WINDOWS_CERTIFICATE_THUMBPRINT: 'A'.repeat(40) }
+  assert.equal(updateConfiguration(env, windowsTarget).bundle.windows, undefined)
+  assert.equal(buildEnvironment(env, { updates: false }, {}, '/target').WINDOWS_CERTIFICATE_THUMBPRINT, undefined)
+  assert.deepEqual(windowsSigningConfig(''), {})
+  assert.deepEqual(windowsSigningConfig('0123456789ABCDEF0123456789ABCDEF01234567').bundle.windows,
+    { certificateThumbprint: '0123456789ABCDEF0123456789ABCDEF01234567', digestAlgorithm: 'sha256', timestampUrl: 'http://timestamp.digicert.com' })
+  assert.throws(() => windowsSigningConfig('abc" /p secret'), /thumbprint/)
+})
+
+test('no Tauri configuration runs a package script or custom signer during `tauri bundle`', async () => {
+  const configs = {}
+  for (const name of ['tauri.conf.json', 'tauri.test.conf.json']) {
+    configs[name] = JSON.parse(await readFile(new URL(`../apps/desktop/src-tauri/${name}`, import.meta.url), 'utf8'))
+  }
+  assertNoBundleHooks(configs)
+  assert.throws(() => assertNoBundleHooks({ 'tauri.windows.conf.json': { build: { beforeBundleCommand: 'pnpm x' } } }), /beforeBundleCommand/)
+  assert.throws(() => assertNoBundleHooks({ 'tauri.conf.json': { bundle: { windows: { signCommand: 'x %1' } } } }), /signCommand/)
+})
+
+test('the bundled executable is the Cargo package binary', async () => {
+  const cargo = await readFile(new URL('../apps/desktop/src-tauri/Cargo.toml', import.meta.url), 'utf8')
+  const config = JSON.parse(await readFile(new URL('../apps/desktop/src-tauri/tauri.conf.json', import.meta.url), 'utf8'))
+  assert.equal(mainBinaryName(cargo, config), 'socialspeak-desktop.exe')
+  assert.equal(mainBinaryName(cargo, { mainBinaryName: 'Sideband' }), 'Sideband.exe')
+  assert.throws(() => mainBinaryName(cargo, { mainBinaryName: '../x' }), /binary name/)
+})
+
+// A minimal PE32+ image: MZ stub, PE header, optional header with 16 data directories.
+function peImage({ machine = 0x8664, characteristics = 0x0022, magic = 0x20b, certificate = [0, 0], marker = true } = {}) {
+  const bytes = Buffer.alloc(0x400)
+  bytes.write('MZ', 0, 'latin1')
+  bytes.writeUInt32LE(0x80, 0x3c)
+  bytes.writeUInt32LE(0x00004550, 0x80)
+  bytes.writeUInt16LE(machine, 0x84)
+  bytes.writeUInt16LE(240, 0x80 + 20)
+  bytes.writeUInt16LE(characteristics, 0x80 + 22)
+  const optional = 0x80 + 24
+  bytes.writeUInt16LE(magic, optional)
+  bytes.writeUInt32LE(16, optional + 108)
+  bytes.writeUInt32LE(certificate[0], optional + 112 + 32)
+  bytes.writeUInt32LE(certificate[1], optional + 112 + 36)
+  if (marker) bytes.write('__TAURI_BUNDLE_TYPE_VAR_UNK', 0x300, 'latin1')
+  return bytes
+}
+
+test('only an unsigned x64 Tauri executable is accepted for bundling', () => {
+  checkWindowsExecutable(peImage())
+  assert.throws(() => checkWindowsExecutable(peImage({ certificate: [0x380, 0x40] })), /already signed/)
+  assert.throws(() => checkWindowsExecutable(peImage({ marker: false })), /bundle-type marker/)
+  assert.throws(() => checkWindowsExecutable(peImage({ machine: 0x14c })), /x64/)
+  assert.throws(() => checkWindowsExecutable(peImage({ characteristics: 0x2022 })), /executable image/)
+  assert.throws(() => checkWindowsExecutable(peImage({ magic: 0x10b })), /PE32\+/)
+  assert.throws(() => checkWindowsExecutable(Buffer.concat([Buffer.from('ZM'), peImage().subarray(2)])), /MZ/)
+  assert.throws(() => checkWindowsExecutable(Buffer.from('MZ')), /size/)
+})
+
+const windowsIdentity = { schemaVersion: 1, channel: 'test', version: '0.2.0', commit: 'c'.repeat(40), dirty: false,
+  target: windowsTarget, origin: 'github-actions', profile: 'release' }
+const windowsExpected = { version: '0.2.0', commit: 'c'.repeat(40), origin: 'github-actions' }
+const binary = 'socialspeak-desktop.exe'
+
+async function unbundledOutput({ identity = windowsIdentity, image = peImage() } = {}) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'sideband-unbundled-test-'))
+  await writeFile(path.join(directory, binary), image)
+  await writeUnbundledManifest(directory, identity, binary)
+  return directory
+}
+
+test('the uploaded Windows build is exactly the executable, its manifest and checksums', async () => {
+  const good = await unbundledOutput()
+  const { identity, sha256 } = await checkUnbundledWindows(good, binary, windowsExpected)
+  assert.deepEqual(identity, windowsIdentity)
+  assert.equal(sha256, createHash('sha256').update(peImage()).digest('hex'))
+  const refuse = async (change, pattern) => {
+    const directory = await unbundledOutput()
+    await change(directory)
+    await assert.rejects(checkUnbundledWindows(directory, binary, windowsExpected), pattern)
+  }
+  await refuse((dir) => writeFile(path.join(dir, 'extra.dll'), 'x'), /exactly/)
+  await refuse((dir) => mkdir(path.join(dir, 'nested')), /exactly/)
+  await refuse((dir) => rm(path.join(dir, 'SHA256SUMS')), /exactly/)
+  await refuse(async (dir) => { await rm(path.join(dir, binary)); await symlink(path.join(good, binary), path.join(dir, binary)) }, /regular file/)
+  await refuse((dir) => writeFile(path.join(dir, binary), peImage({ marker: false })), /does not match build-info/)
+  await refuse(async (dir) => writeFile(path.join(dir, 'SHA256SUMS'), (await readFile(path.join(dir, 'SHA256SUMS'), 'utf8')) + 'x  extra\n'), /SHA256SUMS/)
+  // A manifest that lists the executable under another name, or more than one file.
+  await refuse(async (dir) => {
+    const info = JSON.parse(await readFile(path.join(dir, 'build-info.json'), 'utf8'))
+    await writeFile(path.join(dir, 'SHA256SUMS'), '')
+    await writeFile(path.join(dir, 'build-info.json'), JSON.stringify({ ...info, artifacts: [...info.artifacts, { ...info.artifacts[0], file: 'SHA256SUMS' }] }))
+  }, /does not match|must list only/)
+  for (const [key, value] of [['commit', 'd'.repeat(40)], ['version', '0.1.0'], ['dirty', true], ['target', 'aarch64-apple-darwin'], ['profile', 'debug'], ['origin', 'local']]) {
+    const directory = await unbundledOutput({ identity: { ...windowsIdentity, [key]: value } })
+    await assert.rejects(checkUnbundledWindows(directory, binary, windowsExpected), new RegExp(key))
+  }
+  const signed = await unbundledOutput({ image: peImage({ certificate: [0x380, 0x40] }) })
+  await assert.rejects(checkUnbundledWindows(signed, binary, windowsExpected), /already signed/)
+})
+
+test('the locked Tauri CLI is read from pnpm-lock.yaml with its integrity', async () => {
+  const lock = await readFile(new URL('../apps/desktop/pnpm-lock.yaml', import.meta.url), 'utf8')
+  const packages = tauriCliPackages(lock)
+  assert.deepEqual(packages.map((item) => item.name), ['@tauri-apps/cli', '@tauri-apps/cli-win32-x64-msvc'])
+  const version = packages[0].version
+  assert.match(version, /^2\.\d+\.\d+$/)
+  assert.deepEqual(packages.map((item) => item.url), [
+    `https://registry.npmjs.org/@tauri-apps/cli/-/cli-${version}.tgz`,
+    `https://registry.npmjs.org/@tauri-apps/cli-win32-x64-msvc/-/cli-win32-x64-msvc-${version}.tgz`])
+  for (const item of packages) assert(lock.includes(`integrity: ${item.integrity},`), item.name)
+  // A resolution with a tarball URL (or anything besides the integrity) is not accepted.
+  const entry = `'@tauri-apps/cli-win32-x64-msvc@${version}':\n    resolution:\n      {\n        integrity: ${packages[1].integrity},\n      }\n`
+  assert(lock.includes(entry))
+  const redirected = lock.replace(entry, `'@tauri-apps/cli-win32-x64-msvc@${version}':\n    resolution:\n      {\n        integrity: ${packages[1].integrity},\n        tarball: https://example.com/x.tgz,\n      }\n`)
+  assert.throws(() => tauriCliPackages(redirected), /plain registry entry/)
+})
+
+// A minimal ustar writer. entries: [name, type ('0' file, '5' dir, '2' symlink, 'x' pax), content, linkname]
+function tarball(entries, { corrupt = false } = {}) {
+  const blocks = []
+  for (const [name, type = '0', content = '', link = ''] of entries) {
+    const data = Buffer.from(content), header = Buffer.alloc(512)
+    header.write(name, 0, 100, 'utf8')
+    header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116)
+    header.write(data.length.toString(8).padStart(11, '0') + '\0', 124); header.write('00000000000\0', 136)
+    header.write(type, 156); header.write(link, 157, 100); header.write('ustar\0', 257, 'latin1'); header.write('00', 263)
+    header.fill(0x20, 148, 156)
+    let sum = 0
+    for (const byte of header) sum += byte
+    header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148)
+    if (corrupt) header[0] ^= 1
+    blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512))
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]))
+}
+const paxRecord = (key, value) => {
+  const body = ` ${key}=${value}\n`
+  let length = body.length + 1
+  while (String(length).length + body.length !== length) length++
+  return length + body
+}
+
+test('npm tarballs are read as plain files and directories under package/ only', () => {
+  const entries = readTar(tarball([['package/', '5'], ['package/package.json', '0', '{}'], ['package/lib/a.js', '0', 'a'],
+    ['', 'x', paxRecord('path', 'package/' + 'long/'.repeat(30) + 'b.js')], ['ignored-name', '0', 'b']]))
+  assert.deepEqual(entries.map((entry) => [entry.path.join('/'), entry.type]),
+    [['', 'dir'], ['package.json', 'file'], ['lib/a.js', 'file'], ['long/'.repeat(30) + 'b.js', 'file']])
+  assert.equal(entries[2].data.toString(), 'a')
+  const refuse = (list, pattern) => assert.throws(() => readTar(tarball(list)), pattern)
+  refuse([['package/link', '2', '', '../../../evil']], /not a file or directory/)
+  refuse([['package/hard', '1', '', 'package/a']], /not a file or directory/)
+  refuse([['', 'x', paxRecord('linkpath', '/etc/passwd')], ['package/l', '2']], /links/)
+  refuse([['package/../escape.js', '0', 'x']], /Refusing/)
+  refuse([['other/escape.js', '0', 'x']], /Refusing/)
+  refuse([['/package/abs.js', '0', 'x']], /Refusing/)
+  refuse([['package/a\\b.js', '0', 'x']], /Refusing/)
+  refuse([['package/C:x', '0', 'x']], /Refusing/)
+  refuse([['package/A.js', '0', 'x'], ['package/a.js', '0', 'y']], /twice/)
+  assert.throws(() => readTar(tarball([['package/a.js', '0', 'x']], { corrupt: true })), /checksum/)
+})
+
+// A lockfile with the same shape as pnpm's for a made-up CLI version.
+function cliLock(cli, bindingTarball, version = '9.9.9') {
+  const sri = (bytes) => 'sha512-' + createHash('sha512').update(bytes).digest('base64')
+  return `importers:\n  .:\n    devDependencies:\n      '@tauri-apps/cli':\n        specifier: ^${version}\n        version: ${version}\n\npackages:\n` +
+    `  '@tauri-apps/cli-win32-x64-msvc@${version}':\n    resolution:\n      {\n        integrity: ${sri(bindingTarball)},\n      }\n    os: [win32]\n\n` +
+    `  '@tauri-apps/cli@${version}':\n    resolution:\n      {\n        integrity: ${sri(cli)},\n      }\n    hasBin: true\n\nsnapshots:\n` +
+    `  '@tauri-apps/cli@${version}':\n    optionalDependencies:\n      '@tauri-apps/cli-darwin-arm64': ${version}\n      '@tauri-apps/cli-win32-x64-msvc': ${version}\n`
+}
+const cliTarball = (name, version = '9.9.9', extra = []) => tarball([['package/package.json', '0', JSON.stringify({ name, version })], ...extra])
+const fakeRegistry = (files, requests = []) => async (url) => {
+  requests.push(url)
+  const body = files[url]
+  return body ? { ok: true, status: 200, arrayBuffer: async () => body } : { ok: false, status: 404 }
+}
+const registryFiles = (cli, binding, version = '9.9.9') => ({
+  [`https://registry.npmjs.org/@tauri-apps/cli/-/cli-${version}.tgz`]: cli,
+  [`https://registry.npmjs.org/@tauri-apps/cli-win32-x64-msvc/-/cli-win32-x64-msvc-${version}.tgz`]: binding,
+})
+
+test('the Tauri CLI is installed from two integrity-checked tarballs and rechecked before it runs', async () => {
+  const cli = cliTarball('@tauri-apps/cli', '9.9.9', [['package/tauri.js', '0', 'cli'], ['package/lib/', '5']])
+  const binding = cliTarball('@tauri-apps/cli-win32-x64-msvc', '9.9.9', [['package/cli.win32-x64-msvc.node', '0', 'native']])
+  const lock = cliLock(cli, binding)
+  const destination = await mkdtemp(path.join(tmpdir(), 'sideband-cli-test-'))
+  const requests = []
+  const entry = await installTauriCli(lock, destination, { fetch: fakeRegistry(registryFiles(cli, binding), requests) })
+  assert.equal(entry, path.join(destination, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'))
+  assert.equal(requests.length, 2)
+  assert.equal(await readFile(path.join(destination, 'node_modules', '@tauri-apps', 'cli-win32-x64-msvc', 'cli.win32-x64-msvc.node'), 'utf8'), 'native')
+  assert.equal(await verifyTauriCli(lock, destination), entry)
+  await writeFile(path.join(destination, 'node_modules', '@tauri-apps', 'cli', 'planted.js'), 'x')
+  await assert.rejects(verifyTauriCli(lock, destination), /Not part of the Tauri CLI.*planted/)
+  await rm(path.join(destination, 'node_modules', '@tauri-apps', 'cli', 'planted.js'))
+  await writeFile(entry, 'changed')
+  await assert.rejects(verifyTauriCli(lock, destination), /changed: node_modules\/@tauri-apps\/cli\/tauri\.js/)
+  await rm(entry)
+  await assert.rejects(verifyTauriCli(lock, destination), /missing/)
+  // A tarball that is not the locked one is refused before anything is extracted.
+  const swapped = await mkdtemp(path.join(tmpdir(), 'sideband-cli-test-'))
+  await assert.rejects(installTauriCli(lock, swapped, { fetch: fakeRegistry(registryFiles(cliTarball('@tauri-apps/cli', '9.9.9', [['package/tauri.js', '0', 'evil']]), binding)) }), /integrity/)
+  assert.deepEqual(await readdir(swapped), ['tarballs'])
+  // A locked tarball that carries dependencies or another package is refused too.
+  const withDeps = tarball([['package/package.json', '0', JSON.stringify({ name: '@tauri-apps/cli', version: '9.9.9', dependencies: { x: '1' } })]])
+  await assert.rejects(installTauriCli(cliLock(withDeps, binding), await mkdtemp(path.join(tmpdir(), 'sideband-cli-test-')), { fetch: fakeRegistry(registryFiles(withDeps, binding)) }), /dependencies/)
+  const wrongName = cliTarball('left-pad')
+  await assert.rejects(installTauriCli(cliLock(wrongName, binding), await mkdtemp(path.join(tmpdir(), 'sideband-cli-test-')), { fetch: fakeRegistry(registryFiles(wrongName, binding)) }), /holds left-pad/)
+})
+
+async function windowsSigningFixture() {
+  const cli = cliTarball('@tauri-apps/cli', '9.9.9', [['package/tauri.js', '0', 'cli']])
+  const binding = cliTarball('@tauri-apps/cli-win32-x64-msvc', '9.9.9', [['package/cli.win32-x64-msvc.node', '0', 'native']])
+  const lockText = cliLock(cli, binding)
+  const scratch = await mkdtemp(path.join(tmpdir(), 'sideband-windows-scratch-'))
+  const input = await unbundledOutput()
+  const state = await prepareWindows(input, { binary, expected: windowsExpected, lockText, scratch, fetch: fakeRegistry(registryFiles(cli, binding)) })
+  return { lockText, scratch, input, state }
+}
+
+// Stands in for `node tauri.js bundle`: records the call and writes the two installers.
+function fakeBundler(calls) {
+  return async (command, args, options) => {
+    calls.push({ command, args, env: options.env })
+    const release = path.join(options.env.CARGO_TARGET_DIR, 'release', 'bundle')
+    await mkdir(path.join(release, 'nsis'), { recursive: true })
+    await mkdir(path.join(release, 'msi'), { recursive: true })
+    await writeFile(path.join(release, 'nsis', 'Sideband_0.2.0_x64-setup.exe'), 'nsis')
+    await writeFile(path.join(release, 'msi', 'Sideband_0.2.0_x64_en-US.msi'), 'msi')
+  }
+}
+
+const releaseEnv = { PATH: '/bin', GITHUB_REPOSITORY: 'owner/repo', TAURI_UPDATER_PUBLIC_KEY: fixturePublicKey }
+
+test('Windows bundling runs only `tauri bundle` from the checked CLI, with the thumbprint, and lists both payloads', async () => {
+  const { lockText, scratch, state } = await windowsSigningFixture()
+  assert.deepEqual(await readdir(path.join(state.targetDir, 'release')), [binary])
+  const calls = []
+  const output = path.join(scratch, 'windows-output')
+  const thumbprint = '0123456789ABCDEF0123456789ABCDEF01234567'
+  const info = await bundleWindows(state, { ...releaseEnv, WINDOWS_CERTIFICATE_THUMBPRINT: thumbprint }, { output, lockText, run: fakeBundler(calls) })
+  assert.equal(calls.length, 1)
+  const [{ command, args, env }] = calls
+  assert.equal(command, process.execPath)
+  assert.equal(args[0], path.join(state.cli, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'))
+  assert.deepEqual(args.slice(1, 5), ['bundle', '--ci', '--bundles', 'nsis,msi'])
+  assert(!args.includes('build') && !args.includes('--no-sign'))
+  const configs = args.filter((_, i) => args[i - 1] === '--config')
+  assert.equal(configs[0], 'src-tauri/tauri.test.conf.json')
+  assert.equal(JSON.parse(configs[1]).version, '0.2.0')
+  const config = JSON.parse(configs[2])
+  assert.equal(config.bundle.windows.certificateThumbprint, thumbprint)
+  assert.equal(config.bundle.createUpdaterArtifacts, false)
+  assert.equal(config.plugins.updater.pubkey, fixturePublicKey)
+  assert.equal(env.CARGO_TARGET_DIR, state.targetDir)
+  assert.equal(env.WINDOWS_CERTIFICATE_THUMBPRINT, undefined)
+  assert.deepEqual((await readdir(output)).sort(), ['INSTALL.md', 'SHA256SUMS', 'Sideband_0.2.0_x64-setup.exe', 'Sideband_0.2.0_x64_en-US.msi', 'build-info.json'])
+  assert.deepEqual(info.updater, [{ file: 'Sideband_0.2.0_x64-setup.exe' }, { file: 'Sideband_0.2.0_x64_en-US.msi' }])
+  const written = JSON.parse(await readFile(path.join(output, 'build-info.json'), 'utf8'))
+  assert.deepEqual({ ...written, artifacts: undefined, updater: undefined }, { ...windowsIdentity, artifacts: undefined, updater: undefined })
+  assert.equal(written.unbundled, undefined)
+})
+
+test('Windows bundling without a certificate stays unsigned; a secret, a changed executable or a changed CLI stops it', async () => {
+  const unsigned = await windowsSigningFixture()
+  const calls = []
+  await bundleWindows(unsigned.state, releaseEnv, { output: path.join(unsigned.scratch, 'out'), lockText: unsigned.lockText, run: fakeBundler(calls) })
+  assert.equal(JSON.parse(calls[0].args.at(-1)).bundle.windows, undefined)
+  const refuse = async (change, env, pattern) => {
+    const fixture = await windowsSigningFixture()
+    await change(fixture)
+    const calls = []
+    await assert.rejects(bundleWindows(fixture.state, env, { output: path.join(fixture.scratch, 'out'), lockText: fixture.lockText, run: fakeBundler(calls) }), pattern)
+    assert.deepEqual(calls, [])
+  }
+  await refuse(async () => {}, { ...releaseEnv, WINDOWS_CERTIFICATE: 'pfx' }, /WINDOWS_CERTIFICATE/)
+  await refuse(async () => {}, { ...releaseEnv, WINDOWS_CERTIFICATE_THUMBPRINT: 'not-hex' }, /thumbprint/)
+  await refuse(({ state }) => writeFile(path.join(state.targetDir, 'release', binary), peImage({ marker: false })), releaseEnv, /staged executable changed/)
+  await refuse(({ state }) => writeFile(path.join(state.targetDir, 'release', 'WebView2Loader.dll'), 'x'), releaseEnv, /only the staged executable/)
+  await refuse(({ state }) => writeFile(path.join(state.cli, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'changed'), releaseEnv, /Tauri CLI file changed/)
+  await refuse(({ input }) => writeFile(path.join(input, 'extra'), 'x'), releaseEnv, /exactly/)
+})
+
+test('a bad Windows upload leaves nothing behind and fetches nothing', async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), 'sideband-windows-scratch-'))
+  const requests = []
+  const input = await unbundledOutput({ identity: { ...windowsIdentity, dirty: true } })
+  await assert.rejects(prepareWindows(input, { binary, expected: windowsExpected, lockText: '', scratch, fetch: fakeRegistry({}, requests) }), /dirty/)
+  assert.deepEqual(requests, [])
+  assert.deepEqual(await readdir(scratch), [])
+})
+
+test('the Windows certificate is only in a job that runs no install, build or dependency script', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/test-desktop.yml', import.meta.url), 'utf8')
+  const job = jobText(workflow, 'windows-signing')
+  const steps = job.split('\n      - ').slice(1)
+  const at = (pattern) => steps.findIndex((step) => pattern.test(step))
+  const certificate = at(/name: Import Windows signing certificate/)
+  assert(certificate > 0)
+  for (const step of steps.slice(0, certificate)) assert(!step.includes('secrets.'), step.split('\n')[0])
+  assert(steps[certificate].includes('secrets.WINDOWS_CERTIFICATE'))
+  const order = [/Refuse refs other than main/, /actions\/checkout@/, /release-gate\.mjs environment/, /actions\/download-artifact@/,
+    /prepare-windows/, /git status --porcelain/, /Import Windows signing certificate/, /bundle-windows/,
+    /Remove the signing certificate/, /signtool/, /actions\/upload-artifact@/].map(at)
+  assert(order.every((index, i) => index >= 0 && (i === 0 || index > order[i - 1])), JSON.stringify(order))
+  // Nothing in the job installs dependencies, builds, restores a cache or runs a package script.
+  const code = withoutComments(job)
+  for (const pattern of [/\bpnpm\b/, /\bnpm\b/, /\byarn\b/, /\bnpx\b/, /\bcargo\s+(build|test|run|install|check|clippy)\b/, /tauri\.js\b.*\bbuild\b/,
+    /\btauri\s+build\b/, /rust-cache/, /^\s+cache:/m, /cache-dependency-path/, /build-test-desktop\.mjs\s+--target/]) {
+    assert(!pattern.test(code), String(pattern))
+  }
+  assert.match(job, /environment: \$\{\{ inputs\.environment \}\}/)
+  assert.equal(workflow.split('secrets.WINDOWS_CERTIFICATE').length - 1, job.split('secrets.WINDOWS_CERTIFICATE').length - 1)
+  // The build job holds no environment or secret, and skips bundling exactly when this job bundles.
+  const build = jobText(workflow, 'package')
+  assert(!build.includes('secrets.') && !/^\s+environment:/m.test(build))
+  assert.match(build, /--no-bundle/)
+  assert.match(job, /\n    if: inputs\.environment != '' && inputs\.updates && contains\(inputs\.matrix, 'x86_64-pc-windows-msvc'\)\n/)
+  assert(build.includes("UNBUNDLED: ${{ matrix.target == 'x86_64-pc-windows-msvc' && inputs.environment != '' && inputs.updates }}"))
+  assert.match(job, /name: sideband-unbundled-x86_64-pc-windows-msvc-\$\{\{ github\.sha \}\}/)
+  assert.match(job, /name: sideband-test-x86_64-pc-windows-msvc-\$\{\{ github\.sha \}\}/)
 })
