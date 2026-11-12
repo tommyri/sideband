@@ -404,9 +404,11 @@ attachment requests and do not follow redirects. Plain HTTP on that port is
 closed during the TLS handshake. The internal `127.0.0.1:9101` health and
 metrics listener remains plain HTTP and must stay private. ACME HTTP-01 uses a
 separate TCP 80 listener for challenges and redirects all other paths to the
-configured HTTPS port. The TLS-ALPN-01 listener has the same per-address cap
-and 10 s handshake deadline as the HTTPS listener and closes each connection
-after its handshake. `tls/acme/`, which holds the issued key, is created `0700`.
+configured HTTPS port. TLS-ALPN-01 is answered by the HTTPS listener when
+`bind_http` shares the QUIC port (the default), and otherwise by its own
+listener with the same per-address cap and 10 s handshake deadline. Either
+closes a connection that negotiated `acme-tls/1` after its handshake, before
+any HTTP is read. `tls/acme/`, which holds the issued key, is created `0700`.
 
 ## 9. Link previews (SSRF)
 

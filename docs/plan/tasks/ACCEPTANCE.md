@@ -107,6 +107,7 @@ with the server on the VPS.
 | Backup and restore with ownership recorded; renewal hook with a real certificate; `nginx -t` with `limit_req_zone` and `upstream` | [T-098](T-098-deploy-ci-hygiene.md) | – | – | – | VPS open |
 | Grafana/Prometheus dashboard imported into a running deployment | [T-063](T-063-diagnostics.md) | – | – | – | VPS open |
 | Someone unfamiliar with the project follows `docs/self-hosting.md` on a fresh VPS and connects a desktop client (note who and when) | [T-064](T-064-documentation.md) | – | – | – | VPS open |
+| Fresh systemd install on the `init` defaults: the desktop, given only the host name, logs in and loads history; then `tls-alpn-01` against Let's Encrypt staging issues a certificate with `bind_http` on 443 | [T-115](T-115-default-ports-agree.md) | – | – | – | VPS open |
 | One hour per fuzz target; second-person review of `docs/security.md`; MPL-2.0 exception decision | [T-067](T-067-security-acceptance.md) | – | – | – | open |
 
 ## Release and GitHub (maintainer)

@@ -16,14 +16,14 @@ To report a problem with evidence, see
 
 ## Add a server
 
-You need three things from the server's owner: its address with the port
-(for example `voice.example.com:443`), an invite code, and its certificate
-fingerprint.
+You need three things from the server's owner: its address (for example
+`voice.example.com`, with `:port` added if the server does not use 443), an
+invite code, and its certificate fingerprint.
 
 1. Choose **Add your first server** (or **Add server** in the server rail).
-2. Enter the **Server address** as `host:port`, `ss://host:port`, or
-   `[IPv6 address]:port`. Always include the port: without one the app uses
-   5781, which is not the server's default.
+2. Enter the **Server address** as `host`, `host:port`, `ss://host:port`,
+   or `[IPv6 address]:port`. Without a port the app uses 443, the server's
+   default.
 3. If the owner told you the HTTPS port differs from the server port, open
    **Advanced connection options** and enter it in **HTTPS port**.
 4. **Continue.** The app checks both connections and shows the server's name

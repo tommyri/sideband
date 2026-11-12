@@ -137,7 +137,7 @@ describe('onboarding', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
   })
   it('validates addresses, IPv6, ports and password byte limits', () => {
-    expect(parseAddress('host')).toEqual({ host: 'host', port: 5781, httpsPort: 5781 })
+    expect(parseAddress('host')).toEqual({ host: 'host', port: 443, httpsPort: 443 })
     expect(parseAddress('ss://[::1]:9000', '9443')).toEqual({
       host: '::1',
       port: 9000,

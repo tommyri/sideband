@@ -25,8 +25,10 @@ pub const TEMPLATE: &str = r#"# Sideband. SS_SERVER_NAME, SS_BIND_QUIC, SS_BIND_
 
 [server]
 name = "Sideband"
+# QUIC on UDP and HTTPS on TCP. Clients use the QUIC port for HTTPS too unless
+# told otherwise, so keep both on one port number.
 bind_quic = "0.0.0.0:443"
-bind_http = "0.0.0.0:4430"
+bind_http = "0.0.0.0:443"
 public_host = "localhost"
 
 [tls]
@@ -152,7 +154,9 @@ pub struct ServerConfig {
     pub name: String,
     /// QUIC UDP address.
     pub bind_quic: SocketAddr,
-    /// Public HTTP address for history, uploads, and webhooks.
+    /// Public HTTPS (TCP) address for history, uploads, and webhooks. Clients
+    /// assume the QUIC port number unless told another, so the default is the
+    /// same port as `bind_quic`.
     pub bind_http: SocketAddr,
     /// Host name operators tell clients. ACME orders a certificate for this name.
     pub public_host: String,
@@ -219,7 +223,7 @@ impl Default for ServerConfig {
         Self {
             name: "Sideband".to_owned(),
             bind_quic: SocketAddr::from(([0, 0, 0, 0], 443)),
-            bind_http: SocketAddr::from(([0, 0, 0, 0], 4430)),
+            bind_http: SocketAddr::from(([0, 0, 0, 0], 443)),
             public_host: "localhost".to_owned(),
         }
     }
@@ -438,6 +442,13 @@ mod tests {
         assert_eq!(config.tls.acme_directory, ACME_DIRECTORY);
         assert!(!config.tls.http_redirect);
         assert_eq!(config.internal.bind.port(), 9101);
+        assert_eq!(config.server.bind_quic.port(), ss_net::DEFAULT_PORT);
+        assert_eq!(config.server.bind_http.port(), ss_net::DEFAULT_PORT);
+        assert_eq!(
+            config,
+            parse("").unwrap(),
+            "the template states the defaults"
+        );
         let typo = TEMPLATE.replace("public_host", "public_hst");
         let error = parse(&typo).unwrap_err();
         assert!(error.to_string().contains("server.public_hst"), "{error}");

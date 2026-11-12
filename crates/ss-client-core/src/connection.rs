@@ -63,11 +63,13 @@ pub struct ServerAddr {
     pub host: String,
     /// QUIC UDP port.
     pub port: u16,
-    /// HTTPS TCP port; normally the same numeric port.
+    /// HTTPS TCP port. [`ServerAddr::new`] uses the QUIC port, which is where
+    /// `ss-server init`, the Compose files, and NGINX put HTTPS; set it only
+    /// for a server whose `bind_http` port differs.
     pub https_port: u16,
 }
 impl ServerAddr {
-    /// Construct and validate the host/port identity.
+    /// Construct and validate the host/port identity. HTTPS uses `port` too.
     pub fn new(host: impl Into<String>, port: u16) -> Result<Self, Error> {
         let host = host
             .into()
