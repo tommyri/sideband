@@ -725,6 +725,7 @@ impl VoiceSession {
                     "overflow":stats.playback.overflow,"trimmed":stats.playback.trimmed,
                     "padded":stats.playback.padded,"forced":stats.playback.forced},
                 "workerRealtime":stats.realtime,
+                "workerRealtimeError":stats.realtime_error.as_deref(),
                 "encoderFec":channel_profile(&self.store,self.channel).ok().map(|(p,_)|p.encoder_params().inband_fec)
             }),
         )
