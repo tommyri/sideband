@@ -23,8 +23,8 @@ to `$XDG_DATA_HOME/socialspeak`, else `./data`.
 One audio track per joined connection; joins announce tracks both ways, and
 leave, switch and disconnect remove it. Mute/deaf flags gate forwarding; joins
 use the channel profile (the spike: mono 48 kHz Opus). `media::streams` relays
-subscribed video GOPs with per-viewer drop-oldest budgets, cleanup on
-permission or membership loss, private quality hints, and counters.
+video GOPs with per-viewer drop-oldest budgets, one rendition per viewer chosen
+from its link, cleanup on permission or membership loss, and publisher stats.
 
 Sessions and control queues are bounded; a slow consumer is closed (code 2),
 never sent a gap, and a Welcome sheds DMs to fit one frame. The media path

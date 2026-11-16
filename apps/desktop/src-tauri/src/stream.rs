@@ -37,6 +37,8 @@ pub struct ShareView {
     source: String,
     state: String,
     viewers: u32,
+    /// Rendition diagnostics: whether the low rendition exists and is used.
+    renditions: String,
     error: Option<String>,
 }
 struct Active {
@@ -240,7 +242,9 @@ impl Publisher {
         lock(&self.status).state = "sharing".into();
         loop {
             session.publish_next().await.map_err(|e| e.to_string())?;
-            lock(&self.status).viewers = session.subscriber_hint().viewer_count;
+            let mut status = lock(&self.status);
+            status.viewers = session.subscriber_hint().viewer_count;
+            status.renditions = renditions(&session.stats(), session.low_viewers());
         }
     }
 
@@ -261,6 +265,21 @@ impl Publisher {
         }
     }
 }
+/// One line for the share status: the low rendition's state, and the full
+/// rendition's bitrate when sender-wide adaptation has lowered it.
+fn renditions(stats: &ss_video::EncoderStats, low_viewers: u32) -> String {
+    let low = match &stats.low {
+        ss_video::LowState::Off => "one rendition".to_owned(),
+        ss_video::LowState::Unavailable(_) => {
+            "one rendition (no second hardware encoder)".to_owned()
+        }
+        ss_video::LowState::Idle => "low rendition ready".to_owned(),
+        ss_video::LowState::Encoding => format!("{low_viewers} on low rendition"),
+    };
+    let tenths = stats.target_bitrate / 100_000;
+    format!("{low} · {}.{} Mb/s", tenths / 10, tenths % 10)
+}
+
 #[tauri::command]
 pub async fn start_screen_share(
     app: tauri::AppHandle,
@@ -327,6 +346,7 @@ pub async fn start_screen_share(
             preset,
             cursor,
             hardware_only: false,
+            low: ss_video::LowRendition::Auto,
         },
         status: status.clone(),
     };

@@ -10,6 +10,7 @@ export interface Share {
   source: string
   state: string
   viewers: number
+  renditions: string
   error: string | null
 }
 export interface Snapshot {

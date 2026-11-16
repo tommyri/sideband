@@ -5,7 +5,7 @@ server. Two documents hold the facts; this page only says where to look.
 
 | Document | What it is the source for |
 |---|---|
-| [Wire protocol v1](../plan/02-protocol.md) | Connection lifecycle and session tokens (§1), control-stream framing (§2), which message goes which way and what it does (§3), audio datagrams (§4), video streams (§5), the HTTPS API (§6), versioning and feature flags (§7) |
+| [Wire protocol v1](../plan/02-protocol.md) | Connection lifecycle and session tokens (§1), control-stream framing (§2), which message goes which way and what it does (§3), audio datagrams (§4), video streams and their renditions (§5), the HTTPS API (§6), versioning and feature flags (§7) |
 | [Message reference](messages.md) | Every `.proto` message, field, field number and enum value, with the comments from the schema. Generated; do not edit it by hand |
 | [Security](../security.md) | Certificate trust (§3), authentication and tokens (§4), permissions (§5), rate limits (§6), input limits (§7) |
 | [Message search](../message-search.md) | `GET /api/v1/search` parameters and response |

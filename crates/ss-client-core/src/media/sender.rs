@@ -7,8 +7,10 @@ use crate::{
 use ss_proto::v1::{self, client_envelope::Msg};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::{Frame, GroupWriter, VideoTrackSender};
+use super::{Frame, RenditionWriter, VideoTrackSender};
 use crate::{Client, ClientEvent};
+use ss_video::rate::{LinkSample, RATE_TICK, RateController, ViewerReport};
+use std::time::Instant;
 
 /// Failures while publishing one screen-share track.
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +29,7 @@ pub enum ScreenShareError {
     Reconnected,
 }
 
-/// One live screen share: capture, native encoder, and QUIC group writer.
+/// One live screen share: capture, native encoders, and QUIC group writer.
 ///
 /// The host repeatedly calls [`publish_next`](Self::publish_next). This is
 /// pull-driven because native video frames are thread-confined; the desktop shell
@@ -35,12 +37,15 @@ pub enum ScreenShareError {
 pub struct ScreenShareSession {
     client: ScreenShareHandle,
     publisher: ss_video::Publisher,
-    sender: VideoTrackSender,
-    writer: Option<GroupWriter>,
+    writer: RenditionWriter,
+    connection: quinn::Connection,
     events: broadcast::Receiver<ClientEvent>,
     track: u32,
     hint: ss_video::SubscriberHint,
     clock_offset: Option<u32>,
+    rate: RateController,
+    next_rate: Instant,
+    low_viewers: u32,
 }
 
 impl ScreenShareSession {
@@ -57,33 +62,29 @@ impl ScreenShareSession {
         client: ScreenShareHandle,
         config: ss_video::PublisherConfig,
     ) -> Result<(Self, ss_video::CodecInfo), ScreenShareError> {
-        let (publisher, codec) = ss_video::Publisher::open(config).await?;
+        let preset = config.preset;
+        let (mut publisher, codec) = ss_video::Publisher::open(config).await?;
         let track = client
-            .start_stream(ss_proto::v1::StartStream {
-                kind: ss_proto::v1::TrackKind::Screen.into(),
-                codec: Some(ss_proto::v1::Codec {
-                    name: codec.name.clone(),
-                    sample_rate: 0,
-                    channels: 0,
-                    description: codec.description.clone(),
-                }),
-            })
+            .start_stream(start_stream(&codec, publisher.encoders().renditions()))
             .await?;
         let Some(connection) = client.media.quic() else {
             let _ = client.stop_stream(ss_proto::v1::StopStream {}).await;
             return Err(ScreenShareError::Reconnected);
         };
-        let sender = VideoTrackSender::from_quinn(connection, track)?;
+        let sender = VideoTrackSender::from_quinn(connection.clone(), track)?;
         Ok((
             Self {
                 events: client.events.subscribe(),
                 client,
                 publisher,
-                sender,
-                writer: None,
+                writer: RenditionWriter::new(sender),
+                connection,
                 track,
                 hint: ss_video::SubscriberHint::default(),
                 clock_offset: None,
+                rate: RateController::new(preset.bitrate()),
+                next_rate: Instant::now() + RATE_TICK,
+                low_viewers: 0,
             },
             codec,
         ))
@@ -92,17 +93,16 @@ impl ScreenShareSession {
     /// Capture, encode, and transmit the next available picture.
     pub async fn publish_next(&mut self) -> Result<(), ScreenShareError> {
         self.drain_events()?;
+        self.adapt_rate().await?;
         let next = self.publisher.next().await;
         if matches!(next, Err(ss_video::Error::SourceEnded)) {
-            if let Some(writer) = self.writer.take() {
-                let _ = writer.finish();
-            }
+            let _ = self.writer.finish_all();
             let _ = self.client.stop_stream(ss_proto::v1::StopStream {}).await;
         }
         let Some(frames) = next? else {
             return Ok(());
         };
-        for mut frame in frames {
+        for frame in frames {
             // Capture backends have independent epochs. Anchor video to the voice
             // capture clock once, then retain capture cadence through wraps.
             if self.clock_offset.is_none() {
@@ -114,23 +114,16 @@ impl ScreenShareSession {
                     .and_then(crate::media::AudioClock::now)
                     .map(|t| t.wrapping_sub(frame.timestamp));
             }
-            frame.timestamp = frame.timestamp.wrapping_add(self.clock_offset.unwrap_or(0));
-            if frame.keyframe {
-                if let Some(writer) = self.writer.take() {
-                    writer.finish()?;
-                }
-                self.writer = Some(self.sender.begin_group(frame.timestamp).await?);
-            }
-            let writer = self
-                .writer
-                .as_mut()
-                .ok_or(ss_video::Error::MissingKeyframe)?;
-            writer
-                .write_frame(&Frame {
-                    timestamp: frame.timestamp,
-                    keyframe: frame.keyframe,
-                    payload: frame.payload,
-                })
+            let timestamp = frame.timestamp.wrapping_add(self.clock_offset.unwrap_or(0));
+            self.writer
+                .write(
+                    frame.rendition,
+                    &Frame {
+                        timestamp,
+                        keyframe: frame.keyframe,
+                        payload: frame.payload,
+                    },
+                )
                 .await?;
         }
         Ok(())
@@ -148,18 +141,44 @@ impl ScreenShareSession {
         self.hint
     }
 
-    /// Current native encoder diagnostics.
+    /// Viewers on the low rendition in the server's latest report.
+    #[must_use]
+    pub const fn low_viewers(&self) -> u32 {
+        self.low_viewers
+    }
+
+    /// Current native encoder diagnostics, including the low rendition's state.
     #[must_use]
     pub fn stats(&self) -> ss_video::EncoderStats {
         self.publisher.stats()
     }
 
-    /// Finish the active group and remove the published track.
+    /// Finish the active groups and remove the published track.
     pub async fn stop(mut self) -> Result<(), ScreenShareError> {
-        let finish = self.writer.take().map(GroupWriter::finish).transpose();
+        let finish = self.writer.finish_all();
         let stop = self.client.stop_stream(ss_proto::v1::StopStream {}).await;
         finish?;
         stop?;
+        Ok(())
+    }
+
+    /// Feed the sender-wide controller and retune the full rendition.
+    async fn adapt_rate(&mut self) -> Result<(), ScreenShareError> {
+        let now = Instant::now();
+        if now < self.next_rate {
+            return Ok(());
+        }
+        self.next_rate = now + RATE_TICK;
+        let stats = self.connection.stats();
+        let sample = LinkSample {
+            written: self.writer.written(),
+            delivered: stats.udp_tx.bytes.saturating_sub(stats.path.lost_bytes),
+            rtt: self.connection.rtt(),
+        };
+        if let Some(target) = self.rate.update(now, sample) {
+            tracing::debug!(target, reason = ?self.rate.reason(), "screen-share bitrate");
+            self.publisher.encoders().set_bitrate(target).await?;
+        }
         Ok(())
     }
 
@@ -169,8 +188,10 @@ impl ScreenShareSession {
         }
         loop {
             match self.events.try_recv() {
-                Ok(ClientEvent::KeyframeRequested { track }) if track == self.track => {
-                    self.publisher.request_keyframe();
+                Ok(ClientEvent::KeyframeRequested { track, rendition }) if track == self.track => {
+                    self.publisher
+                        .encoders()
+                        .request_keyframe(u8::try_from(rendition.min(1)).unwrap_or(0));
                 }
                 Ok(ClientEvent::SubscriberHint {
                     track,
@@ -184,6 +205,9 @@ impl ScreenShareSession {
                         viewer_count,
                     };
                 }
+                Ok(ClientEvent::SubscriberStats { track, renditions }) if track == self.track => {
+                    self.subscriber_stats(&renditions)?;
+                }
                 Ok(ClientEvent::Resynced | ClientEvent::Connection(_))
                 | Err(broadcast::error::TryRecvError::Closed) => {
                     return Err(ScreenShareError::Reconnected);
@@ -192,6 +216,69 @@ impl ScreenShareSession {
                 Err(broadcast::error::TryRecvError::Empty) => return Ok(()),
             }
         }
+    }
+
+    fn subscriber_stats(
+        &mut self,
+        renditions: &[v1::RenditionStats],
+    ) -> Result<(), ScreenShareError> {
+        let report = viewer_report(renditions, self.publisher.encoders().renditions().len());
+        self.rate.report(report);
+        self.low_viewers = renditions.get(1).map_or(0, |low| low.subscribers);
+        let wanted = self.low_viewers > 0;
+        self.publisher.encoders().set_low_wanted(wanted);
+        if !wanted {
+            // The low rendition stops between groups, not inside one.
+            self.writer.finish(1)?;
+        }
+        Ok(())
+    }
+}
+
+/// `StartStream` for the announced renditions; one rendition sends none.
+#[must_use]
+pub fn start_stream(
+    codec: &ss_video::CodecInfo,
+    renditions: &[ss_video::RenditionInfo],
+) -> v1::StartStream {
+    v1::StartStream {
+        kind: v1::TrackKind::Screen.into(),
+        codec: Some(wire_codec(codec)),
+        renditions: if renditions.len() < 2 {
+            Vec::new()
+        } else {
+            renditions
+                .iter()
+                .map(|r| v1::Rendition {
+                    index: u32::from(r.index),
+                    width: r.width,
+                    height: r.height,
+                    fps: r.fps,
+                    bitrate: r.bitrate,
+                    codec: Some(wire_codec(&r.codec)),
+                })
+                .collect()
+        },
+    }
+}
+
+fn wire_codec(codec: &ss_video::CodecInfo) -> v1::Codec {
+    v1::Codec {
+        name: codec.name.clone(),
+        sample_rate: 0,
+        channels: 0,
+        description: codec.description.clone(),
+    }
+}
+
+/// Reduce a server `SubscriberStats` report to the rate controller's input.
+#[must_use]
+pub fn viewer_report(renditions: &[v1::RenditionStats], announced: usize) -> ViewerReport {
+    let full = renditions.first().copied().unwrap_or_default();
+    ViewerReport {
+        full_subscribers: full.subscribers,
+        full_congested: full.congested.max(u32::from(full.resets > 0)),
+        low_available: announced >= 2,
     }
 }
 
@@ -281,6 +368,57 @@ mod tests {
             receive,
         )
     }
+    fn info(index: u8, height: u32) -> ss_video::RenditionInfo {
+        ss_video::RenditionInfo {
+            index,
+            width: height * 16 / 9,
+            height,
+            fps: 30,
+            bitrate: 1,
+            codec: ss_video::CodecInfo {
+                name: format!("avc3.{height}"),
+                description: bytes::Bytes::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn one_rendition_announces_none_and_two_announce_both() {
+        let one = [info(0, 1080)];
+        let start = start_stream(&one[0].codec, &one);
+        assert_eq!(start.renditions, []);
+        assert_eq!(start.codec.unwrap().name, "avc3.1080");
+        let two = [info(0, 1080), info(1, 360)];
+        let start = start_stream(&two[0].codec, &two);
+        let heights: Vec<_> = start
+            .renditions
+            .iter()
+            .map(|r| (r.index, r.height))
+            .collect();
+        assert_eq!(heights, [(0, 1080), (1, 360)]);
+        assert_eq!(start.renditions[1].codec.as_ref().unwrap().name, "avc3.360");
+    }
+
+    #[test]
+    fn viewer_report_counts_resets_as_congestion() {
+        let stats = |congested, resets| {
+            vec![v1::RenditionStats {
+                index: 0,
+                subscribers: 2,
+                congested,
+                resets,
+                ..Default::default()
+            }]
+        };
+        let report = viewer_report(&stats(0, 3), 2);
+        assert_eq!((report.full_subscribers, report.full_congested), (2, 1));
+        assert!(report.low_available);
+        let report = viewer_report(&stats(2, 0), 1);
+        assert_eq!(report.full_congested, 2);
+        assert!(!report.low_available);
+        assert_eq!(viewer_report(&[], 2).full_subscribers, 0);
+    }
+
     #[tokio::test]
     async fn owned_control_correlates_track_and_never_replays_publication() {
         let (handle, mut receive) = control();

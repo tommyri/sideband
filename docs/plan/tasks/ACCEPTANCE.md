@@ -99,6 +99,9 @@ with the server on the VPS.
 | Installed decoder backend and window controls; two viewer windows; recovery from decoder or network loss | [T-072](T-072-stream-viewer.md) | open | open | open | – |
 | A/V skew within ±60 ms; latency under 150 ms on a LAN, under 300 ms through the VPS | [T-072](T-072-stream-viewer.md) | open | open | open | VPS |
 | Grant and deny capture permission; share a display and a window; watch from another computer; reopen, cancel, stop, leave or switch voice | [T-073](T-073-screen-share-ui.md) | open | open | open | – |
+| Desktop viewer window, one of two viewers on a shaped link (600 kb/s, 2 % loss): low rendition within 3 s, no visible gap or stale frame at either switch, overlay shows low then full; the other viewer unaffected | [T-074](T-074-adaptive-bitrate.md) | open | open | open | – |
+| Second hardware encoder session opens, and full-motion 1080p30 keeps 30 fps with both renditions encoding; or the share status shows "one rendition" and the call goes on | [T-074](T-074-adaptive-bitrate.md) | pass | open | open | – |
+| Two machines through the VPS, one viewer on a weak network: switch, recovery and the other viewer's 30 fps hold; a healthy viewer on Wi-Fi stays on the full rendition; server upload per viewer matches `docs/self-hosting.md` | [T-074](T-074-adaptive-bitrate.md) | open | open | open | VPS |
 
 ## Server, VPS and load
 

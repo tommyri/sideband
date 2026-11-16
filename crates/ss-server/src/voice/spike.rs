@@ -95,6 +95,7 @@ impl Peer {
                 description: bytes::Bytes::new(),
             }),
             channel_id: id_to_bytes(member.channel),
+            renditions: Vec::new(),
         })
     }
 }

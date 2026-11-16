@@ -80,6 +80,31 @@ baseline() { # $1 = name, $2 = content, $3 = viewer2 mode (direct|impair), $4 = 
   stop_all
 }
 
+t074() { # $1 = name, $2 = content, $3 = viewer2 mode (direct|impair), $4 = seconds; PUB_ARGS, V1_ARGS, V2_ARGS
+  local d="$OUT/$1" content=$2 mode=$3 secs=$4
+  rm -rf "$d"; mkdir -p "$d"
+  samplers "$d"
+  "$BIN" baseline-server --run-dir "$d" >"$d/server.log" 2>"$d/server.err" & BG="$BG $!"
+  for _ in $(seq 1 100); do [ -s "$d/baseline.json" ] && break; sleep 0.1; done
+  local port
+  port=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$d/baseline.json")
+  local via=""
+  if [ "$mode" = impair ]; then
+    "$BIN" impair --listen 127.0.0.1:47000 --upstream "127.0.0.1:$port" \
+      --schedule "20:clean,30:${SHAPE:-600kbps/2%/40ms},$((secs - 48)):clean" >"$d/impair.log" 2>&1 & BG="$BG $!"
+    via="--via 47000"
+  fi
+  # shellcheck disable=SC2086
+  "$BIN" t074-pub --run-dir "$d" --content "$content" --seconds $((secs + 6)) ${PUB_ARGS:-} >"$d/publisher.log" 2>"$d/publisher.err" & local pub=$!
+  sleep 1
+  # shellcheck disable=SC2086
+  "$BIN" t074-view --run-dir "$d" --name viewer1 --seconds "$secs" ${V1_ARGS:-} >"$d/viewer1.log" 2>"$d/viewer1.err" & local v1=$!
+  # shellcheck disable=SC2086
+  "$BIN" t074-view --run-dir "$d" --name viewer2 --seconds "$secs" $via ${V2_ARGS:-} >"$d/viewer2.log" 2>"$d/viewer2.err" & local v2=$!
+  wait $v1 $v2 $pub || true
+  stop_all
+}
+
 livekit() { # $1 = name, $2 = content, $3 = viewer2 mode, $4 = seconds, $5 = server config, $6.. = viewer1 args
   local d="$OUT/$1" content=$2 mode=$3 secs=$4 config=$5
   shift 5
@@ -128,6 +153,14 @@ for scenario in "$@"; do
       --signal-reconnect-at 10 --full-reconnect-at 20 --revoke-at 30 --restore-at 38 \
       --move-at 46 --move-back-at 54 --kick-at 64 ;;
     lk-ttl) LKVIEW2_ARGS="--ttl 15 --full-reconnect-at 30" livekit lk-ttl pattern direct 45 default ;;
+    # T-074: the product's two renditions, relay selection and rate control.
+    t074-impair) t074 t074-impair pattern impair 100 ;;
+    t074-impair-gop2) PUB_ARGS="--low-gop 0" t074 t074-impair-gop2 pattern impair 100 ;;
+    t074-fallback) PUB_ARGS=--single t074 t074-fallback pattern impair 100 ;;
+    t074-hard) V2_ARGS=--prefer-low t074 t074-hard pattern-hard direct "$SECS" ;;
+    t074-pattern) V2_ARGS=--prefer-low t074 t074-pattern pattern direct "$SECS" ;;
+    t074-screen) V2_ARGS=--prefer-low t074 t074-screen "$SCREEN" direct "$SECS" ;;
+    t074-screen-single) PUB_ARGS=--single t074 t074-screen-single "$SCREEN" direct "$SECS" ;;
     *) echo "unknown scenario $scenario" >&2; exit 2 ;;
   esac
 done

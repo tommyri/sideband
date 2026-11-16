@@ -33,6 +33,7 @@ ss-net = { path = "../../crates/ss-net" }
 ss-proto = { path = "../../crates/ss-proto" }
 ss-server = { path = "../../crates/ss-server" }
 ss-video = { path = "../../crates/ss-video", features = ["capture", "software"] }
+ss-client-core = { path = "../../crates/ss-client-core", features = ["screen-share"] }
 moq-video = { version = "=0.1.21", default-features = false, features = ["capture", "openh264"] }
 moq-net = "=0.3.21"
 
@@ -46,6 +47,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3.2"

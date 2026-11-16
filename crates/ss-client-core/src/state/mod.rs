@@ -587,6 +587,7 @@ impl State {
                         kind: event.kind,
                         codec: event.codec,
                         channel_id: event.channel_id,
+                        renditions: event.renditions,
                     },
                 );
                 E::VoiceChanged
@@ -642,6 +643,11 @@ impl State {
             Msg::Error(error) => E::ServerError(error),
             Msg::RequestKeyframe(event) => E::KeyframeRequested {
                 track: event.track_id,
+                rendition: event.rendition,
+            },
+            Msg::SubscriberStats(event) => E::SubscriberStats {
+                track: event.track_id,
+                renditions: event.renditions,
             },
             Msg::SubscriberHint(event) => E::SubscriberHint {
                 track: event.track_id,

@@ -219,6 +219,7 @@ impl Accounts {
                     kind: v1::TrackKind::Audio.into(),
                     codec: None,
                     channel_id: join.channel_id,
+                    renditions: Vec::new(),
                 };
                 // The joiner hears of its own track first, then the others'.
                 let event = |track: &v1::TrackAdded| v1::ServerEnvelope {

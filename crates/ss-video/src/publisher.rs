@@ -1,10 +1,9 @@
 //! Capture, scale, and encode one selected source.
 
-use std::time::{Duration, Instant};
-
-use bytes::Bytes;
-
-use crate::{Error, Preset, Source, h264};
+use crate::{
+    Error, Source,
+    renditions::{CodecInfo, EncodedFrame, EncoderConfig, EncoderStats, Encoders, LowRendition},
+};
 
 /// Publisher settings chosen by the host UI.
 #[derive(Clone, Debug)]
@@ -12,65 +11,23 @@ pub struct PublisherConfig {
     /// Display or window to capture.
     pub source: Source,
     /// Output resolution, frame rate, and bitrate.
-    pub preset: Preset,
+    pub preset: crate::Preset,
     /// Whether the captured picture includes the cursor.
     pub cursor: bool,
     /// Require hardware rather than allowing OpenH264 fallback.
     pub hardware_only: bool,
+    /// Whether to offer a second, low rendition.
+    pub low: LowRendition,
 }
 
-/// Codec metadata sent in `StartStream`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CodecInfo {
-    /// WebCodecs-style codec string, such as `avc3.640028`.
-    pub name: String,
-    /// AVC decoder configuration, when the encoder supplies one.
-    pub description: Bytes,
-}
-
-/// One H.264 Annex-B access unit ready for Sideband transport.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EncodedFrame {
-    /// Timestamp on the shared 48 kHz media clock.
-    pub timestamp: u32,
-    /// True for an IDR carrying in-band parameter sets.
-    pub keyframe: bool,
-    /// Complete Annex-B access unit.
-    pub payload: Bytes,
-}
-
-/// Rolling encoder diagnostics.
-#[derive(Clone, Debug, Default)]
-pub struct EncoderStats {
-    /// Native backend selected by `moq-video`.
-    pub backend: String,
-    /// Frames emitted since opening.
-    pub frames: u64,
-    /// Encoded bytes emitted since opening.
-    pub bytes: u64,
-    /// Frames per second over the session lifetime.
-    pub fps: f64,
-    /// Bits per second over the session lifetime.
-    pub bitrate: f64,
-    /// Most recent encode duration.
-    pub encode_time: Duration,
-    /// Slowest encode duration seen.
-    pub max_encode_time: Duration,
-}
-
-/// Pull-driven screen capture and encoder pipeline.
+/// Pull-driven screen capture feeding the [`Encoders`] stage.
 pub struct Publisher {
     capture: moq_video::capture::Stream,
-    encoder: moq_video::encode::Sink,
-    size: moq_video::Size,
-    started: Instant,
-    force_keyframe: bool,
-    waiting_for_first_keyframe: bool,
-    stats: EncoderStats,
+    encoders: Encoders,
 }
 
 impl Publisher {
-    /// Open capture and the best native H.264 encoder, then probe exact codec metadata.
+    /// Open capture and the native encoders, then probe exact codec metadata.
     pub async fn open(config: PublisherConfig) -> Result<(Self, CodecInfo), Error> {
         let rate = moq_video::Rate::new(config.preset.fps(), 1)?;
         let mut capture_config = moq_video::capture::Config::default();
@@ -80,111 +37,42 @@ impl Publisher {
         capture_config.framerate = Some(rate);
         capture_config.cursor = config.cursor;
         let capture = moq_video::capture::open(&capture_config).await?;
-
-        let mut encoder_config =
-            moq_video::encode::Config::new(config.preset.width(), config.preset.height(), rate);
-        encoder_config.bitrate = Some(moq_net::bandwidth::Rate::from_bps(config.preset.bitrate()));
-        encoder_config.kind = if config.hardware_only {
-            moq_video::encode::Kind::Hardware
-        } else {
-            moq_video::encode::Kind::Auto
-        };
-        let codec = encoder_config.probe().await?;
-        let encoder = moq_video::encode::Sink::open(&encoder_config).await?;
-        let backend = encoder.name().to_owned();
-        let info = CodecInfo {
-            name: codec.codec.to_string(),
-            description: codec.description.unwrap_or_default(),
-        };
-        Ok((
-            Self {
-                capture,
-                encoder,
-                size: encoder_config.size(),
-                started: Instant::now(),
-                force_keyframe: false,
-                waiting_for_first_keyframe: true,
-                stats: EncoderStats {
-                    backend,
-                    ..EncoderStats::default()
-                },
-            },
-            info,
-        ))
+        let mut encoder = EncoderConfig::new(config.preset);
+        encoder.hardware_only = config.hardware_only;
+        encoder.low = config.low;
+        let encoders = Encoders::open(&encoder).await?;
+        let info = encoders.renditions()[0].codec.clone();
+        Ok((Self { capture, encoders }, info))
     }
 
-    /// Force the next submitted picture to open a new IDR group.
+    /// The encode stage: renditions, keyframes, bitrate, low on/off.
+    pub fn encoders(&mut self) -> &mut Encoders {
+        &mut self.encoders
+    }
+
+    /// Force the next picture of `rendition` to open a new IDR group.
     pub fn request_keyframe(&mut self) {
-        self.force_keyframe = true;
+        self.encoders.request_keyframe(0);
     }
 
     /// Capture and encode the next picture. `None` means no access unit was ready yet.
     pub async fn next(&mut self) -> Result<Option<Vec<EncodedFrame>>, Error> {
         let frame = self.capture.read().await?.ok_or(Error::SourceEnded)?;
-        let frame = if frame.size() == self.size {
-            frame
-        } else {
-            frame.resize(self.size, &moq_video::resize::Config::default())?
-        };
-        if self.force_keyframe {
-            self.encoder.cut().await?;
-            self.force_keyframe = false;
-        }
-        let began = Instant::now();
-        let encoded = self.encoder.encode(frame).await?;
-        let encode_time = began.elapsed();
-        if encoded.is_empty() {
-            return Ok(None);
-        }
-        let frames = encoded
-            .into_iter()
-            .map(|frame| EncodedFrame {
-                timestamp: clock_48k(frame.timestamp.as_micros()),
-                keyframe: h264::is_idr(&frame.payload),
-                payload: frame.payload,
-            })
-            .collect::<Vec<_>>();
-        if self.waiting_for_first_keyframe && !frames.iter().any(|frame| frame.keyframe) {
-            return Err(Error::MissingKeyframe);
-        }
-        self.waiting_for_first_keyframe = false;
-        self.record(&frames, encode_time);
-        Ok(Some(frames))
+        let frames = self.encoders.encode(frame).await?;
+        Ok((!frames.is_empty()).then_some(frames))
     }
 
     /// Current encoder diagnostics.
     #[must_use]
     pub fn stats(&self) -> EncoderStats {
-        self.stats.clone()
+        self.encoders.stats()
     }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn record(&mut self, frames: &[EncodedFrame], encode_time: Duration) {
-        self.stats.frames = self
-            .stats
-            .frames
-            .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
-        let bytes = frames.iter().fold(0_u64, |total, frame| {
-            total.saturating_add(u64::try_from(frame.payload.len()).unwrap_or(u64::MAX))
-        });
-        self.stats.bytes = self.stats.bytes.saturating_add(bytes);
-        self.stats.encode_time = encode_time;
-        self.stats.max_encode_time = self.stats.max_encode_time.max(encode_time);
-        let elapsed = self.started.elapsed().as_secs_f64().max(f64::EPSILON);
-        self.stats.fps = self.stats.frames as f64 / elapsed;
-        self.stats.bitrate = self.stats.bytes as f64 * 8.0 / elapsed;
-    }
-}
-
-fn clock_48k(micros: u128) -> u32 {
-    let ticks = micros.saturating_mul(48) / 1_000;
-    let wrapped = ticks % (u128::from(u32::MAX) + 1);
-    u32::try_from(wrapped).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::h264;
+    use std::time::{Duration, Instant};
 
     async fn forced_keyframe(kind: moq_video::encode::Kind) -> Duration {
         let rate = moq_video::Rate::new(30, 1).unwrap();
@@ -212,14 +100,6 @@ mod tests {
         elapsed
     }
 
-    #[test]
-    fn timestamp_uses_shared_audio_clock_and_wraps() {
-        assert_eq!(clock_48k(1_000_000), 48_000);
-        assert_eq!(clock_48k(20_000), 960);
-        let wrapping = ((u128::from(u32::MAX) + 1) * 1_000).div_ceil(48);
-        assert!(clock_48k(wrapping) < 48);
-    }
-
     #[tokio::test]
     async fn software_encoder_forces_an_inline_idr() {
         let elapsed = forced_keyframe(moq_video::encode::Kind::Software).await;
@@ -232,6 +112,63 @@ mod tests {
     async fn videotoolbox_forces_idr_within_acceptance_budget() {
         let elapsed = forced_keyframe(moq_video::encode::Kind::Hardware).await;
         assert!(elapsed < Duration::from_millis(100));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "hardware performance acceptance test; run with --release"]
+    async fn videotoolbox_two_sessions_hold_full_motion_1080p30() {
+        let rate = moq_video::Rate::new(30, 1).unwrap();
+        let mut config = moq_video::encode::Config::new(1920, 1080, rate);
+        config.kind = moq_video::encode::Kind::Hardware;
+        config.bitrate = Some(moq_net::bandwidth::Rate::from_bps(4_000_000));
+        let mut full = moq_video::encode::Sink::open(&config).await.unwrap();
+        let low_rate = moq_video::Rate::new(15, 1).unwrap();
+        let mut low_config = moq_video::encode::Config::new(640, 360, low_rate);
+        low_config.kind = moq_video::encode::Kind::Hardware;
+        low_config.bitrate = Some(moq_net::bandwidth::Rate::from_bps(300_000));
+        let mut low = moq_video::encode::Sink::open(&low_config).await.unwrap();
+        eprintln!("backends: {} + {}", full.name(), low.name());
+        let size = config.size();
+        // Full-frame motion: every macroblock changes every frame.
+        let frames: Vec<_> = (0..30_u32)
+            .map(|n| {
+                let mut pixels = vec![0x80; moq_video::I420::len(size).unwrap()];
+                for (i, p) in pixels.iter_mut().enumerate() {
+                    let i = u32::try_from(i).unwrap();
+                    *p = u8::try_from(i.wrapping_mul(2_654_435_761).wrapping_add(n * 97) >> 24)
+                        .unwrap();
+                }
+                moq_video::I420::new(size, pixels).unwrap()
+            })
+            .collect();
+        let began = Instant::now();
+        let (mut full_bytes, mut low_bytes) = (0, 0);
+        for n in 0..300_usize {
+            let frame = std::sync::Arc::new(moq_video::Frame::new(
+                moq_video::Surface::I420(frames[n % frames.len()].clone()),
+                moq_net::Timestamp::from_millis(u64::try_from(n).unwrap() * 33).unwrap(),
+            ));
+            for unit in full.encode(frame.clone()).await.unwrap() {
+                full_bytes += unit.payload.len();
+            }
+            if n % 2 == 0 {
+                let small = frame
+                    .resize(low_config.size(), &moq_video::resize::Config::default())
+                    .unwrap();
+                for unit in low.encode(small).await.unwrap() {
+                    low_bytes += unit.payload.len();
+                }
+            }
+        }
+        let elapsed = began.elapsed();
+        let fps = 300.0 / elapsed.as_secs_f64();
+        eprintln!(
+            "two sessions: {fps:.1} fps unpaced, full {} kB, low {} kB",
+            full_bytes / 1000,
+            low_bytes / 1000
+        );
+        assert!(fps >= 30.0);
     }
 
     #[cfg(target_os = "macos")]

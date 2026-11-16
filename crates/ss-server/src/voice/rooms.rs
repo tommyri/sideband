@@ -529,6 +529,7 @@ fn track_added(user: Id, conn: Id, seat: Seat) -> v1::server_envelope::Msg {
         kind: i32::from(v1::TrackKind::Audio),
         codec: Some(codec(seat.codec_channels)),
         channel_id: id_to_bytes(seat.channel),
+        renditions: Vec::new(),
     })
 }
 
@@ -540,6 +541,7 @@ fn track_message(user: Id, conn: Id, seat: Seat) -> v1::Track {
         kind: i32::from(v1::TrackKind::Audio),
         codec: Some(codec(seat.codec_channels)),
         channel_id: id_to_bytes(seat.channel),
+        renditions: Vec::new(),
     }
 }
 

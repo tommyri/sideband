@@ -314,10 +314,17 @@ These rules exist so phase 5 does not require a new voice protocol:
      shared clock with voice (rule 5).
    - A sharer may publish a second, lower rendition. The server picks one
      rendition per subscriber, switching only at a keyframe group, and
-     never transcodes (D4). T-074 builds it.
+     never transcodes (D4). T-074 built it: the low rendition is 640×360 at
+     15 fps and 300 kb/s from a second hardware encoder session, encoded
+     only while a viewer is on it. Without a second session the sharer
+     publishes one rendition.
    - Reopen the question if Windows game capture fails 1080p60 through
      moq-video while libwebrtc holds it.
 
 The first video codec is H.264, hardware-encoded, no B-frames, low-latency
 rate control. AV1 and HEVC can be added later as other `Codec.name` values
-without a server change.
+without a server change. The full rendition's bitrate is an average target
+that the sharer retunes live (T-074): additive increase, multiplicative
+decrease, between an eighth of the preset bitrate and the preset. It is
+lowered when the sharer's own uplink is short, or when a congested viewer
+has no low rendition to move to. A rate change never forces a keyframe.

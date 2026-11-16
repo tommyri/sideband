@@ -18,7 +18,7 @@ connection lifecycle, limits and REST are in the
 - [messages.proto](#messagesproto): [`Attachment`](#attachment), [`LinkPreview`](#linkpreview), [`Message`](#message), [`CreateWebhook`](#createwebhook), [`DeleteWebhook`](#deletewebhook), [`Webhook`](#webhook), [`SendMessage`](#sendmessage), [`EditMessage`](#editmessage), [`DeleteMessage`](#deletemessage), [`Typing`](#typing), [`MarkRead`](#markread), [`MessageCreated`](#messagecreated), [`MessageUpdated`](#messageupdated), [`MessageDeleted`](#messagedeleted), [`TypingStarted`](#typingstarted), [`ReadState`](#readstate), [`ReadStateUpdated`](#readstateupdated)
 - [moderation.proto](#moderationproto): [`Invite`](#invite), [`CreateInvite`](#createinvite), [`RevokeInvite`](#revokeinvite), [`KickUser`](#kickuser), [`BanUser`](#banuser), [`UnbanUser`](#unbanuser), [`MoveUser`](#moveuser), [`ServerMuteUser`](#servermuteuser), [`InviteCreated`](#invitecreated), [`InviteRevoked`](#inviterevoked), [`Kicked`](#kicked), [`Banned`](#banned), [`ServerNotice`](#servernotice)
 - [roles.proto](#rolesproto): [`Role`](#role), [`CreateRole`](#createrole), [`UpdateRole`](#updaterole), [`MoveRole`](#moverole), [`DeleteRole`](#deleterole), [`SetUserRoles`](#setuserroles), [`SetChannelOverride`](#setchanneloverride), [`RoleCreated`](#rolecreated), [`RoleUpdated`](#roleupdated), [`RoleDeleted`](#roledeleted), [`MemberRolesUpdated`](#memberrolesupdated)
-- [voice.proto](#voiceproto): [`TrackKind`](#trackkind), [`Codec`](#codec), [`VoiceState`](#voicestate), [`JoinVoice`](#joinvoice), [`LeaveVoice`](#leavevoice), [`SetVoiceState`](#setvoicestate), [`VoiceStateUpdated`](#voicestateupdated), [`Track`](#track), [`TrackAdded`](#trackadded), [`TrackRemoved`](#trackremoved), [`SubscribeTrack`](#subscribetrack), [`UnsubscribeTrack`](#unsubscribetrack), [`RequestKeyframe`](#requestkeyframe), [`SetPreferredQuality`](#setpreferredquality), [`StartStream`](#startstream), [`StopStream`](#stopstream), [`SubscriberHint`](#subscriberhint)
+- [voice.proto](#voiceproto): [`TrackKind`](#trackkind), [`Codec`](#codec), [`VoiceState`](#voicestate), [`JoinVoice`](#joinvoice), [`LeaveVoice`](#leavevoice), [`SetVoiceState`](#setvoicestate), [`VoiceStateUpdated`](#voicestateupdated), [`Track`](#track), [`TrackAdded`](#trackadded), [`TrackRemoved`](#trackremoved), [`SubscribeTrack`](#subscribetrack), [`UnsubscribeTrack`](#unsubscribetrack), [`RequestKeyframe`](#requestkeyframe), [`SetPreferredQuality`](#setpreferredquality), [`StartStream`](#startstream), [`Rendition`](#rendition), [`StopStream`](#stopstream), [`SubscriberHint`](#subscriberhint), [`SubscriberStats`](#subscriberstats), [`RenditionStats`](#renditionstats)
 
 ## auth.proto
 
@@ -687,6 +687,7 @@ One server control message.
 | `request_keyframe` | 30 | [`RequestKeyframe`](#requestkeyframe) | `oneof msg` |  |
 | `subscriber_hint` | 31 | [`SubscriberHint`](#subscriberhint) | `oneof msg` |  |
 | `session_revoked` | 32 | [`SessionRevoked`](#sessionrevoked) | `oneof msg` |  |
+| `subscriber_stats` | 33 | [`SubscriberStats`](#subscriberstats) | `oneof msg` |  |
 
 ### `Ack`
 
@@ -1271,6 +1272,7 @@ A track the client can demux.
 | `kind` | 4 | [`TrackKind`](#trackkind) |  | Audio, video, or screen. |
 | `codec` | 5 | [`Codec`](#codec) |  | Codec parameters. |
 | `channel_id` | 6 | `bytes` |  | Voice channel the track belongs to. |
+| `renditions` | 7 | [`Rendition`](#rendition) | `repeated` | Renditions the publisher can send, full first. Empty for audio and for a publisher that sends one rendition. |
 
 ### `TrackAdded`
 
@@ -1284,6 +1286,7 @@ A track started. Map `track_id` before decoding datagrams.
 | `kind` | 4 | [`TrackKind`](#trackkind) |  | Audio, video, or screen. |
 | `codec` | 5 | [`Codec`](#codec) |  | Codec parameters. |
 | `channel_id` | 6 | `bytes` |  | Voice channel. |
+| `renditions` | 7 | [`Rendition`](#rendition) | `repeated` | Renditions the publisher can send, full first. Empty for audio and for a publisher that sends one rendition. |
 
 ### `TrackRemoved`
 
@@ -1300,6 +1303,7 @@ Subscribe to a video or screen track. Audio is auto-subscribed.
 | Field | Number | Type | Label | Description |
 |---|---|---|---|---|
 | `track_id` | 1 | `uint32` |  | Track id from `TrackAdded`. |
+| `renditions` | 2 | `bool` |  | The viewer decodes every rendition in `TrackAdded.renditions`, so the server may switch it between them. Without it, the server forwards only the full rendition (index 0). |
 
 ### `UnsubscribeTrack`
 
@@ -1316,6 +1320,7 @@ Ask the publisher for a video keyframe.
 | Field | Number | Type | Label | Description |
 |---|---|---|---|---|
 | `track_id` | 1 | `uint32` |  | Video or screen track id. |
+| `rendition` | 2 | `uint32` |  | Rendition that needs the keyframe. Set by the server on the event it sends the publisher; ignored when a viewer sends the command. |
 
 ### `SetPreferredQuality`
 
@@ -1335,6 +1340,21 @@ Publish one screen/video track in the current voice channel.
 |---|---|---|---|---|
 | `kind` | 1 | [`TrackKind`](#trackkind) |  |  |
 | `codec` | 2 | [`Codec`](#codec) |  |  |
+| `renditions` | 3 | [`Rendition`](#rendition) | `repeated` | Renditions this publisher can send, full first (index 0, described by `codec`), then at most one lower one (index 1). Empty means one rendition. |
+
+### `Rendition`
+
+One encoded version of a video track. Each rendition is its own run of GOP
+streams; a stream's header flag bit 0 marks rendition 1.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `index` | 1 | `uint32` |  | 0 for the full rendition, 1 for the low one. |
+| `width` | 2 | `uint32` |  | Encoded width in pixels. |
+| `height` | 3 | `uint32` |  | Encoded height in pixels. |
+| `fps` | 4 | `uint32` |  | Encoded frames per second. |
+| `bitrate` | 5 | `uint64` |  | Target bitrate in bits per second. |
+| `codec` | 6 | [`Codec`](#codec) |  | Codec of this rendition. Absent means the track's `codec`. |
 
 ### `StopStream`
 
@@ -1352,3 +1372,26 @@ Aggregate of active subscriptions; zero limits mean no preference.
 | `max_height` | 2 | `uint32` |  |  |
 | `max_fps` | 3 | `uint32` |  |  |
 | `viewer_count` | 4 | `uint32` |  |  |
+
+### `SubscriberStats`
+
+Per-rendition delivery report for a publisher, about once a second and
+whenever a rendition gains its first subscriber or loses its last.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `track_id` | 1 | `uint32` |  | Published video or screen track. |
+| `renditions` | 2 | [`RenditionStats`](#renditionstats) | `repeated` | One entry per announced rendition, full first. |
+
+### `RenditionStats`
+
+Delivery of one rendition to its subscribers since the previous report.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `index` | 1 | `uint32` |  | Rendition index from `StartStream.renditions`. |
+| `subscribers` | 2 | `uint32` |  | Subscribers receiving this rendition now. |
+| `congested` | 3 | `uint32` |  | Subscribers whose link fell behind or whose group was reset. |
+| `resets` | 4 | `uint32` |  | Groups reset to this rendition's subscribers because they fell behind. |
+| `max_backlog_ms` | 5 | `uint32` |  | Largest estimated send backlog among them, in milliseconds. |
+| `bytes` | 6 | `uint64` |  | Bytes forwarded for this rendition. |

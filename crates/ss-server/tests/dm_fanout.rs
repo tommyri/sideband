@@ -653,7 +653,10 @@ async fn repeated_track_frames_replace_the_pending_one() {
     };
     let keyframe = |track_id| v1::ServerEnvelope {
         request_id: 0,
-        msg: Some(Event::RequestKeyframe(v1::RequestKeyframe { track_id })),
+        msg: Some(Event::RequestKeyframe(v1::RequestKeyframe {
+            track_id,
+            rendition: 0,
+        })),
     };
     let registry = world.server.registry();
     registry.enqueue(conn, hint(8, 1));

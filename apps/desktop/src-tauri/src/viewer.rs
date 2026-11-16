@@ -6,7 +6,7 @@ use crate::{
     viewer_gpu::Gpu,
 };
 use serde::Serialize;
-use ss_client_core::media::{GroupReader, VideoSubscription};
+use ss_client_core::media::{Step, Switcher, VideoSubscription};
 use ss_video::decode::{Playout, Timing, VideoDecoder, delta};
 use std::{
     collections::BTreeMap,
@@ -33,6 +33,8 @@ pub struct ViewerStats {
     pub bitrate: f64,
     pub dropped: u64,
     pub decode_errors: u64,
+    /// Rendition on screen: 0 full, 1 low.
+    pub rendition: u8,
     /// Estimated video minus mixed-audio time; hardware output latency is excluded.
     pub skew_ms: Option<i32>,
 }
@@ -217,18 +219,13 @@ pub async fn open_stream_viewer(
                     .map_err(|e| e.to_string())?;
                 runtime.block_on(async {
                     let gpu = Gpu::new(window.clone(), instance, surface).await?;
-                    let codec = subscription
-                        .track
-                        .codec
-                        .as_ref()
-                        .ok_or("Missing video codec")?;
-                    let decoder = VideoDecoder::open(&codec.name, codec.description.clone(), false)
-                        .map_err(|e| e.to_string())?;
-                    lock(&shared).backend = decoder.backend().into();
+                    let mut decoders = Decoders::default();
+                    let backend = decoders.get(&subscription, 0)?.backend().to_owned();
+                    lock(&shared).backend = backend;
                     if let Some(ready) = ready.take() {
                         let _ = ready.send(Ok(()));
                     }
-                    run(subscription, gpu, decoder, controls, shared).await
+                    run(subscription, gpu, decoders, controls, shared).await
                 })
             })();
             if let Some(ready) = ready {
@@ -245,15 +242,39 @@ pub async fn open_stream_viewer(
     setup.0 = None;
     Ok(label)
 }
+/// One decoder per rendition, opened when that rendition first arrives.
+#[derive(Default)]
+struct Decoders([Option<VideoDecoder>; 2]);
+impl Decoders {
+    fn get(
+        &mut self,
+        subscription: &VideoSubscription,
+        rendition: u8,
+    ) -> Result<&mut VideoDecoder, String> {
+        let slot = &mut self.0[usize::from(rendition.min(1))];
+        if slot.is_none() {
+            let codec = subscription.codec(rendition).ok_or("Missing video codec")?;
+            *slot = Some(
+                VideoDecoder::open(&codec.name, codec.description.clone(), false)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        slot.as_mut()
+            .ok_or_else(|| "decoder unavailable".to_owned())
+    }
+}
+
 /// Decode and presentation state for one viewer window.
 struct Playback {
-    group: Option<GroupReader>,
+    switcher: Switcher,
     picture: Option<ss_video::Frame>,
     queued: Option<ss_video::Frame>,
     timing: Playout,
     last_frame: Instant,
     last_request: Option<Instant>,
     reconnecting: bool,
+    lost: bool,
+    rendition: u8,
     bytes: u32,
     frames: u32,
     measure: Instant,
@@ -267,70 +288,71 @@ fn ticks_48k(micros: u128) -> u32 {
 impl Playback {
     fn new() -> Self {
         Self {
-            group: None,
+            switcher: Switcher::default(),
             picture: None,
             queued: None,
             timing: Playout::default(),
             last_frame: Instant::now(),
             last_request: None,
             reconnecting: true,
+            lost: false,
+            rendition: 0,
             bytes: 0,
             frames: 0,
             measure: Instant::now(),
         }
     }
 
-    /// Drop everything shown or queued until the next keyframe arrives.
-    fn interrupt(&mut self) {
-        self.group = None;
-        self.queued = None;
-        self.picture = None;
-        self.reconnecting = true;
-    }
-
-    fn start_group(
-        &mut self,
-        group: GroupReader,
-        decoder: &mut VideoDecoder,
-    ) -> Result<(), String> {
-        self.group = Some(group);
-        self.queued = None;
-        decoder.reset().map_err(|e| e.to_string())?;
-        // Sender starts each group with an IDR, so stale references never cross resets.
-        self.timing.reset();
-        Ok(())
-    }
-
+    /// Decode what the switcher hands over. A new group or a rendition switch
+    /// resets that rendition's decoder; the last picture stays on screen until
+    /// the next one decodes, so a switch shows no gap.
     fn receive(
         &mut self,
-        frame: Result<Option<ss_client_core::media::Frame>, ss_client_core::media::Error>,
-        decoder: &mut VideoDecoder,
+        steps: Vec<Step>,
+        subscription: &VideoSubscription,
+        decoders: &mut Decoders,
         stats: &Mutex<ViewerStats>,
     ) -> Result<(), String> {
-        match frame {
-            Ok(Some(frame)) => {
-                let size = u32::try_from(frame.payload.len()).unwrap_or(u32::MAX);
-                self.bytes = self.bytes.saturating_add(size);
-                if let Ok(decoded) = decoder.decode(&frame.payload, frame.timestamp, frame.keyframe)
-                {
-                    for picture in decoded {
-                        if self.queued.is_some() {
-                            lock(stats).dropped += 1;
-                        }
-                        self.queued = Some(picture);
-                    }
-                    self.last_frame = Instant::now();
-                } else {
-                    lock(stats).decode_errors += 1;
-                    self.interrupt();
-                    decoder.recover().map_err(|e| e.to_string())?;
-                    lock(stats).backend = decoder.backend().into();
-                }
-            }
-            Ok(None) => self.group = None,
-            Err(_) => {
-                self.interrupt();
+        let burst = steps.len() > 1;
+        for step in steps {
+            let Step::Frame {
+                rendition,
+                frame,
+                restart,
+            } = step
+            else {
+                // Keep the picture; ask for a keyframe (throttled).
+                self.lost = true;
+                continue;
+            };
+            let decoder = decoders.get(subscription, rendition)?;
+            if restart {
                 decoder.reset().map_err(|e| e.to_string())?;
+                self.timing.reset();
+                self.queued = None;
+            }
+            if self.rendition != rendition {
+                self.rendition = rendition;
+                self.timing.reset();
+                lock(stats).rendition = rendition;
+            }
+            let size = u32::try_from(frame.payload.len()).unwrap_or(u32::MAX);
+            self.bytes = self.bytes.saturating_add(size);
+            if let Ok(decoded) = decoder.decode(&frame.payload, frame.timestamp, frame.keyframe) {
+                for picture in decoded {
+                    // Catch-up frames of a switch are decoded only as references.
+                    if self.queued.is_some() && !burst {
+                        lock(stats).dropped += 1;
+                    }
+                    self.queued = Some(picture);
+                }
+                self.last_frame = Instant::now();
+                self.lost = false;
+            } else {
+                lock(stats).decode_errors += 1;
+                self.queued = None;
+                self.lost = true;
+                decoder.recover().map_err(|e| e.to_string())?;
                 lock(stats).backend = decoder.backend().into();
             }
         }
@@ -387,8 +409,9 @@ impl Playback {
             Some("Reconnecting stream...".to_owned())
         } else if shown {
             Some(format!(
-                "{} {:.0} FPS {:.1} Mb/s skew {} ms dropped {}",
+                "{} {} {:.0} FPS {:.1} Mb/s skew {} ms dropped {}",
                 s.backend,
+                if s.rendition == 0 { "full" } else { "low" },
                 s.fps,
                 s.bitrate / 1_000_000.0,
                 s.skew_ms.map_or_else(|| "n/a".into(), |v| v.to_string()),
@@ -401,7 +424,7 @@ impl Playback {
 
     /// Whether to ask the sender for a keyframe now, at most once a second.
     fn keyframe_due(&mut self) -> bool {
-        let due = self.reconnecting
+        let due = (self.reconnecting || self.lost)
             && self
                 .last_request
                 .is_none_or(|at| at.elapsed() > Duration::from_secs(1));
@@ -415,7 +438,7 @@ impl Playback {
 async fn run(
     subscription: VideoSubscription,
     mut gpu: Gpu,
-    mut decoder: VideoDecoder,
+    mut decoders: Decoders,
     controls: Arc<Controls>,
     stats: Arc<Mutex<ViewerStats>>,
 ) -> Result<(), String> {
@@ -426,18 +449,15 @@ async fn run(
         if controls.closed.load(Ordering::Relaxed) || !subscription.valid() {
             return Ok(());
         }
-        let group = playback.group.as_mut();
         tokio::select! {
             next = subscription.next_group() => {
                 let Some(next) = next else { return Ok(()) };
-                playback.start_group(next, &mut decoder)?;
+                // A failed or stalled GOP stream is skipped; the next is accepted.
+                playback.switcher.offer(next);
             }
-            frame = async {
-                match group {
-                    Some(group) => group.next_frame().await,
-                    None => std::future::pending().await,
-                }
-            } => playback.receive(frame, &mut decoder, &stats)?,
+            steps = playback.switcher.next() => {
+                playback.receive(steps, &subscription, &mut decoders, &stats)?;
+            }
             _ = tick.tick() => {
                 if !subscription.valid() {
                     return Ok(());

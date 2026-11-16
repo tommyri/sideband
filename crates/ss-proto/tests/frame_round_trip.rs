@@ -218,6 +218,22 @@ fn codec(sample: &Sample) -> Codec {
     }
 }
 
+fn renditions(sample: &Sample) -> Vec<ss_proto::v1::Rendition> {
+    if !sample.flag {
+        return Vec::new();
+    }
+    (0..2)
+        .map(|index| ss_proto::v1::Rendition {
+            index,
+            width: sample.pick,
+            height: sample.extra,
+            fps: sample.pick ^ index,
+            bitrate: sample.bits,
+            codec: (index == 1).then(|| codec(sample)),
+        })
+        .collect()
+}
+
 fn track(sample: &Sample) -> Track {
     Track {
         track_id: sample.pick,
@@ -226,6 +242,7 @@ fn track(sample: &Sample) -> Track {
         kind: code(sample.pick, 4),
         codec: Some(codec(sample)),
         channel_id: sample.blob.clone(),
+        renditions: renditions(sample),
     }
 }
 
@@ -414,12 +431,14 @@ fn client_msg_high(which: u32, sample: &Sample) -> client_envelope::Msg {
         }),
         29 => client_envelope::Msg::SubscribeTrack(SubscribeTrack {
             track_id: sample.pick,
+            renditions: sample.flag,
         }),
         30 => client_envelope::Msg::UnsubscribeTrack(UnsubscribeTrack {
             track_id: sample.pick,
         }),
         31 => client_envelope::Msg::RequestKeyframe(ss_proto::v1::RequestKeyframe {
             track_id: sample.pick,
+            rendition: sample.extra,
         }),
         33 => client_envelope::Msg::SetPresence(SetPresence {
             status: code(sample.pick, 5),
@@ -476,7 +495,7 @@ fn server_envelope(selector: u32, sample: &Sample) -> ServerEnvelope {
 }
 
 fn server_msg(selector: u32, sample: &Sample) -> Option<server_envelope::Msg> {
-    let which = selector % 29;
+    let which = selector % 30;
     if which == 0 {
         return None;
     }
@@ -559,6 +578,7 @@ fn server_msg_low(which: u32, sample: &Sample) -> server_envelope::Msg {
             kind: code(sample.pick, 4),
             codec: Some(codec(sample)),
             channel_id: sample.blob.clone(),
+            renditions: renditions(sample),
         }),
         _ => server_envelope::Msg::TrackRemoved(TrackRemoved {
             track_id: sample.pick,
@@ -615,6 +635,19 @@ fn server_msg_high(which: u32, sample: &Sample) -> server_envelope::Msg {
         27 => server_envelope::Msg::Banned(Banned {
             reason: sample.text.clone(),
             expires_at: sample.flag.then_some(sample.time),
+        }),
+        28 => server_envelope::Msg::SubscriberStats(ss_proto::v1::SubscriberStats {
+            track_id: sample.pick,
+            renditions: (0..=u32::from(sample.flag))
+                .map(|index| ss_proto::v1::RenditionStats {
+                    index,
+                    subscribers: sample.pick,
+                    congested: sample.extra,
+                    resets: sample.pick ^ sample.extra,
+                    max_backlog_ms: sample.extra,
+                    bytes: sample.bits,
+                })
+                .collect(),
         }),
         _ => server_envelope::Msg::ServerNotice(ServerNotice {
             text: sample.text.clone(),

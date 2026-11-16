@@ -29,6 +29,28 @@ with `ss-server <command> --help`.
   [load test notes](plan/notes/load-test.md); the full-length VPS runs are
   still owed. The server forwards encoded audio and never decodes it, so CPU
   use is low for a friend group.
+- **Upload for screen sharing.** The server never decodes or re-encodes
+  video. It sends each viewer one rendition of a share, so its upload grows
+  with every viewer. Measured on macOS at the 1080p30 preset (4 Mb/s ceiling)
+  for T-074, per viewer:
+
+  | Content | Full rendition (1080p30) | Low rendition (360p15) |
+  |---|---|---|
+  | Mostly static desktop | 0.9 Mb/s | 0.15 Mb/s |
+  | Screen-like: typing, scrolling, a moving window | 1.8 Mb/s | 0.3 Mb/s |
+  | Full-frame motion (games, video) | 4.0 Mb/s | 0.3 Mb/s |
+
+  A viewer gets the low rendition only while its own link cannot carry the
+  full one, or when it asked for 360p. To size the server, budget the
+  preset's bitrate for each viewer: 4 Mb/s at 1080p30, 8 Mb/s at 1080p60,
+  2 Mb/s at 720p30. Ten viewers of a full-motion 1080p30 share need about
+  40 Mb/s of upload. The sharer uploads each rendition to the server once,
+  whatever the number of viewers. **Nothing caps the viewers of one stream**
+  (Discord caps one at 50), so the server's uplink is what limits a large
+  audience. When it runs short, every viewer's link falls behind and the
+  server moves those viewers to the low rendition; that case was not
+  measured, only one slow viewer was. The relay's own CPU was about 1–1.5 %
+  of a core.
 
 Running the server on macOS from a source checkout works for development
 (see the [README](../README.md#quick-start)). Windows is not a server target.

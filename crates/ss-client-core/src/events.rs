@@ -81,6 +81,15 @@ pub enum ClientEvent {
     KeyframeRequested {
         /// Published track id.
         track: u32,
+        /// Rendition that needs it (0 is the full one).
+        rendition: u32,
+    },
+    /// Per-rendition delivery report for a video track this client publishes.
+    SubscriberStats {
+        /// Published track id.
+        track: u32,
+        /// One entry per announced rendition.
+        renditions: Vec<ss_proto::v1::RenditionStats>,
     },
     /// Aggregate viewer preferences for a video track this client publishes.
     SubscriberHint {

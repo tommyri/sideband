@@ -92,6 +92,7 @@ it('gates Share screen and exposes aggregate viewer count and Stop', () => {
           source: 'Display',
           state: 'sharing',
           viewers: 2,
+          renditions: '1 on low rendition · 4.0 Mb/s',
           error: null,
         },
       },
@@ -99,6 +100,7 @@ it('gates Share screen and exposes aggregate viewer count and Stop', () => {
   })
   render(<StreamControls server="server" channel="room" connected />)
   expect(screen.getByRole('status')).toHaveTextContent('2 watching')
+  expect(screen.getByText('1 on low rendition · 4.0 Mb/s')).toBeInTheDocument()
   vi.mocked(api.stop).mockResolvedValue()
   fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }))
   expect(api.stop).toHaveBeenCalledOnce()

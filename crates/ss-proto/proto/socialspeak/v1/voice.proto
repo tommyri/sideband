@@ -95,6 +95,9 @@ message Track {
   Codec codec = 5;
   // Voice channel the track belongs to.
   bytes channel_id = 6;
+  // Renditions the publisher can send, full first. Empty for audio and for a
+  // publisher that sends one rendition.
+  repeated Rendition renditions = 7;
 }
 
 // A track started. Map `track_id` before decoding datagrams.
@@ -111,6 +114,9 @@ message TrackAdded {
   Codec codec = 5;
   // Voice channel.
   bytes channel_id = 6;
+  // Renditions the publisher can send, full first. Empty for audio and for a
+  // publisher that sends one rendition.
+  repeated Rendition renditions = 7;
 }
 
 // A track ended.
@@ -123,6 +129,10 @@ message TrackRemoved {
 message SubscribeTrack {
   // Track id from `TrackAdded`.
   uint32 track_id = 1;
+  // The viewer decodes every rendition in `TrackAdded.renditions`, so the
+  // server may switch it between them. Without it, the server forwards only
+  // the full rendition (index 0).
+  bool renditions = 2;
 }
 
 // Stop receiving a video or screen track.
@@ -135,6 +145,9 @@ message UnsubscribeTrack {
 message RequestKeyframe {
   // Video or screen track id.
   uint32 track_id = 1;
+  // Rendition that needs the keyframe. Set by the server on the event it
+  // sends the publisher; ignored when a viewer sends the command.
+  uint32 rendition = 2;
 }
 
 // Preferred quality for adaptation by the publisher; the server never transcodes.
@@ -151,6 +164,26 @@ message SetPreferredQuality {
 message StartStream {
   TrackKind kind = 1;
   Codec codec = 2;
+  // Renditions this publisher can send, full first (index 0, described by
+  // `codec`), then at most one lower one (index 1). Empty means one rendition.
+  repeated Rendition renditions = 3;
+}
+
+// One encoded version of a video track. Each rendition is its own run of GOP
+// streams; a stream's header flag bit 0 marks rendition 1.
+message Rendition {
+  // 0 for the full rendition, 1 for the low one.
+  uint32 index = 1;
+  // Encoded width in pixels.
+  uint32 width = 2;
+  // Encoded height in pixels.
+  uint32 height = 3;
+  // Encoded frames per second.
+  uint32 fps = 4;
+  // Target bitrate in bits per second.
+  uint64 bitrate = 5;
+  // Codec of this rendition. Absent means the track's `codec`.
+  Codec codec = 6;
 }
 // End this connection's screen/video track (idempotent).
 message StopStream {}
@@ -160,4 +193,29 @@ message SubscriberHint {
   uint32 max_height = 2;
   uint32 max_fps = 3;
   uint32 viewer_count = 4;
+}
+
+// Per-rendition delivery report for a publisher, about once a second and
+// whenever a rendition gains its first subscriber or loses its last.
+message SubscriberStats {
+  // Published video or screen track.
+  uint32 track_id = 1;
+  // One entry per announced rendition, full first.
+  repeated RenditionStats renditions = 2;
+}
+
+// Delivery of one rendition to its subscribers since the previous report.
+message RenditionStats {
+  // Rendition index from `StartStream.renditions`.
+  uint32 index = 1;
+  // Subscribers receiving this rendition now.
+  uint32 subscribers = 2;
+  // Subscribers whose link fell behind or whose group was reset.
+  uint32 congested = 3;
+  // Groups reset to this rendition's subscribers because they fell behind.
+  uint32 resets = 4;
+  // Largest estimated send backlog among them, in milliseconds.
+  uint32 max_backlog_ms = 5;
+  // Bytes forwarded for this rendition.
+  uint64 bytes = 6;
 }
