@@ -71,6 +71,8 @@ impl DeviceManager {
     /// Start polling the default host and any other hosts `cpal` exposes.
     #[must_use]
     pub fn new() -> Self {
+        // Before any stream: cpal promotes its own threads when they start.
+        super::stream::guard_real_time_limit();
         let (tx, events) = mpsc::sync_channel(256);
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(Mutex::new(Active::default()));

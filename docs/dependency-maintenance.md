@@ -70,6 +70,21 @@ Before publishing a dependency refresh, run frontend checks and production build
 workspace tests and strict Clippy, packaging-script tests, npm audit, and cargo
 deny. Build the selected release platforms to catch native API differences.
 
+### Real-time audio on Linux
+
+Added 2026-11-16 (T-117). `ss-audio` enables
+`audio_thread_priority/with_dbus` on Linux only, so the voice threads ask
+rtkit for real-time priority over the system D-Bus. That adds `dbus` 0.6.5
+(MIT OR Apache-2.0) and links the system `libdbus-1` through `libdbus-sys`
+0.2.7 (MIT OR Apache-2.0; already used by tao). The build needs
+`libdbus-1-dev`, which `install-linux-deps.sh` installs for the `desktop`
+and `audio` sets. `audio_thread_priority` 0.35 requires `dbus` 0.6, so it
+sits beside tao's 0.9 until upstream moves; `cargo deny` reports this as a
+duplicate warning. `signal-hook` 0.3 (MIT OR Apache-2.0, already in the
+lockfile through crossterm) catches the `SIGXCPU` that rtkit's
+`RLIMIT_RTTIME` soft limit would otherwise make fatal. macOS and Windows
+builds do not change.
+
 ## CI runner time
 
 All entry points remain manual. CI and desktop packaging call the same frontend

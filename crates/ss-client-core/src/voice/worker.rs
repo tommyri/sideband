@@ -71,6 +71,8 @@ pub(super) struct WorkerStats {
     pub playback: PacingStats,
     /// The worker thread runs in the OS real-time audio class.
     pub realtime: bool,
+    /// Why it does not, when the OS refused (on Linux: rtkit).
+    pub realtime_error: Option<Arc<str>>,
 }
 
 #[derive(Debug)]
@@ -933,7 +935,10 @@ struct Runtime {
     test_sample: usize,
     input_dbfs: f32,
     pacer: Pacer,
+    /// Asks the OS for the real-time audio class; tests refuse instead.
+    promote: fn(Duration) -> Result<(), String>,
     realtime: bool,
+    realtime_error: Option<Arc<str>>,
     setup: Setup,
     /// A setup job is in flight; device and settings changes wait for it.
     busy: bool,
@@ -984,7 +989,9 @@ impl Runtime {
             test_sample: 0,
             input_dbfs: -96.0,
             pacer: Pacer::default(),
+            promote: device::promote_audio_thread,
             realtime: false,
+            realtime_error: None,
             setup: Setup::new(),
             busy: false,
             deferred: VecDeque::new(),
@@ -992,12 +999,7 @@ impl Runtime {
     }
 
     fn run(&mut self) {
-        // After setup, so opening devices does not count against the
-        // real-time budget.
-        match device::promote_audio_thread(QUANTUM) {
-            Ok(()) => self.realtime = true,
-            Err(error) => tracing::info!(%error, "voice worker keeps normal priority"),
-        }
+        self.promote_thread();
         let mut next = Instant::now();
         while !self.stop.load(Ordering::Acquire) {
             self.poll_setup();
@@ -1031,6 +1033,21 @@ impl Runtime {
             }
             for packet in self.graph.pop_outgoing() {
                 self.media.send(packet);
+            }
+        }
+    }
+
+    /// Ask once for the OS real-time audio class. After setup, so opening
+    /// devices does not count against the real-time budget. A refusal (on
+    /// Linux: no rtkit, no system bus, limits too low) leaves the worker at
+    /// normal priority: it is logged here, kept for diagnostics, and the
+    /// call goes on.
+    fn promote_thread(&mut self) {
+        match (self.promote)(QUANTUM) {
+            Ok(()) => self.realtime = true,
+            Err(error) => {
+                tracing::info!(%error, "voice worker keeps normal priority");
+                self.realtime_error = Some(error.into());
             }
         }
     }
@@ -1371,6 +1388,7 @@ impl Runtime {
             processing_over_budget: self.chain.monitor().over_budget(),
             playback: self.pacer.stats(),
             realtime: self.realtime,
+            realtime_error: self.realtime_error.clone(),
         };
     }
 
@@ -2067,6 +2085,41 @@ mod tests {
         report.stats = pacer.stats();
         report.underruns = device.underruns - warm_underruns;
         report
+    }
+
+    static PROMOTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn refuse(_period: Duration) -> Result<(), String> {
+        PROMOTIONS.fetch_add(1, Ordering::Relaxed);
+        Err("rtkit: no system bus".to_owned())
+    }
+
+    #[test]
+    fn a_refused_promotion_is_reported_once_and_the_call_goes_on() {
+        let config = AudioConfig {
+            source: AudioSource::Test,
+            ..AudioConfig::default()
+        };
+        let mut runtime = build(VoiceProfile::Voice, config, host::system()).unwrap();
+        runtime.promote = refuse;
+        let stop = Arc::clone(&runtime.stop);
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::Release);
+        });
+        runtime.run();
+        stopper.join().unwrap();
+
+        assert_eq!(PROMOTIONS.load(Ordering::Relaxed), 1);
+        // At normal priority the worker kept capturing: about 30 quanta.
+        let captured = runtime.graph.capture_timestamp() / 480;
+        assert!(captured >= 15, "{captured} quanta");
+        let stats = runtime.shared.stats.read().clone();
+        assert!(!stats.realtime);
+        assert_eq!(
+            stats.realtime_error.as_deref(),
+            Some("rtkit: no system bus")
+        );
     }
 
     #[test]

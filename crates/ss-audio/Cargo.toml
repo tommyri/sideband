@@ -46,7 +46,10 @@ objc2-core-audio-types = { workspace = true, optional = true }
 objc2-avf-audio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# rtkit over D-Bus (T-117). Without `with_dbus` the crate does nothing on Linux.
+audio_thread_priority = { workspace = true, features = ["with_dbus"] }
 cpal = { workspace = true, features = ["pipewire", "realtime"] }
+signal-hook.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true

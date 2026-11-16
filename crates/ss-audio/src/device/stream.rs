@@ -35,24 +35,50 @@ const RESAMPLED_PLAYBACK_GRAPH_RING: Duration = Duration::from_millis(50);
 
 /// Raise the calling thread to the operating system's real-time audio class
 /// with `audio_thread_priority`, the crate behind `cpal`'s `realtime`
-/// feature: a Mach time-constraint policy on macOS and MMCSS ("Pro Audio")
-/// on Windows. Call it once from a thread that services audio every
-/// `period`. The promotion lasts for the thread's life.
+/// feature: a Mach time-constraint policy on macOS, MMCSS ("Pro Audio") on
+/// Windows, and on Linux `SCHED_RR` granted by rtkit over the system D-Bus.
+/// Call it once from a thread that services audio every `period`. The
+/// promotion lasts for the thread's life.
 ///
 /// # Errors
 ///
 /// The operating system's refusal, as text; the thread keeps its priority.
-/// On Linux the crate needs D-Bus (rtkit), which this build leaves out, and
-/// would silently do nothing, so this reports an error instead.
+/// On Linux that is rtkit missing or refusing (no system bus, a container,
+/// limits too low), prefixed with `rtkit: `.
 pub fn promote_audio_thread(period: Duration) -> Result<(), String> {
-    if cfg!(target_os = "linux") {
-        return Err("real-time promotion on Linux needs rtkit over D-Bus".to_owned());
-    }
+    guard_real_time_limit();
     let frames =
         u32::try_from(u128::from(GRAPH_RATE) * period.as_micros() / 1_000_000).unwrap_or(u32::MAX);
     audio_thread_priority::promote_current_thread_to_real_time(frames, GRAPH_RATE)
         .map(|_handle| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            if cfg!(target_os = "linux") {
+                format!("rtkit: {error}")
+            } else {
+                error.to_string()
+            }
+        })
+}
+
+/// rtkit grants real-time only to a process with `RLIMIT_RTTIME` set, and
+/// `audio_thread_priority` sets its soft limit to one audio period. A
+/// real-time thread that runs that long without blocking then gets
+/// `SIGXCPU`, whose default action ends the process. The limit is
+/// process-wide, and `cpal` sets it again for its own threads. So the signal
+/// is caught here, once per process: the hard limit, rtkit's maximum (200 ms
+/// by default), still stops a thread that really runs away. No-op outside
+/// Linux.
+pub(crate) fn guard_real_time_limit() {
+    #[cfg(target_os = "linux")]
+    {
+        static GUARD: std::sync::Once = std::sync::Once::new();
+        GUARD.call_once(|| {
+            let caught = Arc::new(AtomicBool::new(false));
+            if let Err(error) = signal_hook::flag::register(signal_hook::consts::SIGXCPU, caught) {
+                tracing::warn!(%error, "SIGXCPU stays fatal for real-time audio threads");
+            }
+        });
+    }
 }
 
 /// Underruns, overruns, callback count, and whether resampling is on.
@@ -803,8 +829,31 @@ mod tests {
         eprintln!("real-time promotion on this OS: {result:?}");
         if cfg!(target_os = "macos") {
             assert_eq!(result, Ok(()));
-        } else if cfg!(target_os = "linux") {
-            assert!(result.is_err());
+        } else if cfg!(target_os = "linux")
+            && let Err(error) = &result
+        {
+            // Depends on rtkit on the machine; a refusal comes from D-Bus.
+            assert!(error.starts_with("rtkit: "), "{error}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a system bus and rtkit"]
+    fn a_real_time_thread_may_run_past_its_period() {
+        // rtkit's soft RLIMIT_RTTIME is one period (10 ms here). Running past
+        // it without blocking raises SIGXCPU, which by default ends this
+        // process; the hard limit, 200 ms by default, is not reached.
+        let result = std::thread::spawn(|| {
+            super::promote_audio_thread(Duration::from_millis(10))?;
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(60) {
+                std::hint::spin_loop();
+            }
+            Ok::<_, String>(())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, Ok(()));
     }
 }

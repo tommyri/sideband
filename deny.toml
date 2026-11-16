@@ -65,10 +65,13 @@ allow = ["CDLA-Permissive-2.0"]
 name = "webpki-root-certs"
 allow = ["CDLA-Permissive-2.0"]
 
-# cpal 0.18 promotes its audio threads through this crate. MPL-2.0 is
+# cpal 0.18 and ss-audio promote their audio threads through this crate. MPL-2.0 is
 # file-level copyleft: shipping it unmodified in the desktop client is fine,
 # and changes to its own files would have to be published. The server does
 # not link it. Scoped to this crate only; maintainer sign-off noted in T-061.
+# On Linux its `with_dbus` feature (T-117) adds dbus 0.6.5 and libdbus-sys
+# 0.2.7, both MIT OR Apache-2.0, which the allow-list already covers. dbus 0.6
+# sits beside tao's dbus 0.9 (a `multiple-versions` warning only).
 [[licenses.exceptions]]
 name = "audio_thread_priority"
 allow = ["MPL-2.0"]

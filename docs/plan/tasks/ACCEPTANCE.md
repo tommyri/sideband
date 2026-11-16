@@ -38,6 +38,8 @@ with the server on the VPS.
 | Apply, suppressor switch and headset replug during music: playback catches up; forced cuts are short dips, no click | [T-083](T-083-playback-pacing-lag-recovery.md) | open | open | open | – |
 | AEC on speakers converges at least as well as before | [T-083](T-083-playback-pacing-lag-recovery.md) | open | open | open | – |
 | Voice worker log shows MMCSS promotion | [T-083](T-083-playback-pacing-lag-recovery.md) | – | open | – | – |
+| During a call, `chrt -p` on the `ss-client-voice` thread shows `SCHED_RR`; `workerRealtime` true | [T-117](T-117-linux-realtime-audio.md) | – | – | open | – |
+| rtkit masked and stopped: the call still works, the log says "voice worker keeps normal priority" with the rtkit reason, `workerRealtimeError` set | [T-117](T-117-linux-realtime-audio.md) | – | – | open | – |
 | USB headset unplug/replug script (8 steps), portable backend and Apple voice processing | [T-084](T-084-device-reopen-retry.md) | open | [T-011](T-011-audio-windows-verification.md) | [T-012](T-012-audio-linux-verification.md) | – |
 | Mute while connecting to an unreachable second server; mute with the network off: dock, tray and peers agree | [T-085](T-085-mute-fail-closed-shortcuts.md) | open | open | open | – |
 | Global PTT while history or a send is slow; rapid in-app PTT taps never stick; disconnect during a queued send does not rejoin voice | [T-085](T-085-mute-fail-closed-shortcuts.md) | open | open | open | – |
@@ -119,6 +121,7 @@ with the server on the VPS.
 | Dispatch `ci.yml`: the uncompiled Windows Mark of the Web code builds and `saved_downloads_carry_the_mark_of_the_web` passes | [T-104](T-104-download-provenance-marks.md) | – | open | – | GitHub |
 | Dispatch `fuzz.yml` with every target | [T-101](T-101-router-tolerance-parser-fuzzing.md), [T-067](T-067-security-acceptance.md) | – | – | – | GitHub open |
 | Dispatch `ci.yml`: `cargo deny` passes with the dated RUSTSEC-2026-0459 ignore | [T-110](T-110-ci-release-followups.md) | – | – | – | GitHub open |
+| Dispatch `ci.yml`: the Linux job installs `libdbus-1-dev` and builds `ss-audio` with `audio_thread_priority/with_dbus`; container smoke and reconnect chaos still build | [T-117](T-117-linux-realtime-audio.md) | – | – | – | GitHub open |
 | Dispatch `fuzz.yml`: all seven targets on `ubuntu-24.04`, locked fetch passes, `fuzz/Cargo.lock` unchanged; Dependabot accepts `/.github/buildkit` | [T-110](T-110-ci-release-followups.md) | – | – | – | GitHub open |
 | Environments `desktop-release`, `desktop-signing`, `server-release` with secrets moved in; rulesets for `main` and `server-v*` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |
 | Desktop release from a non-main branch fails; `server-v0.1.0` dry run, re-dispatch without `force` fails; first update-enabled release with no signing variables in the log and `gh attestation verify` | [T-097](T-097-release-pipeline-gating.md) | – | – | – | GitHub open |

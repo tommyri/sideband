@@ -211,18 +211,27 @@ stay queued. A pacer in the worker keeps the queue bounded:
   instead of a fixed 10 ms.
 
 Overflow, trim, pad and forced-cut counts, the current queue, and whether
-the worker thread got real-time priority are in the voice diagnostics
-snapshot (`details.playback`, `details.workerRealtime`).
+the worker thread got real-time priority, and why not, are in the voice
+diagnostics snapshot (`details.playback`, `details.workerRealtime`,
+`details.workerRealtimeError`).
 
 The worker thread and the resampler threads ask for the operating system's
 real-time audio class through `audio_thread_priority`, the crate behind
 `cpal`'s `realtime` feature. macOS: a Mach time-constraint policy, accepted
 without privileges (a unit test checks it). Windows: MMCSS, expected to work
-for normal users, not yet run. Linux: the crate only promotes through rtkit
-over D-Bus, which neither this build nor `cpal`'s `realtime` feature enables,
-so it would do nothing; the worker reports normal priority there. The device
-callbacks themselves run on the host's own real-time threads (CoreAudio,
-WASAPI, PipeWire). A refusal leaves normal priority and is logged. Settings changes, device
+for normal users, not yet run. Linux: rtkit over the system D-Bus
+(`audio_thread_priority/with_dbus`, Linux only, T-117), which grants
+`SCHED_RR`. Feature unification turns it on for `cpal`'s Linux threads too.
+rtkit needs `RLIMIT_RTTIME`, and the crate sets its soft limit to one audio
+period; a real-time thread that runs that long without blocking gets
+`SIGXCPU`, which would end the process. `ss-audio` catches that signal
+(`signal-hook`) once a `DeviceManager` exists or a thread is promoted, so
+only the hard limit, rtkit's maximum (200 ms by default), stops a runaway
+thread. The device callbacks themselves run on the host's own real-time
+threads (CoreAudio, WASAPI, PipeWire). A refusal (on Linux: rtkit missing
+or stopped, no system bus, a container, limits too low) leaves normal
+priority; the worker logs "voice worker keeps normal priority" once with
+the reason, and the call goes on. Settings changes, device
 reopens and device teardown run on a separate setup thread so the worker
 does not stall, except Apple's VoiceProcessingIO unit, which is not `Send`
 and stays on the worker.
