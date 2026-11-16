@@ -86,19 +86,59 @@ pub(crate) struct ChosenFormat {
     pub(crate) buffer_size: BufferSize,
 }
 
-/// Pick the format closest to 48 kHz and the requested channel count.
+/// A list offering every channel count from 1 to at least this many comes
+/// from a plug-in that converts any layout, not from the hardware: ALSA's
+/// `plug` (cpal caps its `u32::MAX` at 64), the `default`, `pulse` and
+/// `pipewire` ALSA plug-ins (32 or 64), and cpal's PulseAudio host (31).
+const CONVERTING_CHANNELS: u16 = 31;
+
+/// The inputs a capture device has, from the configs its host lists.
+///
+/// The count is the most channels any config offers: CoreAudio lists one
+/// config with the device's total, WASAPI shared mode the mix format, and
+/// PipeWire the node's channels. A converting plug-in (see
+/// [`CONVERTING_CHANNELS`]) offers every count, so its layout is the stereo
+/// one cpal picks as its default config, or the most it offers below two.
+/// `None` when the host lists no input config.
+pub(crate) fn input_count(ranges: &[SupportedStreamConfigRange]) -> Option<u16> {
+    let most = ranges
+        .iter()
+        .map(SupportedStreamConfigRange::channels)
+        .max()?;
+    let converting = most >= CONVERTING_CHANNELS
+        && (1..=most).all(|count| ranges.iter().any(|range| range.channels() == count));
+    Some(if converting { 2 } else { most })
+}
+
+/// The device channel count a capture stream for `config` should open.
+///
+/// Mono from input 1 needs one channel, so a mono config is still the first
+/// choice. Another input, or the average, needs the device's full count
+/// ([`input_count`]): a host that also offers mono (some ALSA `plug`
+/// devices) would otherwise open one channel and silently send input 1.
+/// Stereo needs two.
+pub(crate) fn capture_channels(ranges: &[SupportedStreamConfigRange], config: GraphConfig) -> u16 {
+    match input_count(ranges) {
+        Some(inputs) if config.channels == 1 && config.input.resolve(inputs.into()) != Some(0) => {
+            inputs
+        }
+        _ => config.channels,
+    }
+}
+
+/// Pick the format closest to 48 kHz and `channels`.
 ///
 /// Preference order is channel count, then a rate range that contains 48 kHz,
 /// then `f32`. The sample rate itself is 48 kHz when the range allows it, and
 /// the nearest endpoint otherwise.
 pub(crate) fn choose_format(
     ranges: &[SupportedStreamConfigRange],
-    graph_channels: u16,
+    channels: u16,
 ) -> Option<ChosenFormat> {
     let range = ranges
         .iter()
         .copied()
-        .min_by_key(|range| rank(*range, graph_channels))?;
+        .min_by_key(|range| rank(*range, channels))?;
     let sample_rate = closest_rate(range.min_sample_rate(), range.max_sample_rate());
     let supported = range.try_with_sample_rate(sample_rate)?;
     Some(ChosenFormat {
@@ -121,8 +161,8 @@ pub(crate) fn choose_buffer_size(supported: SupportedBufferSize, sample_rate: u3
     }
 }
 
-fn rank(range: SupportedStreamConfigRange, graph_channels: u16) -> (u8, u32, u8) {
-    let channel_rank = u8::from(range.channels() != graph_channels);
+fn rank(range: SupportedStreamConfigRange, channels: u16) -> (u8, u32, u8) {
+    let channel_rank = u8::from(range.channels() != channels);
     let rate_rank =
         if range.min_sample_rate() <= GRAPH_RATE && GRAPH_RATE <= range.max_sample_rate() {
             0
@@ -154,7 +194,10 @@ fn frames_for(sample_rate: u32, milliseconds: u32) -> u32 {
 mod tests {
     use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
 
-    use super::{CaptureChannel, choose_buffer_size, choose_format, frames_for};
+    use super::{
+        CaptureChannel, GraphConfig, capture_channels, choose_buffer_size, choose_format,
+        frames_for, input_count,
+    };
 
     #[test]
     fn a_missing_input_falls_back_to_the_first() {
@@ -174,6 +217,64 @@ mod tests {
         buffer: SupportedBufferSize,
     ) -> SupportedStreamConfigRange {
         SupportedStreamConfigRange::new(channels, min, max, buffer, format)
+    }
+
+    fn channels(counts: impl IntoIterator<Item = u16>) -> Vec<SupportedStreamConfigRange> {
+        counts
+            .into_iter()
+            .map(|count| {
+                range(
+                    count,
+                    48_000,
+                    48_000,
+                    SampleFormat::F32,
+                    SupportedBufferSize::Unknown,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_device_has_as_many_inputs_as_its_widest_config() {
+        // CoreAudio: one config with the device's total.
+        assert_eq!(input_count(&channels([8])), Some(8));
+        // ALSA `hw` with mono beside the full count.
+        assert_eq!(input_count(&channels([1, 4])), Some(4));
+        assert_eq!(input_count(&channels([1, 2, 3, 4, 5, 6, 7, 8])), Some(8));
+        assert_eq!(input_count(&[]), None);
+    }
+
+    #[test]
+    fn a_converting_plug_in_counts_as_stereo() {
+        // ALSA `plug` and `default`: every count up to 64.
+        assert_eq!(input_count(&channels(1..=64)), Some(2));
+        // cpal's PulseAudio host: 1 to 31.
+        assert_eq!(input_count(&channels(1..=31)), Some(2));
+        // Gaps mean the hardware's own list.
+        assert_eq!(input_count(&channels([1, 2, 32])), Some(32));
+    }
+
+    #[test]
+    fn only_a_selection_past_input_one_opens_the_full_count() {
+        let ranges = channels([1, 4]);
+        let mono = GraphConfig::MONO;
+        assert_eq!(capture_channels(&ranges, mono), 1);
+        assert_eq!(
+            capture_channels(&ranges, mono.with_input(CaptureChannel::Index(1))),
+            4
+        );
+        assert_eq!(
+            capture_channels(&ranges, mono.with_input(CaptureChannel::Average)),
+            4
+        );
+        // Input 9 on a four-input device is input 1.
+        assert_eq!(
+            capture_channels(&ranges, mono.with_input(CaptureChannel::Index(8))),
+            1
+        );
+        let stereo = GraphConfig::STEREO.with_input(CaptureChannel::Average);
+        assert_eq!(capture_channels(&ranges, stereo), 2);
+        assert_eq!(capture_channels(&[], mono), 1);
     }
 
     #[test]

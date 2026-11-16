@@ -44,7 +44,7 @@ with the server on the VPS.
 | One account on two devices: seat takeover survives a > 1 min outage; a single device rejoins after > 1 min offline | [T-086](T-086-connection-identity-track-reuse.md) | open | open | open | – |
 | Server restart, ≥ 3 people rejoin in another order: rings and volume follow the right person; the desktop call stays up | [T-086](T-086-connection-identity-track-reuse.md) | open | open | open | – |
 | Channel switched between `voice` and `low_latency` mid-call: old and new members hear each other | [T-086](T-086-connection-identity-track-reuse.md) | open | open | open | – |
-| Two- or eight-input USB interface: Input 1, Average, Input 2, switching mid-call, mono fallback logs `input=1` | [T-088](T-088-capture-channel-voiceio-frames.md) | open | – | – | – |
+| Two- or eight-input USB interface: the picker lists its real inputs; Input 1, Average, Input 2, switching mid-call, mono fallback logs `input=1` | [T-088](T-088-capture-channel-voiceio-frames.md), [T-118](T-118-capture-input-counts.md) | open | – | – | – |
 | VoiceIO: left-only tone 10 min never swaps; overruns 0; 10 toggles keep memory flat; replug reopens on the new default | [T-088](T-088-capture-channel-voiceio-frames.md) | open | – | – | – |
 | Broken IPv6 on a dual-stack host: connects in about 3 s | [T-089](T-089-reconnect-policy.md) | open | open | open | – |
 | Server restart with > 30 clients behind one address: all reconnect | [T-089](T-089-reconnect-policy.md) | – | – | – | VPS |

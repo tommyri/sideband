@@ -314,6 +314,7 @@ pub(super) mod mock {
                     name: id.to_string(),
                     input: direction == Direction::Capture,
                     output: direction == Direction::Playback,
+                    input_channels: None,
                 }));
             }
             if default {

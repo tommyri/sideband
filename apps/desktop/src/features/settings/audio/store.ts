@@ -2,7 +2,10 @@ import { create } from 'zustand'
 import { listen } from '@tauri-apps/api/event'
 import { invokeBridge } from '../../../lib/tauri'
 
+import type { AudioEnvironment } from '../../../lib/generated/AudioEnvironment'
 import type { AudioPreferences } from '../../../lib/generated/AudioPreferences'
+export type { AudioDevice } from '../../../lib/generated/AudioDevice'
+export type { AudioEnvironment } from '../../../lib/generated/AudioEnvironment'
 export type { AudioPreferences } from '../../../lib/generated/AudioPreferences'
 export const defaults: AudioPreferences = {
   version: 1,
@@ -65,17 +68,16 @@ export function migratePreferences(value: unknown): AudioPreferences {
   }
   return result
 }
-export interface AudioEnvironment {
-  preferences: AudioPreferences
-  devices: { id: string; name: string; input: boolean; output: boolean }[]
-  microphone: string
-  apple: boolean
-  sonora: boolean
-  rnnoise: boolean
-  mouse: boolean
-  systemBinding: boolean
-  permission: string | null
-  limitations: string[]
+/** Inputs of the chosen microphone (`null` = system default), or `null` when unknown. */
+export function inputCount(env: AudioEnvironment, input: string | null): number | null {
+  const id = input ?? env.defaultInput
+  return env.devices.find((d) => d.input && d.id === id)?.inputChannels ?? null
+}
+/** The input capture takes, as the device layer resolves it: one the device lacks is input 1. */
+export function effectiveInput(choice: number, count: number | null): number {
+  if (count === null) return choice
+  if (choice === 0) return count > 1 ? 0 : 1
+  return choice <= count ? choice : 1
 }
 export const useAudioStore = create<{ preferences: AudioPreferences }>(() => ({
   preferences: defaults,
