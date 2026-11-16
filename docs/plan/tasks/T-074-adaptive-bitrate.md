@@ -4,7 +4,7 @@ Status: todo
 Phase: 5
 Size: L
 Depends on: T-070, T-071, T-072, T-100
-Paths: `crates/ss-video/src/`, `crates/ss-server/src/media/streams.rs`, `crates/ss-proto/proto/socialspeak/v1/voice.proto`, `crates/ss-client-core/src/media/`, `apps/desktop/src-tauri/src/stream.rs`, `apps/desktop/src-tauri/src/viewer.rs`, `docs/protocol/`
+Paths: `crates/ss-video/src/`, `crates/ss-server/src/media/streams.rs`, `crates/ss-proto/proto/socialspeak/v1/voice.proto`, `crates/ss-client-core/src/media/`, `apps/desktop/src-tauri/src/stream.rs`, `apps/desktop/src-tauri/src/viewer.rs`, `docs/protocol/`, `docs/self-hosting.md`
 
 ## Goal
 Streams stay smooth when someone's connection is weaker, without the
@@ -44,6 +44,10 @@ rendition, and the server picks one per subscriber at a group boundary.
   per rendition). It uses additive increase, multiplicative decrease, with
   hysteresis. It lowers the full rendition only when the uplink itself is
   short, not for one slow viewer.
+  - A bitrate or frame-rate change never forces a keyframe. Discord found
+    that its AMD encoders did this.
+  - The rate is held as an average over several frames, not as a budget
+    for each frame, which undershoots.
 - **Fallback.** If the second encoder cannot open (no second hardware
   session), the sharer publishes one rendition, and a slow viewer gets
   sender-wide adaptation only. Log it once and show it in diagnostics.
@@ -63,6 +67,10 @@ SVC. More than two renditions. Server-side transcoding. Screen-share audio.
   - It is back on the full rendition within 30 s after the impairment ends.
   - The healthy viewer stays on the full rendition at 30 fps throughout,
     with no skipped group.
+  - Record how much of the low rendition's bitrate goes on keyframes with
+    the 2 s GOP. Keyframes cost 6 to 10 times a delta frame. If the share
+    is large, try a longer GOP on the low rendition, with a keyframe sent
+    whenever a viewer switches to it, and keep whichever passes.
 - **Frame rate:** full-motion 1080p30 keeps 30 fps on the full rendition
   while the low one is encoding. LiveKit's simulcast lost two thirds of its
   frame rate here.
@@ -70,6 +78,11 @@ SVC. More than two renditions. Server-side transcoding. Screen-share audio.
   encode budget (under 25 % of a core on macOS). Record the figure.
 - **Fallback test:** with the second encoder refused, the call goes on
   with one rendition and sender-wide adaptation.
+- **Server upload per viewer:** measure what the server sends per viewer
+  for each rendition. Write it in `docs/self-hosting.md` so an operator can
+  size the server's uplink, and say there that nothing caps viewers per
+  stream (Discord caps one stream at 50 viewers). Choosing a cap is the
+  maintainer's call and is not part of this task.
 - **Relay tests** in `crates/ss-server/tests/video_streams.rs`:
   - a subscriber that stops reading for many groups is reset each time,
     while a healthy one keeps receiving every new group;
@@ -84,5 +97,9 @@ barcode latency stamp (`src/stamp.rs`), and its `base-*` runs (`run.sh`).
 Its results are in
 [the research note](../notes/screenshare-livekit-research.md#results-2026-11-16-macos);
 on today's backend, the impaired viewer froze for 27 of the 30 s.
+
+How Discord and TeamSpeak share screens, and where the keyframe, rate and
+viewer-cap points above come from:
+[Discord and TeamSpeak research](../notes/screenshare-discord-teamspeak-research.md).
 
 ## Notes from implementation
