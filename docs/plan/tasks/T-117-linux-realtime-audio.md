@@ -141,7 +141,7 @@ macOS and Windows priority. Changing the audio callback threads.
 ### Deviations
 - `signal-hook` and the `SIGXCPU` guard are not in the task's scope. Without
   them the change would let a 10 ms overrun of any real-time thread in the
-  process end the client.
+  process end the client. Tommy chose to keep them (2026-11-16).
 - Promotion stays synchronous at the start of `Runtime::run`, after the
   worker has reported ready. A hung system bus could hold the first audio
   for up to the crate's 10 s D-Bus timeout; an absent bus, an absent or
