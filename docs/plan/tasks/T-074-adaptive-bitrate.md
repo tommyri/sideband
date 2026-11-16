@@ -252,3 +252,6 @@ Rows in `ACCEPTANCE.md`: the desktop viewer window under a real link
 conditioner (the harness drives the same switcher and decoders but not the
 wgpu window), the second hardware session and full-motion frame rate on
 Windows and Linux, and a two-machine run through the VPS.
+
+How to test it in the app, with a summary of these figures:
+[testing builds](../../testing-app.md#adaptive-screen-share-quality-t-074).

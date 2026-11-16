@@ -198,6 +198,89 @@ Enter rate, indices, skew and an evidence reference per trial; the report calcul
 not independently verified. Without complete calibrated evidence, mouth-to-ear
 latency stays unmeasured. Do not substitute network RTT or device estimates.
 
+## Adaptive screen-share quality (T-074)
+
+A sharer now sends two versions of the stream: the full one (the quality
+preset, for example 1080p30) and a low one (640×360, 15 fps, about
+0.3 Mb/s). The server gives each viewer one of them. A viewer whose own
+network falls behind moves to the low one, the other viewers keep full
+quality, and the viewer moves back once its network recovers.
+
+### What was measured
+
+Measured 2026-11-16 on an M4 Pro MacBook Pro running macOS 27.0.1. The
+server ran locally, and one of two viewers went through a network shaper:
+30 s at 600 kb/s with 2 % loss and 40 ms extra delay. The full results,
+with each run's figures, are in
+[T-074's notes](plan/tasks/T-074-adaptive-bitrate.md#measurements).
+
+| What | Target | Measured |
+|---|---|---|
+| Slow viewer shows the low stream | within 3 s | 1.0–1.2 s |
+| Longest freeze after that | under 1 s | 0.3–0.4 s |
+| Slow viewer back on full quality after the network recovers | within 30 s | 0.2–14 s |
+| Healthy viewer during all of it | 30 fps, no skipped group | 29.4 fps or more, nothing skipped |
+| Full-motion 1080p30 with both versions encoding | 30 fps | 29.1 fps or more |
+| Sharer CPU with both versions | under 25 % of a core | about 4 % |
+| Encode time per frame, both versions together | 15 ms (T-071) | 16–17.5 ms: **over target**, frame rate still held |
+| Only one hardware encoder available | call goes on | passes; the slow viewer still had 9.4 s of gaps over 1 s in 30 s |
+| Server upload per viewer | – | see [self-hosting](self-hosting.md#1-what-you-need) |
+
+Not yet tested: the desktop viewer window on a really slow network,
+Windows and Linux, and two machines through a VPS or over Wi-Fi.
+
+### Test it in the app
+
+You need three clients: one sharer and two viewers, one of them on a slow
+network. macOS's Network Link Conditioner slows the whole Mac down, so the
+slow viewer must be alone on a second Mac. The sharer and the healthy
+viewer can share the first Mac as two installed clients.
+
+1. **Server.** Use the test server, or run one from a checkout as in the
+   [README](../README.md#quick-start). For a local server that other Macs
+   reach, set `bind_quic` and `bind_http` to the first Mac's LAN address
+   rather than `127.0.0.1`.
+2. **Network shaping on the second Mac.** Install Network Link Conditioner
+   (Apple's *Additional Tools for Xcode*) and add a custom profile:
+   downlink 600 kb/s, 2 % downlink packet loss, 40 ms downlink delay.
+   Leave it off for now.
+3. **Share.** On the first Mac, share a screen at 1080p30. The share
+   controls show a status line, for example `low rendition ready · 4.0 Mb/s`.
+   If it says `one rendition (no second hardware encoder)`, note it: that
+   machine only has the single-stream fallback.
+4. **Watch.** Open the stream on both viewers. The statistics line in the
+   viewer window (**View → Show stream statistics**, Cmd+I) shows which
+   version is on screen (`full` or `low`), the frame rate and `dropped`.
+5. **Slow one viewer down.** Turn the profile on on the second Mac. Check:
+   - the slow viewer's statistics line says `low` within about 3 s, with no
+     blank or stuck picture at the switch;
+   - the sharer's status line shows `1 on low rendition`;
+   - the healthy viewer stays on `full` at about 30 FPS, and its `dropped`
+     count does not climb.
+6. **Recover.** After about 30 s, turn the profile off. The slow viewer
+   should be back on `full` within 30 s, again without a visible gap.
+7. **Full motion.** Share a game or a full-screen video and check the
+   healthy viewer still shows about 30 FPS.
+
+Write down for each step what you saw: times, frame rates, any gap or
+frozen picture, and the sharer's status line. Results go in the T-074 rows
+of the [acceptance matrix](plan/tasks/ACCEPTANCE.md).
+
+### Rerun the measurements
+
+The scripted runs live in [`experiments/livekit-spike`](../experiments/livekit-spike/README.md#t-074-scenarios)
+and use the real server and T-074's code. From that folder:
+
+```sh
+CARGO_TARGET_DIR=../../target cargo build --release --no-default-features
+BIN=../../target/release/livekit-spike ./run.sh /tmp/t074 t074-impair
+python3 -I analyze_t074.py /tmp/t074/t074-impair
+```
+
+The other scenarios are `t074-impair-gop2`, `t074-fallback`, `t074-hard`,
+`t074-pattern`, `t074-screen` and `t074-screen-single`; the harness README
+says what each one does.
+
 ## Acceptance record
 
 T-075 notes in docs/plan/tasks/T-075-installable-test-builds.md track local
