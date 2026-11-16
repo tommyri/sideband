@@ -56,6 +56,9 @@ before it is merged:
    session (a one-file build script)
 8. T-115, T-116, T-080 (T-116 and T-080 both touch the server's sign-in
    path; T-080 keeps its `connection.rs` edits to the `Hello` credential)
+9. T-117, T-118, and the macOS half of T-100's LiveKit experiment (its
+   prototype lives outside the workspace; Windows and Linux measurements
+   need those machines)
 
 Not agent work: T-106 (maintainer decisions) and T-100 (backend decision).
 T-067 needs a second reviewer and its 1 h fuzz runs need an otherwise idle
