@@ -1,0 +1,55 @@
+[package]
+name = "livekit-spike"
+description = "T-100 throwaway: Sideband QUIC screen-share path against LiveKit, same frames"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Standalone workspace. This prototype never joins the product workspace, its
+# Cargo.lock, its clippy run or its cargo-deny run (see README.md).
+[workspace]
+
+[features]
+# `--no-default-features` builds the baseline alone, for the binary-size delta.
+default = ["livekit"]
+livekit = ["dep:livekit", "dep:livekit-api", "dep:livekit-protocol", "dep:turn", "dep:util"]
+
+[dependencies]
+# LiveKit, pinned exactly. webrtc-sys downloads a prebuilt libwebrtc
+# (tag webrtc-a545de4, mac-arm64 release, ~277 MB zip) in its build script.
+livekit = { version = "=0.11.0", features = ["rustls-tls-native-roots"], optional = true }
+livekit-api = { version = "=0.10.2", default-features = false, features = ["access-token", "services", "rustls-tls-native-roots"], optional = true }
+# Embedded TURN relay, so one viewer can be routed through the impairment proxy.
+turn = { version = "=0.17.3", optional = true }
+util = { package = "webrtc-util", version = "=0.17.3", default-features = false, features = ["conn", "vnet"], optional = true }
+futures = "0.3"
+livekit-protocol = { version = "=0.8.3", optional = true }
+
+# The Sideband baseline, by path. These resolve against the product workspace's
+# manifests but are locked here, from a copy of the product Cargo.lock.
+ss-core = { path = "../../crates/ss-core" }
+ss-net = { path = "../../crates/ss-net" }
+ss-proto = { path = "../../crates/ss-proto" }
+ss-server = { path = "../../crates/ss-server" }
+ss-video = { path = "../../crates/ss-video", features = ["capture", "software"] }
+moq-video = { version = "=0.1.21", default-features = false, features = ["capture", "openh264"] }
+moq-net = "=0.3.21"
+
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3.2"
+objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn"] }
+
+[profile.release]
+debug = 1
