@@ -166,8 +166,11 @@ impl Peer {
         id
     }
     async fn subscribe(&self, id: u32) {
-        self.call(Cmd::SubscribeTrack(v1::SubscribeTrack { track_id: id }))
-            .await;
+        self.call(Cmd::SubscribeTrack(v1::SubscribeTrack {
+            track_id: id,
+            renditions: false,
+        }))
+        .await;
     }
     async fn event(&mut self, predicate: impl Fn(&Event) -> bool) -> Event {
         timeout(WAIT, async {
@@ -190,6 +193,7 @@ fn start() -> Cmd {
             description: Bytes::from_static(b"opaque codec config"),
             ..Default::default()
         }),
+        renditions: Vec::new(),
     })
 }
 fn header(track: u32, group_id: u32) -> StreamHeader {
@@ -239,6 +243,7 @@ async fn pipes_before_fin_relays_hints_and_keyframes_and_unsubscribes() {
         receiver
             .call(Cmd::RequestKeyframe(v1::RequestKeyframe {
                 track_id: track,
+                rendition: 0,
             }))
             .await;
     }
@@ -423,7 +428,10 @@ async fn group_budget_drops_oldest_and_membership_cleanup_preserves_newer_groups
     let track = sender.start().await;
     let denied = viewer
         .control
-        .request(Cmd::SubscribeTrack(v1::SubscribeTrack { track_id: track }))
+        .request(Cmd::SubscribeTrack(v1::SubscribeTrack {
+            track_id: track,
+            renditions: false,
+        }))
         .await
         .unwrap();
     assert!(matches!(denied.msg, Some(Event::Error(_))));
@@ -587,4 +595,249 @@ async fn client_viewers_demux_two_tracks_and_release() {
     drop(reopened);
     drop(other);
     viewer.close().await;
+}
+
+fn rendition(index: u32, width: u32, height: u32, fps: u32) -> v1::Rendition {
+    v1::Rendition {
+        index,
+        width,
+        height,
+        fps,
+        bitrate: 0,
+        codec: None,
+    }
+}
+fn start_two() -> Cmd {
+    let Cmd::StartStream(mut start) = start() else {
+        unreachable!()
+    };
+    start.renditions = vec![rendition(0, 1920, 1080, 30), rendition(1, 640, 360, 15)];
+    Cmd::StartStream(start)
+}
+fn low_header(track: u32, group_id: u32) -> StreamHeader {
+    let mut header = header(track, group_id);
+    header.media.flags = ss_net::media::LOW_RENDITION;
+    header
+}
+fn tagged(value: u8, keyframe: bool) -> Frame {
+    Frame {
+        timestamp: 48000,
+        keyframe,
+        payload: Bytes::from(vec![value; 64]),
+    }
+}
+/// Next group on `connection` within `wait`, or `None`.
+async fn next_group(connection: &quinn::Connection, wait: Duration) -> Option<GroupReader> {
+    timeout(wait, GroupReader::accept(connection))
+        .await
+        .ok()
+        .map(Result::unwrap)
+}
+
+#[tokio::test]
+async fn stalled_subscriber_is_reset_every_group_while_healthy_one_gets_each_group() {
+    let world = World::new().await;
+    let sender = world.peer("publisher", None).await;
+    let healthy = world.peer("healthy", Some(sender.user())).await;
+    let stalled = world.peer("stalled", Some(sender.user())).await;
+    for peer in [&sender, &healthy, &stalled] {
+        peer.join().await;
+    }
+    let track = sender.start().await;
+    healthy.subscribe(track).await;
+    stalled.subscribe(track).await;
+    // The healthy viewer reads each group to its end and records its id.
+    let quic = healthy.conn.quic().clone();
+    let reader = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while seen.len() < 12 {
+            let mut group = GroupReader::accept(&quic).await.unwrap();
+            let mut frames = 0;
+            while let Some(frame) = group.next_frame().await.unwrap() {
+                assert_eq!(frame.payload.len(), 16 * 1024);
+                frames += 1;
+            }
+            assert_eq!(frames, 96, "group {} incomplete", group.header.group_id);
+            seen.push(group.header.group_id);
+        }
+        seen
+    });
+    // The stalled viewer accepts its streams but never reads them.
+    let quic = stalled.conn.quic().clone();
+    let held = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok(Ok(stream)) = timeout(Duration::from_secs(3), quic.accept_uni()).await {
+            held.push(stream);
+        }
+        held
+    });
+    let payload = Bytes::from(vec![9; 16 * 1024]);
+    // Each 1.5 MiB group is larger than the stalled viewer's stream window.
+    for group in 0..12 {
+        let mut writer = GroupWriter::open(sender.conn.quic(), header(track, group))
+            .await
+            .unwrap();
+        for index in 0..96 {
+            writer
+                .write_frame(&Frame {
+                    timestamp: group * 96 + index,
+                    keyframe: index == 0,
+                    payload: payload.clone(),
+                })
+                .await
+                .unwrap();
+            // About 128 Mb/s: far above a real encoder, still paced.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        writer.finish().unwrap();
+    }
+    let seen = timeout(Duration::from_secs(30), reader)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(seen, (0..12).collect::<Vec<_>>());
+    let held = held.await.unwrap();
+    assert!(!held.is_empty());
+    for mut stream in held {
+        // Every group the stalled viewer got was reset, none delivered whole.
+        assert!(
+            timeout(WAIT, stream.read_to_end(32 * 1024 * 1024))
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert!(world.server.stream_stats().resets >= 12);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one switch sequence, step by step")]
+async fn rendition_switches_happen_only_at_a_new_group() {
+    let world = World::new().await;
+    let mut sender = world.peer("publisher", None).await;
+    let viewer = world.peer("viewer", Some(sender.user())).await;
+    let legacy = world.peer("legacy", Some(sender.user())).await;
+    for peer in [&sender, &viewer, &legacy] {
+        peer.join().await;
+    }
+    let v1::ack::Result::TrackId(track) = sender.call(start_two()).await else {
+        panic!("expected track id")
+    };
+    viewer
+        .call(Cmd::SubscribeTrack(v1::SubscribeTrack {
+            track_id: track,
+            renditions: true,
+        }))
+        .await;
+    legacy.subscribe(track).await;
+    let quic = sender.conn.quic().clone();
+    let open = |header: StreamHeader| GroupWriter::open(&quic, header);
+    // Rendition 0 group 0 and rendition 1 group 0 run side by side.
+    let mut full = open(header(track, 0)).await.unwrap();
+    full.write_frame(&tagged(10, true)).await.unwrap();
+    let mut low = open(low_header(track, 0)).await.unwrap();
+    low.write_frame(&tagged(20, true)).await.unwrap();
+    let mut on_full = next_group(viewer.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(on_full.header.rendition(), 0);
+    let mut legacy_full = next_group(legacy.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(legacy_full.header, header(track, 0));
+    assert!(
+        next_group(viewer.conn.quic(), Duration::from_millis(200))
+            .await
+            .is_none()
+    );
+
+    // Capping the viewer to 360p asks for a low keyframe and reports the low
+    // subscriber, but the groups in flight do not change mid-group.
+    viewer
+        .call(Cmd::SetPreferredQuality(v1::SetPreferredQuality {
+            track_id: track,
+            max_height: 360,
+            max_fps: 0,
+        }))
+        .await;
+    sender
+        .event(|e| matches!(e, Event::RequestKeyframe(k) if k.rendition == 1))
+        .await;
+    sender
+        .event(|e| {
+            matches!(e, Event::SubscriberStats(s)
+                if s.renditions.len() == 2 && s.renditions[1].subscribers == 1)
+        })
+        .await;
+    full.write_frame(&tagged(11, false)).await.unwrap();
+    low.write_frame(&tagged(21, false)).await.unwrap();
+    assert_eq!(on_full.next_frame().await.unwrap().unwrap().payload[0], 10);
+    assert_eq!(on_full.next_frame().await.unwrap().unwrap().payload[0], 11);
+    assert!(
+        next_group(viewer.conn.quic(), Duration::from_millis(200))
+            .await
+            .is_none()
+    );
+
+    // The next low group starts with a keyframe: that is where the viewer moves.
+    low.finish().unwrap();
+    let mut low = open(low_header(track, 1)).await.unwrap();
+    low.write_frame(&tagged(22, true)).await.unwrap();
+    let mut on_low = next_group(viewer.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(on_low.header, low_header(track, 1));
+    assert_eq!(on_low.next_frame().await.unwrap().unwrap().payload[0], 22);
+    full.finish().unwrap();
+    assert!(on_full.next_frame().await.unwrap().is_none());
+    let mut full = open(header(track, 1)).await.unwrap();
+    full.write_frame(&tagged(12, true)).await.unwrap();
+    assert!(
+        next_group(viewer.conn.quic(), Duration::from_millis(200))
+            .await
+            .is_none()
+    );
+    // A viewer that never declared renditions keeps the full rendition only.
+    assert_eq!(
+        legacy_full.next_frame().await.unwrap().unwrap().payload[0],
+        10
+    );
+    assert_eq!(
+        legacy_full.next_frame().await.unwrap().unwrap().payload[0],
+        11
+    );
+    assert!(legacy_full.next_frame().await.unwrap().is_none());
+    let mut legacy_next = next_group(legacy.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(legacy_next.header, header(track, 1));
+    assert_eq!(
+        legacy_next.next_frame().await.unwrap().unwrap().payload[0],
+        12
+    );
+
+    // Lifting the cap probes the full rendition at its next group, while the
+    // low rendition keeps flowing; a full group a second later confirms it
+    // and the low rendition's group for this viewer is reset.
+    viewer
+        .call(Cmd::SetPreferredQuality(v1::SetPreferredQuality {
+            track_id: track,
+            max_height: 0,
+            max_fps: 0,
+        }))
+        .await;
+    full.finish().unwrap();
+    let mut full = open(header(track, 2)).await.unwrap();
+    full.write_frame(&tagged(13, true)).await.unwrap();
+    let mut probe = next_group(viewer.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(probe.header, header(track, 2));
+    assert_eq!(probe.next_frame().await.unwrap().unwrap().payload[0], 13);
+    low.write_frame(&tagged(23, false)).await.unwrap();
+    assert_eq!(on_low.next_frame().await.unwrap().unwrap().payload[0], 23);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    full.finish().unwrap();
+    let mut full = open(header(track, 3)).await.unwrap();
+    full.write_frame(&tagged(14, true)).await.unwrap();
+    let mut confirmed = next_group(viewer.conn.quic(), WAIT).await.unwrap();
+    assert_eq!(confirmed.header, header(track, 3));
+    assert_eq!(
+        confirmed.next_frame().await.unwrap().unwrap().payload[0],
+        14
+    );
+    assert!(timeout(WAIT, on_low.next_frame()).await.unwrap().is_err());
+    assert!(world.server.stream_stats().switches_up >= 1);
+    full.reset();
+    low.reset();
 }

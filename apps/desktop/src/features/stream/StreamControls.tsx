@@ -31,6 +31,7 @@ export function StreamControls({
                 : 'Stopping screen share…'}
           </span>
           <small title={share.source}>{share.source}</small>
+          {share.state === 'sharing' && share.renditions && <small>{share.renditions}</small>}
           <button
             className="button secondary"
             disabled={share.state === 'stopping'}

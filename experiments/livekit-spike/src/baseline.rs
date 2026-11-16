@@ -118,6 +118,8 @@ pub async fn serve(run_dir: &Path) -> Result<()> {
             json!({
                 "t_ms": crate::stamp::now_micros() / 1000, "role": "server",
                 "active": stats.active, "resets": stats.resets, "rejected": stats.rejected,
+                "down": stats.switches_down, "up": stats.switches_up,
+                "bytes_full": stats.bytes_by_rendition[0], "bytes_low": stats.bytes_by_rendition[1],
                 "fwd_kbps": ((stats.bytes_forwarded - last_bytes) as f64 * 8.0 / dt / 1000.0).round(),
                 "cpu_pct": ((cpu - last_cpu) / dt * 1000.0).round() / 10.0,
                 "mem_mib": (metrics::footprint_mib() * 10.0).round() / 10.0,
@@ -162,16 +164,16 @@ async fn register(
     Ok((id, welcome.resume_token))
 }
 
-struct Peer {
-    conn: ss_net::Connection,
+pub(crate) struct Peer {
+    pub(crate) conn: ss_net::Connection,
     control: ClientControl,
-    events: Option<mpsc::Receiver<v1::ServerEnvelope>>,
+    pub(crate) events: Option<mpsc::Receiver<v1::ServerEnvelope>>,
     channel: Bytes,
 }
 
 impl Peer {
     /// Log in. `via` connects through another local port (the impairment proxy).
-    async fn login(run_dir: &Path, name: &str, via: Option<u16>) -> Result<Self> {
+    pub(crate) async fn login(run_dir: &Path, name: &str, via: Option<u16>) -> Result<Self> {
         let info: ServerInfo =
             serde_json::from_slice(&wait_file(&run_dir.join("baseline.json")).await?)?;
         let port = via.unwrap_or(info.port);
@@ -214,7 +216,7 @@ impl Peer {
         })
     }
 
-    async fn call(&self, msg: Cmd) -> Result<v1::ack::Result> {
+    pub(crate) async fn call(&self, msg: Cmd) -> Result<v1::ack::Result> {
         let reply = tokio::time::timeout(WAIT, self.control.request(msg)).await??;
         match reply.msg {
             Some(Event::Ack(ack)) => ack.result.context("empty ack"),
@@ -222,7 +224,7 @@ impl Peer {
         }
     }
 
-    async fn join(&self) -> Result<()> {
+    pub(crate) async fn join(&self) -> Result<()> {
         self.call(Cmd::JoinVoice(v1::JoinVoice {
             channel_id: self.channel.clone(),
             self_mute: true,
@@ -233,7 +235,7 @@ impl Peer {
     }
 }
 
-async fn wait_file(path: &Path) -> Result<Vec<u8>> {
+pub(crate) async fn wait_file(path: &Path) -> Result<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(bytes) = std::fs::read(path)
@@ -296,6 +298,7 @@ pub async fn publish(
                 channels: 0,
                 description: description.clone(),
             }),
+            renditions: Vec::new(),
         }))
         .await?
     else {
@@ -458,6 +461,7 @@ pub async fn view(
                 .peer
                 .call(Cmd::SubscribeTrack(v1::SubscribeTrack {
                     track_id: info.track,
+                    renditions: true,
                 }))
                 .await?;
             metrics::event(
@@ -563,8 +567,11 @@ impl Session {
     async fn open(run_dir: &Path, name: &str, via: Option<u16>, track: u32) -> Result<Self> {
         let mut peer = Peer::login(run_dir, name, via).await?;
         peer.join().await?;
-        peer.call(Cmd::SubscribeTrack(v1::SubscribeTrack { track_id: track }))
-            .await?;
+        peer.call(Cmd::SubscribeTrack(v1::SubscribeTrack {
+            track_id: track,
+            renditions: true,
+        }))
+        .await?;
         let mut events = peer.events.take().context("events")?;
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let slot = Arc::new((std::sync::Mutex::new(None), tokio::sync::Notify::new()));
@@ -645,6 +652,7 @@ impl Session {
             .peer
             .call(Cmd::RequestKeyframe(v1::RequestKeyframe {
                 track_id: self.track,
+                rendition: 0,
             }))
             .await;
     }

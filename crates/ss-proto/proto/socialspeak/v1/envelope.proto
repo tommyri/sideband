@@ -115,6 +115,7 @@ message ServerEnvelope {
     RequestKeyframe request_keyframe = 30;
     SubscriberHint subscriber_hint = 31;
     SessionRevoked session_revoked = 32;
+    SubscriberStats subscriber_stats = 33;
   }
 }
 

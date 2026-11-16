@@ -63,7 +63,10 @@ fn status(state: &ConnectionState) -> ConnectionStatus {
 
 fn event(event: ClientEvent) -> ClientEventPayload {
     match event {
-        ClientEvent::MessageReceived { .. } | ClientEvent::Resynced => ClientEventPayload::Resynced,
+        // Per-second publisher reports are filtered out before forwarding.
+        ClientEvent::MessageReceived { .. }
+        | ClientEvent::SubscriberStats { .. }
+        | ClientEvent::Resynced => ClientEventPayload::Resynced,
         ClientEvent::ChannelsChanged => ClientEventPayload::ChannelsChanged,
         ClientEvent::MessagesChanged { channel } => ClientEventPayload::MessagesChanged {
             channel: channel.to_string(),
@@ -87,7 +90,9 @@ fn event(event: ClientEvent) -> ClientEventPayload {
         },
         ClientEvent::Notice(message) => ClientEventPayload::Notice { message },
         ClientEvent::Removed { banned, reason } => ClientEventPayload::Removed { banned, reason },
-        ClientEvent::KeyframeRequested { track } => ClientEventPayload::KeyframeRequested { track },
+        ClientEvent::KeyframeRequested { track, .. } => {
+            ClientEventPayload::KeyframeRequested { track }
+        }
         ClientEvent::SubscriberHint {
             track,
             max_height,
@@ -281,7 +286,11 @@ pub async fn connect(
         while let Some(incoming) = next_event(&mut receiver).await {
             crate::notifications::observe(&app, &event_server_id, &notification_store, &incoming)
                 .await;
-            if matches!(incoming, ClientEvent::MessageReceived { .. }) {
+            // Per-second publisher reports stay inside the capture worker.
+            if matches!(
+                incoming,
+                ClientEvent::MessageReceived { .. } | ClientEvent::SubscriberStats { .. }
+            ) {
                 continue;
             }
             let _ = app.emit(

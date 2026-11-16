@@ -104,6 +104,11 @@ impl Window {
         }
     }
 
+    /// Whether the next [`Self::tick`] prints.
+    pub fn due(&self) -> bool {
+        self.last.elapsed().as_secs_f64() >= 1.0
+    }
+
     /// Emit a line when a second has passed. Returns true when it printed.
     pub fn tick(&mut self) -> bool {
         let now = Instant::now();

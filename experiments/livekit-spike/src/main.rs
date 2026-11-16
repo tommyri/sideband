@@ -9,6 +9,7 @@ mod pattern;
 mod pixels;
 mod source;
 mod stamp;
+mod t074;
 #[cfg(feature = "livekit")]
 mod turn_relay;
 
@@ -59,6 +60,42 @@ enum Command {
         preset: PresetArg,
         #[arg(long, default_value_t = 60)]
         seconds: u64,
+    },
+    /// T-074 publisher: product encode stage (two renditions), rate control
+    /// and group writer.
+    T074Pub {
+        #[arg(long)]
+        run_dir: Option<PathBuf>,
+        #[arg(long, default_value = "pattern")]
+        content: source::Content,
+        #[arg(long, value_enum, default_value = "p1080p30")]
+        preset: PresetArg,
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+        /// Refuse the second encoder: one rendition, sender-wide adaptation.
+        #[arg(long)]
+        single: bool,
+        /// Low rendition keyframe interval in seconds (product default 10);
+        /// 0 aligns it with the full rendition's 2 s GOP.
+        #[arg(long)]
+        low_gop: Option<u64>,
+        /// Keep the preset bitrate (no sender-wide rate control).
+        #[arg(long)]
+        fixed_rate: bool,
+    },
+    /// T-074 viewer: renditions, product switcher, one decoder per rendition.
+    T074View {
+        #[arg(long)]
+        run_dir: Option<PathBuf>,
+        #[arg(long, default_value = "viewer1")]
+        name: String,
+        #[arg(long)]
+        via: Option<u16>,
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+        /// Ask for 360p, which keeps this viewer on the low rendition.
+        #[arg(long)]
+        prefer_low: bool,
     },
     /// Baseline viewer: subscribe, decode with ss_video, read barcodes.
     BaselineView {
@@ -160,6 +197,14 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Server and client logs (rendition switches, encoder fallback) on stderr.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,ss_server::media=debug".into()),
+        )
+        .init();
     match Cli::parse().command {
         Command::Sources => {
             for s in ss_video::list_sources().await? {
@@ -185,6 +230,38 @@ async fn main() -> Result<()> {
                 seconds,
             )
             .await?;
+        }
+        Command::T074Pub {
+            run_dir,
+            content,
+            preset,
+            seconds,
+            single,
+            low_gop,
+            fixed_rate,
+        } => {
+            let options = t074::PubOptions {
+                preset: preset.into(),
+                seconds,
+                single,
+                low_gop: low_gop.map(std::time::Duration::from_secs),
+                fixed_rate,
+            };
+            t074::publish(&baseline::run_dir(&run_dir), &content, options).await?;
+        }
+        Command::T074View {
+            run_dir,
+            name,
+            via,
+            seconds,
+            prefer_low,
+        } => {
+            let options = t074::ViewOptions {
+                seconds,
+                via,
+                prefer_low,
+            };
+            t074::view(&baseline::run_dir(&run_dir), &name, options).await?;
         }
         Command::BaselineView {
             run_dir,

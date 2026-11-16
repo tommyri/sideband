@@ -1,4 +1,5 @@
-//! One uni-stream demultiplexer per connection, with one pending GOP per viewer.
+//! One uni-stream demultiplexer per connection, with one pending GOP per
+//! viewer and rendition.
 use super::GroupReader;
 use crate::{
     Client, ConnectionState, Error, StateStore,
@@ -15,9 +16,11 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 #[derive(Default)]
 struct Slot {
-    group: Mutex<Option<GroupReader>>,
+    /// Pending group per rendition (full, low).
+    group: Mutex<[Option<GroupReader>; 2]>,
     notify: Notify,
-    newest: Mutex<Option<u32>>,
+    /// Newest group id seen per rendition; each rendition numbers its own.
+    newest: Mutex<[Option<u32>; 2]>,
 }
 /// Shared by the clones of one media link; never creates competing accept loops.
 #[derive(Default)]
@@ -77,23 +80,35 @@ impl VideoSubscription {
                     p.contains(ss_core::Permissions::VIEW_CHANNEL | ss_core::Permissions::CONNECT)
                 })
     }
-    /// Wait for the newest GOP; superseded pending groups are reset on drop.
+    /// Wait for the newest GOP of either rendition; superseded pending groups
+    /// are reset on drop. Feed them to a [`super::Switcher`].
     pub async fn next_group(&self) -> Option<GroupReader> {
         loop {
             let notified = self.slot.notify.notified();
             if !self.valid() {
                 return None;
             }
-            if let Some(group) = self.slot.group.lock().take() {
+            let pending = self.slot.group.lock().iter_mut().find_map(Option::take);
+            if let Some(group) = pending {
                 return Some(group);
             }
             tokio::select! { ()=notified=>{}, ()=tokio::time::sleep(Duration::from_millis(100))=>{} }
         }
     }
+    /// Codec of `rendition`: its own when announced, else the track's.
+    #[must_use]
+    pub fn codec(&self, rendition: u8) -> Option<&v1::Codec> {
+        self.track
+            .renditions
+            .get(usize::from(rendition))
+            .and_then(|r| r.codec.as_ref())
+            .or(self.track.codec.as_ref())
+    }
     /// Request an IDR; caller throttles recovery requests.
     pub async fn request_keyframe(&self) -> Result<(), Error> {
         self.command(Msg::RequestKeyframe(v1::RequestKeyframe {
             track_id: self.track.track_id,
+            rendition: 0,
         }))
         .await
     }
@@ -101,6 +116,7 @@ impl VideoSubscription {
     pub async fn subscribe(&self) -> Result<(), Error> {
         self.command(Msg::SubscribeTrack(v1::SubscribeTrack {
             track_id: self.track.track_id,
+            renditions: true,
         }))
         .await
     }
@@ -178,9 +194,10 @@ impl Client {
                             let Ok(incoming)=incoming else {break;};
                             if let Ok(Ok(group))=tokio::time::timeout(Duration::from_secs(1),GroupReader::from_stream(incoming)).await
                                 && let Some(slot)=slots.lock().get(&group.header.media.track_id) {
+                                    let lane=usize::from(group.header.rendition());
                                     let mut newest=slot.newest.lock();
-                                    if newest.is_none_or(|old|group.header.group_id.wrapping_sub(old).cast_signed()>0) {
-                                        *newest=Some(group.header.group_id); *slot.group.lock()=Some(group); slot.notify.notify_one();
+                                    if newest[lane].is_none_or(|old|group.header.group_id.wrapping_sub(old).cast_signed()>0) {
+                                        newest[lane]=Some(group.header.group_id); slot.group.lock()[lane]=Some(group); slot.notify.notify_one();
                                     }
                             }
                         },

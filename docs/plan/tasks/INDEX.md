@@ -171,7 +171,7 @@ T-100 kept the QUIC backend on 2026-11-16, which unblocks T-074.
 | [T-071](T-071-screen-capture-encode.md) | Client: capture + hardware encode | L | T-070, T-041 | awaiting-acceptance |
 | [T-072](T-072-stream-viewer.md) | Client: viewer (decode + wgpu window) | M | T-070, T-071 | awaiting-acceptance |
 | [T-073](T-073-screen-share-ui.md) | Screen share UI | S | T-071, T-072, T-044 | awaiting-acceptance |
-| [T-074](T-074-adaptive-bitrate.md) | Adaptive bitrate | L | T-070, T-071, T-072, T-100 | todo |
+| [T-074](T-074-adaptive-bitrate.md) | Adaptive bitrate | L | T-070, T-071, T-072, T-100 | awaiting-acceptance |
 
 ## Phase 6 — Bots
 

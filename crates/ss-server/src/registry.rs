@@ -13,8 +13,9 @@
 //! keeps accepting frames for [`ConnectionRegistry::slow_after`] (a link that
 //! is briefly slow is not punished for what other users trigger), then the
 //! next frame closes the connection; [`DIRECT_LIMIT`] bounds it outright.
-//! Per-track `SubscriberHint` and `RequestKeyframe` frames replace a pending
-//! one for the same track instead of taking another slot. A frame is never
+//! Per-track `SubscriberHint`, `SubscriberStats` and per-rendition
+//! `RequestKeyframe` frames replace a pending one for the same track instead
+//! of taking another slot. A frame is never
 //! dropped while the connection stays open: the client resyncs from
 //! `Welcome` instead.
 //!
@@ -497,7 +498,11 @@ impl DirectQueue {
 fn track_key(frame: &v1::ServerEnvelope) -> Option<(u8, u32)> {
     match &frame.msg {
         Some(v1::server_envelope::Msg::SubscriberHint(hint)) => Some((0, hint.track_id)),
-        Some(v1::server_envelope::Msg::RequestKeyframe(request)) => Some((1, request.track_id)),
+        // Each rendition keeps its own pending keyframe request.
+        Some(v1::server_envelope::Msg::RequestKeyframe(request)) => {
+            Some((if request.rendition == 0 { 1 } else { 3 }, request.track_id))
+        }
+        Some(v1::server_envelope::Msg::SubscriberStats(stats)) => Some((2, stats.track_id)),
         _ => None,
     }
 }

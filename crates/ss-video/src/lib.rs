@@ -10,12 +10,20 @@ mod h264;
 mod preset;
 #[cfg(feature = "capture")]
 mod publisher;
+pub mod rate;
+#[cfg(feature = "capture")]
+mod renditions;
 #[cfg(feature = "capture")]
 mod source;
 
 pub use preset::{Preset, SubscriberHint};
 #[cfg(feature = "capture")]
-pub use publisher::{CodecInfo, EncodedFrame, EncoderStats, Publisher, PublisherConfig};
+pub use publisher::{Publisher, PublisherConfig};
+#[cfg(feature = "capture")]
+pub use renditions::{
+    CodecInfo, EncodedFrame, EncoderConfig, EncoderStats, Encoders, LOW_BITRATE, LOW_FPS, LOW_GOP,
+    LOW_HEIGHT, LOW_WIDTH, LowRendition, LowState, RenditionCounters, RenditionInfo,
+};
 #[cfg(feature = "capture")]
 pub use source::{Source, SourceKind, Thumbnail, list_sources, thumbnail};
 

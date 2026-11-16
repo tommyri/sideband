@@ -20,11 +20,11 @@ replaces the snapshot, rejoins voice and re-reads cached history. Drop closes
 the connection; `close().await` also waits for the worker. `ClientSet` holds
 one client per server.
 
-`media::VideoTrackSender` opens GOP writers after StartStream; one
-`VideoTrackReceiver` demuxes incoming video groups by track id. With the
-`screen-share` feature, `ScreenShareSession` feeds `ss-video` capture and H.264
-into those writers, answers keyframe requests and removes its track when
-capture ends. Rendering stays outside this crate.
+`media::RenditionWriter` writes each rendition's GOPs; the viewer demux keeps a
+pending group per track and rendition, and `Switcher` changes rendition with
+no gap. With `screen-share`, `ScreenShareSession` drives `ss-video` capture,
+both renditions and rate control, answers server reports and removes its
+track when capture ends. Rendering stays outside this crate.
 
 `load_older` fetches HTTPS history with the QUIC session's trust policy and
 bearer, without redirects or proxies; a concurrent change returns

@@ -348,6 +348,7 @@ fn seat_len() -> usize {
             description: bytes::Bytes::new(),
         }),
         channel_id: id(),
+        renditions: Vec::new(),
     };
     state.encoded_len() + track.encoded_len() + 4
 }

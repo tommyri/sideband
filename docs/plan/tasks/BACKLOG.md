@@ -30,7 +30,14 @@ Ideas and deferred items. Promote to a `T-xxx` task when scheduled.
   never decodes).
 - Server federation / multi-server identity (explicitly not a goal now).
 - Outgoing webhooks and interaction components for bots.
-- Simulcast for screen share; HEVC/AV1 where hardware exists.
+- HEVC/AV1 where hardware exists. (T-074 added a second, low H.264
+  rendition; more than two renditions and SVC are still open.)
+- Screen-share viewer cap per stream (Discord caps one at 50). T-074 records
+  the per-viewer server upload in `docs/self-hosting.md`; choosing a cap is the
+  maintainer's call.
+- Count video tracks in the `Welcome` size bound (`tests/welcome_bound.rs`):
+  one per connection with a codec description up to 64 KiB, plus T-074's
+  per-rendition descriptions up to 4 KiB, are not in it today.
 - Session tokens in the OS keychain (macOS Keychain, Windows Credential
   Manager, Secret Service) instead of the owner-only desktop JSON file. The
   `Storage` trait already allows it (T-093 left it out of scope).

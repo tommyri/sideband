@@ -65,6 +65,32 @@ Scenarios (`run.sh`):
 | `lk-life` | `viewer1` gets a signal reconnect (resume), a full reconnect, canSubscribe revoked and restored, MoveParticipant to another room and back, and RemoveParticipant followed by a rejoin with the old, unexpired token. |
 | `lk-ttl` | `viewer2` holds a 15 s token and does a full reconnect at 30 s. |
 
+### T-074 scenarios
+
+`t074-pub` and `t074-view` drive the product code T-074 added rather than a
+copy of it: `ss_video::Encoders` (full and low rendition), the rate
+controller, `ss_client_core::media::{RenditionWriter, Switcher}` and one
+`VideoDecoder` per rendition. The relay is the real `ss-server`. They need
+only the baseline build:
+
+```sh
+CARGO_TARGET_DIR=../../target cargo build --release --no-default-features
+BIN=../../target/release/livekit-spike ./run.sh /tmp/t074 t074-impair
+python3 -I analyze_t074.py /tmp/t074/t074-impair
+```
+
+| Scenario | What |
+| --- | --- |
+| `t074-impair` | `viewer2` through `impair` (20 s clean, 30 s at 600 kb/s, 2 % loss, +40 ms), `viewer1` healthy, `pattern` at 1080p30. Product default: 10 s low-rendition GOP, keyframe on each switch to it |
+| `t074-impair-gop2` | The same with the low rendition's keyframes aligned with the full rendition's 2 s GOP |
+| `t074-fallback` | The same with the second encoder refused (`--single`): one rendition, sender-wide rate control |
+| `t074-hard`, `t074-pattern` | Both viewers healthy; `viewer2` asks for 360p, so both renditions run |
+| `t074-screen`, `t074-screen-single` | Real capture of `$SCREEN` with both renditions on, and with one |
+
+Viewers print a line per presented frame (`"f"`: rendition) and group
+events, which `analyze_t074.py` turns into switch time, freezes, recovery
+time, skipped groups and keyframe share.
+
 Each role prints one JSON line per second (fps, kbps, latency p50/p95/max,
 largest frame gap, its own CPU and memory footprint) plus event lines. `run.sh`
 also samples GPU device utilisation (`ioreg`) and `docker stats` for the

@@ -192,9 +192,9 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `SetChannelOverride` | `channel_id`, `role_id`, `allow(u64)`, `deny(u64)` | Roles/permissions UI reads saved masks before editing |
 | `UpdateProfile` | `display_name`, `avatar_attachment_id` | |
 | `SetPresence` | `status`, `activity` | Online, idle, or do-not-disturb. Offline is the last disconnect |
-| `StartStream` / `StopStream` | `kind` (VIDEO/SCREEN), `codec` / — | One published video track per connection; requires voice membership and STREAM |
-| `SubscribeTrack` / `UnsubscribeTrack` | `track_id` | Video (phase 5); audio is auto-subscribed |
-| `RequestKeyframe` | `track_id` | Video (phase 5) |
+| `StartStream` / `StopStream` | `kind` (VIDEO/SCREEN), `codec`, `renditions[]` / — | One published video track per connection; requires voice membership and STREAM. `renditions` (tag 3) announces a second, low rendition (section 5) |
+| `SubscribeTrack` / `UnsubscribeTrack` | `track_id`, `renditions` / `track_id` | Video (phase 5); audio is auto-subscribed. `renditions` (tag 2) says the viewer decodes every rendition, so the server may switch it |
+| `RequestKeyframe` | `track_id` | Video (phase 5); the server asks for the rendition this viewer receives |
 | `SetPreferredQuality` | `track_id`, `max_height`, `max_fps` | Video (phase 5) |
 | `Logout` | — | Ends this connection's session (section 1.1). The `Ack` is the last frame; the server then closes with code 6 and closes the session's other connections with `SessionRevoked` |
 | `ListSessions` | — | The caller's own live sessions; `Ack.sessions` lists `SessionInfo{id, device_name, created_at, last_seen_at, expires_at, current}`. Never tokens or hashes |
@@ -216,7 +216,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `MemberJoined` / `MemberLeft` / `MemberUpdated` | `Member{user, roles, presence}` | `MemberJoined` when an account registers, before its `PresenceUpdated`; not sent to the new member. `MemberLeft` is reserved: no server path disables or removes an account, and a banned account stays in the member list |
 | `PresenceUpdated` | `user_id`, `status`, `activity` | |
 | `VoiceStateUpdated` | `user_id`, `conn_id`, `channel_id?`, `self_mute`, `self_deaf`, `server_mute` | |
-| `TrackAdded` | `track_id`, `user_id`, `conn_id`, `kind` (AUDIO/VIDEO/SCREEN), `codec{name, sample_rate, channels}`, `channel_id` | Mapping for datagram demux |
+| `TrackAdded` | `track_id`, `user_id`, `conn_id`, `kind` (AUDIO/VIDEO/SCREEN), `codec{name, sample_rate, channels}`, `channel_id`, `renditions[]` | Mapping for datagram demux; a video track's renditions (tag 7) with their size, frame rate and codec |
 | `TrackRemoved` | `track_id` | |
 | `MessageCreated` / `MessageUpdated` / `MessageDeleted` | `Message`, `nonce?` | `Message` includes author, content, reply, attachments, mentions, `link_previews[]` (may arrive later via `MessageUpdated`), and for a webhook post `webhook_id` and `webhook_name` instead of an author |
 | `TypingStarted` | `channel_id`, `user_id` | |
@@ -225,8 +225,9 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 | `MemberRolesUpdated` | `user_id`, `role_ids[]` | |
 | `InviteCreated` / `InviteRevoked` | `Invite` | admins only |
 | `Kicked` / `Banned` | `reason`, `expires_at?` | sent then connection closed |
-| `RequestKeyframe` | `track_id` | Private relay to publisher, at most once per 500 ms per track |
+| `RequestKeyframe` | `track_id`, `rendition` | Private relay to publisher, at most once per 500 ms per track and rendition |
 | `SubscriberHint` | `track_id`, `max_height`, `max_fps`, `viewer_count` | Private aggregate to publisher; server never transcodes |
+| `SubscriberStats` | `track_id`, `renditions[]{index, subscribers, congested, resets, max_backlog_ms, bytes}` | Private per-rendition delivery report to the publisher, about once a second and when the low rendition gains its first or loses its last viewer (tag 33) |
 | `ServerNotice` | `text` | shutdown warnings etc. |
 | `SessionRevoked` | `reason` | This connection's session was ended elsewhere (logout, revoke, password reset, operator); sent, then closed with code 6. Do not reconnect with the token |
 
@@ -281,8 +282,8 @@ Each session's control frames are delivered in order or not at all. A
 session that cannot keep up (the event bus 1024 events ahead of it, frames
 addressed to it backed up for 10 s, or one write stalled for 10 s) gets
 `ServerNotice` and the connection closes with code 2; the client reconnects
-and resyncs from `Welcome`. A newer `SubscriberHint` or `RequestKeyframe`
-for a track replaces one not yet sent. A command that waits on the database
+and resyncs from `Welcome`. A newer `SubscriberHint`, `SubscriberStats` or
+`RequestKeyframe` (per rendition) for a track replaces one not yet sent. A command that waits on the database
 does not stop delivery of events.
 
 The `Welcome` and the events after it do not overlap for new messages: a
@@ -367,7 +368,8 @@ in `TrackAdded.codec` (e.g. `avc1.64001f` + `description`).
 T-070 makes this path available after authenticated Hello (`video-streams`
 feature in Welcome). `StartStream` appends client envelope tag 39 and returns
 `Ack.track_id` (tag 10); `StopStream` is tag 40. Private server events append
-`RequestKeyframe` tag 30 and `SubscriberHint` tag 31. Existing tags are unchanged.
+`RequestKeyframe` tag 30 and `SubscriberHint` tag 31. T-074 appends `SubscriberStats`
+(server envelope tag 33) and new fields only. Existing tags are unchanged.
 
 Frame `len` is the encoded payload length, excluding the nine-byte frame prefix,
 range 1..=4 MiB. Timestamp is on the shared 48 kHz clock. Frame flag bit 0 means
@@ -401,6 +403,38 @@ Zero means unspecified. Hints use the highest requested value per dimension,
 or zero when any viewer leaves it unspecified, and include the viewer count.
 Removing the last viewer reports count zero. These are adaptation hints to the
 publisher, not promises that the server filters or re-encodes frames.
+
+**Renditions (T-074).** A publisher may send a second, lower rendition of the
+same pictures, for example 640×360 at 15 fps next to 1080p30. `StartStream`
+announces them in `renditions` (full first, index 0, then index 1; each
+1..=7680 × 1..=4320 at 1..=240 fps, the low one no larger than the full one,
+an optional per-rendition `codec` with a description of at most 4 KiB);
+`TrackAdded` and `Snapshot.tracks` carry
+them. Empty means one rendition. Each rendition is its own run of groups with
+its own `group_id` and `seq` counters. Bit 0 of a video stream header's
+common flags marks rendition 1; it is clear for rendition 0. A header naming
+a rendition the track did not announce is rejected. Older parsers already
+accept bits 0–1 on video headers, so the wire stays version 0.
+
+The server forwards one rendition to each subscriber that set
+`SubscribeTrack.renditions`; others get rendition 0 only. It switches a
+subscriber only when a new group of the target rendition begins, so the first
+frame it forwards after a switch is a keyframe. It moves a subscriber down
+when that connection's link falls behind (the video written to it exceeds
+what QUIC delivered and did not lose by half again over half a second, or its
+round-trip time rises 60 ms over its ten-second minimum, either for 300 ms) or
+when one of its groups is reset because it fell behind: its rendition-0
+groups are cancelled and the next rendition-1 group goes to it, after a
+keyframe request or, for the first such viewer, the publisher starting its
+low encoder. After a quiet period (4 s, doubling after each failed attempt up
+to 16 s) the server probes up: it forwards the next rendition-0 group at a
+lower QUIC stream priority while rendition 1 keeps flowing, cancels it if the
+link falls behind, and otherwise moves the subscriber up at the following
+rendition-0 group at least a second later, cancelling its rendition-1 group.
+`SetPreferredQuality` caps the choice: a viewer whose height or frame-rate
+limit the full rendition exceeds stays on the low one. The per-subscriber
+two-group budget applies per rendition. A publisher should encode
+rendition 1 only while `SubscriberStats` reports a subscriber on it.
 
 ## 6. REST (HTTPS, `Authorization: Bearer <session_token>`)
 
@@ -540,6 +574,10 @@ every addition:
   the known bits, so an unknown grant enables nothing.
 - The server answers a command variant it does not know `INVALID`
   ("unsupported command") and keeps the connection.
+- Video renditions (T-074) degrade both ways. `SubscribeTrack.renditions`
+  is the one capability a viewer declares; without it the viewer only ever
+  receives rendition 0. A publisher on a server that predates renditions
+  gets no `SubscriberStats`, so it never encodes its low rendition.
 
 ### Role management compatibility
 

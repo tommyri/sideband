@@ -12,6 +12,10 @@ pub const MAX_AUDIO_PAYLOAD: usize = 1150;
 pub const TALK_START: u8 = 1;
 /// Last packet of a talk burst.
 pub const TALK_END: u8 = 2;
+/// Video stream header flag: the group belongs to rendition 1, the sharer's
+/// low rendition. Clear for rendition 0. Shares bit 0 with [`TALK_START`],
+/// which only audio datagrams use.
+pub const LOW_RENDITION: u8 = 1;
 
 /// Invalid or unsupported media header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -145,6 +149,12 @@ pub struct StreamHeader {
 }
 
 impl StreamHeader {
+    /// Rendition index this group carries: 1 when [`LOW_RENDITION`] is set.
+    #[must_use]
+    pub const fn rendition(self) -> u8 {
+        self.media.flags & LOW_RENDITION
+    }
+
     /// Appends a stream prefix; no video codec or subscription policy is involved.
     pub fn encode_into(self, output: &mut BytesMut) -> Result<(), MediaError> {
         self.media.encode(output, 1)?;
