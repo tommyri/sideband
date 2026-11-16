@@ -9,7 +9,13 @@ vi.mock('../../../lib/tauri', () => ({ invokeBridge: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 const env = {
   preferences: defaults,
-  devices: [{ id: 'mic', name: 'USB microphone', input: true, output: false }],
+  devices: [
+    { id: 'mic', name: 'USB microphone', input: true, output: false, inputChannels: 2 },
+    { id: 'desk', name: 'Desk interface', input: true, output: true, inputChannels: 8 },
+    { id: 'headset', name: 'Headset', input: true, output: false, inputChannels: 1 },
+    { id: 'virtual', name: 'Virtual cable', input: true, output: false, inputChannels: null },
+  ],
+  defaultInput: 'mic',
   microphone: 'Granted',
   apple: true,
   sonora: false,
@@ -68,6 +74,56 @@ describe('audio preferences', () => {
     fireEvent.change(select, { target: { value: '0' } })
     expect(select).toHaveDisplayValue('Average of all inputs')
   })
+  it('offers only the inputs the device has', async () => {
+    render(<AudioSettings close={() => {}} />)
+    const select = await screen.findByLabelText('Microphone input')
+    const offered = () =>
+      Array.from((select as HTMLSelectElement).options, (option) => option.textContent)
+    // The system default is the two-input USB microphone.
+    expect(offered()).toEqual(['Input 1', 'Input 2', 'Average of all inputs'])
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'mic' } })
+    expect(offered()).toEqual(['Input 1', 'Input 2', 'Average of all inputs'])
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'desk' } })
+    expect(offered()).toEqual([
+      ...Array.from({ length: 8 }, (_, i) => `Input ${i + 1}`),
+      'Average of all inputs',
+    ])
+    // Nothing to average on a mono device.
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'headset' } })
+    expect(offered()).toEqual(['Input 1'])
+    // A host that does not say keeps the full list.
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'virtual' } })
+    expect(offered()).toHaveLength(17)
+  })
+  it('shows input 1 for a saved input the device does not have, and keeps it', async () => {
+    vi.mocked(invokeBridge).mockImplementation(async (command) =>
+      command === 'audio_environment'
+        ? { ...env, preferences: { ...defaults, input: 'desk', inputChannel: 5 } }
+        : undefined,
+    )
+    render(<AudioSettings close={() => {}} />)
+    const select = await screen.findByLabelText('Microphone input')
+    expect(select).toHaveValue('5')
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'mic' } })
+    expect(select).toHaveValue('1')
+    expect(screen.getByText(/has no Input 5; it uses Input 1/)).toBeInTheDocument()
+    // Saved as chosen, so it comes back with the eight-input interface.
+    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+    await screen.findByText('Applied and saved.')
+    expect(invokeBridge).toHaveBeenCalledWith('save_audio', {
+      preferences: { ...defaults, input: 'mic', inputChannel: 5 },
+    })
+  })
+  it('falls back from Average on a mono device', async () => {
+    vi.mocked(invokeBridge).mockImplementation(async (command) =>
+      command === 'audio_environment'
+        ? { ...env, preferences: { ...defaults, input: 'headset', inputChannel: 0 } }
+        : undefined,
+    )
+    render(<AudioSettings close={() => {}} />)
+    expect(await screen.findByLabelText('Microphone input')).toHaveValue('1')
+    expect(screen.getByText(/one input; it uses Input 1/)).toBeInTheDocument()
+  })
   it('offers only supported models and applies native settings', async () => {
     render(<AudioSettings close={() => {}} />)
     await screen.findByRole('option', { name: 'USB microphone' })
@@ -101,6 +157,7 @@ describe('audio preferences', () => {
     fireEvent.click(screen.getByLabelText('Use Apple voice processing'))
     expect(screen.getByLabelText('Microphone')).toBeDisabled()
     expect(screen.getByLabelText('Microphone')).toHaveValue('')
+    expect(screen.getByLabelText('Microphone input')).toBeDisabled()
     expect(screen.getByLabelText('Noise suppression')).toBeDisabled()
   })
   it('focuses binding capture and records a keyboard gesture', async () => {

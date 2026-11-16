@@ -188,6 +188,7 @@ mod tests {
             name: raw.to_owned(),
             input: true,
             output: false,
+            input_channels: None,
         })
     }
 

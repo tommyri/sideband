@@ -169,6 +169,15 @@ unused inputs. Stereo capture takes inputs 1 and 2. VoiceProcessingIO
 chooses its own microphone and ignores the setting. Every callback moves
 whole frames between device and ring, so left and right cannot swap.
 
+The device list reports each capture device's input count
+(`DeviceInfo::input_channels`), and the picker offers only those inputs
+(T-118). The count is the most channels any of the device's input configs
+offers. A plug-in that converts any layout lists every count from 1 to 31
+or more (ALSA `plug` and `default`, PulseAudio); it counts as two inputs. A
+choice other than input 1 opens the device at that full count, even when
+the host also offers mono. A saved input the device lacks uses input 1, in
+the picker and in the stream, and the setting keeps it for the next device.
+
 The capture and playback streams expose `cpal`'s hardware timestamps
 (`StreamTrait::now` in 0.18). Mouth-to-ear measurement and, later, lining a
 screen share up with a voice both use that clock.

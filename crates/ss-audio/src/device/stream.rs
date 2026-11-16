@@ -21,7 +21,7 @@ use super::{
     convert::{
         CaptureLayout, Framer, note_signal, pull_playback, push_capture, push_unframed, push_whole,
     },
-    select::{GraphConfig, choose_format},
+    select::{GraphConfig, capture_channels, choose_format},
 };
 use crate::resample::{GRAPH_RATE, RateConverter};
 
@@ -184,15 +184,9 @@ impl CaptureStream {
         config: GraphConfig,
         device_id: DeviceId,
     ) -> Result<(Self, Consumer<f32>), Error> {
-        let chosen = choose_input(device, config)?;
+        let (chosen, layout) = choose_input(device, config)?;
         let direct = chosen.sample_rate == GRAPH_RATE;
         let graph_channels = usize::from(config.channels);
-        let device_channels = usize::from(chosen.channels);
-        let layout = CaptureLayout {
-            device: device_channels,
-            graph: graph_channels,
-            input: config.input.resolve(device_channels),
-        };
         let (graph_tx, graph_rx) = RingBuffer::new(ring_samples(GRAPH_RATE, graph_channels, RING));
         let counters = Arc::new(Counters::default());
         counters.resampler_active.store(!direct, Ordering::Relaxed);
@@ -529,12 +523,31 @@ struct Chosen {
     config: cpal::StreamConfig,
 }
 
-fn choose_input(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, Error> {
+fn choose_input(
+    device: &cpal::Device,
+    config: GraphConfig,
+) -> Result<(Chosen, CaptureLayout), Error> {
     let ranges = device
         .supported_input_configs()
         .map_err(Error::backend)?
         .collect::<Vec<_>>();
-    finish_choice(&ranges, config)
+    choose_capture(&ranges, config)
+}
+
+/// The capture format for a device offering `ranges`, and how its channels
+/// map onto the graph.
+fn choose_capture(
+    ranges: &[cpal::SupportedStreamConfigRange],
+    config: GraphConfig,
+) -> Result<(Chosen, CaptureLayout), Error> {
+    let chosen = finish_choice(ranges, capture_channels(ranges, config))?;
+    let device_channels = usize::from(chosen.channels);
+    let layout = CaptureLayout {
+        device: device_channels,
+        graph: usize::from(config.channels),
+        input: config.input.resolve(device_channels),
+    };
+    Ok((chosen, layout))
 }
 
 fn choose_output(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, Error> {
@@ -542,14 +555,14 @@ fn choose_output(device: &cpal::Device, config: GraphConfig) -> Result<Chosen, E
         .supported_output_configs()
         .map_err(Error::backend)?
         .collect::<Vec<_>>();
-    finish_choice(&ranges, config)
+    finish_choice(&ranges, config.channels)
 }
 
 fn finish_choice(
     ranges: &[cpal::SupportedStreamConfigRange],
-    config: GraphConfig,
+    channels: u16,
 ) -> Result<Chosen, Error> {
-    let chosen = choose_format(ranges, config.channels).ok_or(Error::Unsupported)?;
+    let chosen = choose_format(ranges, channels).ok_or(Error::Unsupported)?;
     Ok(Chosen {
         sample_rate: chosen.sample_rate,
         channels: chosen.channels,
@@ -809,7 +822,69 @@ fn samples_duration(samples: usize, channels: usize, rate: u32) -> Duration {
 mod tests {
     use std::time::Duration;
 
-    use super::{ring_samples, samples_duration};
+    use cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+    use rtrb::RingBuffer;
+
+    use super::{choose_capture, ring_samples, samples_duration};
+    use crate::device::{
+        CaptureChannel, Counters, GraphConfig,
+        convert::{Framer, push_capture},
+    };
+
+    fn range(channels: u16) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(
+            channels,
+            48_000,
+            48_000,
+            SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        )
+    }
+
+    /// The mono graph's samples for one callback of interleaved `input`.
+    fn capture(ranges: &[SupportedStreamConfigRange], input: CaptureChannel) -> (u16, Vec<f32>) {
+        let (chosen, layout) = choose_capture(ranges, GraphConfig::MONO.with_input(input)).unwrap();
+        // Two frames; input `n` carries `n` and then `-n`.
+        let buffer: Vec<f32> = [1.0f32, -1.0]
+            .iter()
+            .flat_map(|sign| (1..=chosen.channels).map(move |n| sign * f32::from(n)))
+            .collect();
+        let (mut producer, mut consumer) = RingBuffer::new(16);
+        let mut framer = Framer::new(2);
+        push_capture(
+            &buffer,
+            layout,
+            &mut producer,
+            &mut framer,
+            &Counters::default(),
+        );
+        let sent = std::iter::from_fn(|| consumer.pop().ok()).collect();
+        (chosen.channels, sent)
+    }
+
+    #[test]
+    fn input_three_opens_every_channel_and_sends_input_three() {
+        // A host (some ALSA `plug` devices) offering mono beside the full count.
+        let ranges = [range(1), range(4)];
+        assert_eq!(
+            capture(&ranges, CaptureChannel::Index(2)),
+            (4, vec![3.0, -3.0])
+        );
+        assert_eq!(
+            capture(&ranges, CaptureChannel::Average),
+            (4, vec![2.5, -2.5])
+        );
+        // Input 1 needs one channel, so mono stays the first choice.
+        assert_eq!(
+            capture(&ranges, CaptureChannel::FIRST),
+            (1, vec![1.0, -1.0])
+        );
+        // An input the device does not have is input 1.
+        assert_eq!(
+            capture(&ranges, CaptureChannel::Index(7)),
+            (1, vec![1.0, -1.0])
+        );
+    }
 
     #[test]
     fn ring_budget_is_shared_when_playback_resamples() {

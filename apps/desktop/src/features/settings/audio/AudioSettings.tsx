@@ -6,7 +6,9 @@ import { memberAction } from '../../voice/api'
 import {
   audioLevel,
   defaults,
+  effectiveInput,
   environment,
+  inputCount,
   onAudioLevel,
   save,
   stopAudioTest,
@@ -15,8 +17,51 @@ import {
   type AudioPreferences,
 } from './store'
 
-/** Inputs offered for the microphone; settings accept up to 64. */
-const INPUT_CHANNELS = Array.from({ length: 16 }, (_, i) => i + 1)
+/** Inputs offered when the host does not report a device's count; settings accept up to 64. */
+const UNKNOWN_INPUTS = 16
+function InputChannel({
+  env,
+  draft,
+  change,
+}: {
+  env: AudioEnvironment
+  draft: AudioPreferences
+  change: (value: number) => void
+}) {
+  const count = inputCount(env, draft.input)
+  const choice = draft.inputChannel
+  const shown = effectiveInput(choice, count)
+  return (
+    <>
+      <label>
+        Microphone input
+        <select
+          aria-label="Microphone input"
+          disabled={draft.apple}
+          value={shown}
+          onChange={(e) => change(Number(e.target.value))}
+        >
+          {Array.from({ length: count ?? UNKNOWN_INPUTS }, (_, i) => (
+            <option key={i + 1} value={i + 1}>
+              Input {i + 1}
+            </option>
+          ))}
+          {count === null && choice > UNKNOWN_INPUTS && (
+            <option value={choice}>Input {choice}</option>
+          )}
+          {(count === null || count > 1) && <option value={0}>Average of all inputs</option>}
+        </select>
+      </label>
+      {!draft.apple && shown !== choice && (
+        <p className="audio-hint">
+          {count === 1
+            ? 'This device has one input; it uses Input 1.'
+            : `This device has no Input ${choice}; it uses Input 1.`}
+        </p>
+      )}
+    </>
+  )
+}
 function message(error: unknown) {
   return error && typeof error === 'object' && 'message' in error
     ? String(error.message)
@@ -206,29 +251,15 @@ export function AudioSettings({ close }: { close: () => void }) {
                   </select>
                 </label>
               ))}
-              <label>
-                Microphone input
-                <select
-                  aria-label="Microphone input"
-                  disabled={draft.apple}
-                  value={draft.inputChannel}
-                  onChange={(e) => change('inputChannel', Number(e.target.value))}
-                >
-                  {INPUT_CHANNELS.map((n) => (
-                    <option key={n} value={n}>
-                      Input {n}
-                    </option>
-                  ))}
-                  {draft.inputChannel > INPUT_CHANNELS.length && (
-                    <option value={draft.inputChannel}>Input {draft.inputChannel}</option>
-                  )}
-                  <option value={0}>Average of all inputs</option>
-                </select>
-              </label>
+              <InputChannel
+                env={env}
+                draft={draft}
+                change={(value) => change('inputChannel', value)}
+              />
               <p className="audio-hint">
-                For interfaces with several inputs: pick the one your microphone is plugged into. A
-                device without that input uses input 1. Averaging lowers a single microphone’s level
-                and adds the noise of the unused inputs.
+                For interfaces with several inputs: pick the one your microphone is plugged into.
+                Averaging lowers a single microphone’s level and adds the noise of the unused
+                inputs.
               </p>
               <p>
                 Microphone permission: {env.microphone}. If denied, enable Sideband in your system’s

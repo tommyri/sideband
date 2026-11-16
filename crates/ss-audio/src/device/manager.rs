@@ -22,6 +22,7 @@ use rtrb::{Consumer, Producer};
 
 use super::{
     Error, GraphConfig, MicrophoneAccess, microphone_access,
+    select::input_count,
     stream::{CaptureStream, Counters, PlaybackStream},
     watch::{
         Defaults, DeviceEvent, DeviceId, DeviceInfo, Direction, diff_devices, is_low_quality_input,
@@ -92,28 +93,39 @@ impl DeviceManager {
         }
     }
 
-    /// Enumerate devices once without starting a hot-plug polling thread.
+    /// Enumerate devices once without starting a hot-plug polling thread,
+    /// with each capture device's [`DeviceInfo::input_channels`].
     #[must_use]
     pub fn available_devices() -> Vec<DeviceInfo> {
-        snapshot().0
+        snapshot(Listing::WithInputs).0
     }
 
-    /// Devices visible right now.
+    /// Devices visible right now, with each capture device's
+    /// [`DeviceInfo::input_channels`].
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
-        snapshot().0
+        snapshot(Listing::WithInputs).0
     }
 
     /// Current default input, if the host has one.
     #[must_use]
     pub fn default_input(&self) -> Option<DeviceId> {
-        snapshot().1.input
+        Self::system_default_input()
+    }
+
+    /// The host's default input, without starting a hot-plug polling thread.
+    #[must_use]
+    pub fn system_default_input() -> Option<DeviceId> {
+        cpal::default_host()
+            .default_input_device()
+            .and_then(|device| identity(&device).ok())
+            .map(|(id, _)| id)
     }
 
     /// Current default output, if the host has one.
     #[must_use]
     pub fn default_output(&self) -> Option<DeviceId> {
-        snapshot().1.output
+        snapshot(Listing::Inventory).1.output
     }
 
     /// Events queued since the last call.
@@ -311,7 +323,17 @@ fn identity(device: &cpal::Device) -> Result<(DeviceId, String), Error> {
     Ok((DeviceId::new(id), name))
 }
 
-fn snapshot() -> (Vec<DeviceInfo>, Defaults) {
+/// What a device snapshot reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Listing {
+    /// Ids, names and directions: what the hot-plug diff compares.
+    Inventory,
+    /// Also each capture device's input configs. ALSA opens every device to
+    /// list them, so the 500 ms poll does not.
+    WithInputs,
+}
+
+fn snapshot(listing: Listing) -> (Vec<DeviceInfo>, Defaults) {
     let mut devices = Vec::new();
     for host_id in cpal::available_hosts() {
         let Ok(host) = cpal::host_from_id(host_id) else {
@@ -324,19 +346,23 @@ fn snapshot() -> (Vec<DeviceInfo>, Defaults) {
             let Ok((id, name)) = identity(&device) else {
                 continue;
             };
+            let input = device.supports_input();
+            let input_channels = if input && listing == Listing::WithInputs {
+                input_channels(&device)
+            } else {
+                None
+            };
             devices.push(DeviceInfo {
                 id,
                 name,
-                input: device.supports_input(),
+                input,
                 output: device.supports_output(),
+                input_channels,
             });
         }
     }
     let host = cpal::default_host();
-    let input = host
-        .default_input_device()
-        .and_then(|device| identity(&device).ok())
-        .map(|(id, _)| id);
+    let input = DeviceManager::system_default_input();
     let output = host
         .default_output_device()
         .and_then(|device| identity(&device).ok())
@@ -344,14 +370,19 @@ fn snapshot() -> (Vec<DeviceInfo>, Defaults) {
     (devices, Defaults { input, output })
 }
 
+fn input_channels(device: &cpal::Device) -> Option<u16> {
+    let ranges = device.supported_input_configs().ok()?.collect::<Vec<_>>();
+    input_count(&ranges)
+}
+
 fn poll_loop(stop: &AtomicBool, active: &Mutex<Active>, tx: &SyncSender<DeviceEvent>) {
-    let (mut previous, mut previous_defaults) = snapshot();
+    let (mut previous, mut previous_defaults) = snapshot(Listing::Inventory);
     while !stop.load(Ordering::Acquire) {
         thread::sleep(POLL_INTERVAL);
         if stop.load(Ordering::Acquire) {
             break;
         }
-        let (current, defaults) = snapshot();
+        let (current, defaults) = snapshot(Listing::Inventory);
         let mut guard = active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

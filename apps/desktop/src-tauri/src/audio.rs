@@ -2,7 +2,7 @@
 use crate::{state::AppState, types::ApiError};
 use serde::{Deserialize, Serialize};
 use ss_audio::{
-    device::{CaptureChannel, DeviceManager, GraphConfig},
+    device::{CaptureChannel, DeviceInfo, DeviceManager, GraphConfig},
     processing::{Backend, NoiseSuppression, ProcessingConfig, SuppressionLevel},
     vad,
 };
@@ -171,15 +171,43 @@ pub fn load(app: &tauri::AppHandle) -> Result<AudioPreferences, ApiError> {
         .map_err(error)
         .map(Option::unwrap_or_default)
 }
-#[derive(Serialize)]
+/// One device in the Audio settings pickers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+    pub input: bool,
+    pub output: bool,
+    /// Inputs the "Microphone input" select offers. `null` when the host
+    /// did not say (the select then offers inputs 1–16).
+    pub input_channels: Option<u16>,
+}
+impl From<DeviceInfo> for AudioDevice {
+    fn from(device: DeviceInfo) -> Self {
+        Self {
+            id: device.id.as_str().to_owned(),
+            name: device.name,
+            input: device.input,
+            output: device.output,
+            input_channels: device.input_channels,
+        }
+    }
+}
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/generated/")]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent flags serialized for the webview"
 )]
 pub struct AudioEnvironment {
     preferences: AudioPreferences,
-    devices: Vec<serde_json::Value>,
+    devices: Vec<AudioDevice>,
+    /// The system default input, whose inputs the select offers while the
+    /// microphone is "System default".
+    default_input: Option<String>,
     microphone: String,
     apple: bool,
     sonora: bool,
@@ -195,13 +223,23 @@ pub async fn audio_environment(app: tauri::AppHandle) -> Result<AudioEnvironment
         let caps = ss_input::Backend::detect().capabilities();
         Ok(AudioEnvironment {
             preferences: load(&app)?,
-            devices: DeviceManager::available_devices().into_iter().map(|d| serde_json::json!({"id":d.id.as_str(),"name":d.name,"input":d.input,"output":d.output})).collect(),
-            microphone: format!("{:?}", ss_audio::device::microphone_access()), apple: cfg!(target_os="macos"),
-            sonora: Backend::Sonora.is_available(), rnnoise: Backend::RnNoise.is_available(),
-            mouse: caps.mouse_buttons, system_binding: caps.binding_set_by_system,
-            permission: caps.needs_permission.map(|p| p.to_string()), limitations: caps.limitations,
+            devices: DeviceManager::available_devices()
+                .into_iter()
+                .map(AudioDevice::from)
+                .collect(),
+            default_input: DeviceManager::system_default_input().map(|id| id.as_str().to_owned()),
+            microphone: format!("{:?}", ss_audio::device::microphone_access()),
+            apple: cfg!(target_os = "macos"),
+            sonora: Backend::Sonora.is_available(),
+            rnnoise: Backend::RnNoise.is_available(),
+            mouse: caps.mouse_buttons,
+            system_binding: caps.binding_set_by_system,
+            permission: caps.needs_permission.map(|p| p.to_string()),
+            limitations: caps.limitations,
         })
-    }).await.map_err(error)?
+    })
+    .await
+    .map_err(error)?
 }
 #[tauri::command]
 pub async fn save_audio(
@@ -417,6 +455,26 @@ mod tests {
         assert_eq!(p.config().unwrap().input_channel, CaptureChannel::Average);
         p.input_channel = 65;
         assert!(p.config().is_err());
+    }
+    #[test]
+    fn the_device_list_carries_each_input_count() {
+        let device = AudioDevice::from(DeviceInfo {
+            id: ss_audio::device::DeviceId::new("coreaudio:interface"),
+            name: "Interface".into(),
+            input: true,
+            output: true,
+            input_channels: Some(8),
+        });
+        assert_eq!(
+            serde_json::to_value(&device).unwrap(),
+            serde_json::json!({
+                "id": "coreaudio:interface",
+                "name": "Interface",
+                "input": true,
+                "output": true,
+                "inputChannels": 8,
+            })
+        );
     }
     #[test]
     fn invalid_ranges_and_unknown_versions_fail_before_devices_open() {

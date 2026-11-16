@@ -48,6 +48,16 @@ pub struct DeviceInfo {
     pub input: bool,
     /// The device can play.
     pub output: bool,
+    /// How many inputs a capture stream on this device can take. The most
+    /// channels any of its input configs offers, or two for a plug-in that
+    /// converts any layout (ALSA `plug`, `default`).
+    ///
+    /// Only the device list ([`super::DeviceManager::devices`],
+    /// [`super::DeviceManager::available_devices`]) reads it. `None` when the
+    /// device cannot capture, the host lists no input config (an ALSA device
+    /// another program holds), or the entry came from the hot-plug poll,
+    /// which does not query configs every 500 ms.
+    pub input_channels: Option<u16>,
 }
 
 /// Stored microphone permission for this process. See [`super::microphone_access`].
@@ -216,6 +226,7 @@ mod tests {
             name: id.to_owned(),
             input: true,
             output: false,
+            input_channels: Some(1),
         }
     }
 
