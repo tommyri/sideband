@@ -60,12 +60,12 @@ before it is merged:
    prototype lives outside the workspace; Windows and Linux measurements
    need those machines)
 
-Not agent work: T-106 (maintainer decisions) and T-100 (backend decision).
+Not agent work: T-106 (maintainer decisions).
 T-067 needs a second reviewer and its 1 h fuzz runs need an otherwise idle
 machine. T-011, T-012, T-018, T-019, T-069 and T-087 need Windows, Linux,
 a VPS or hands-on listening.
 
-T-100 blocks only T-074.
+T-100 kept the QUIC backend on 2026-11-16, which unblocks T-074.
 
 ## Phase 0 — Foundations
 
@@ -171,7 +171,7 @@ T-100 blocks only T-074.
 | [T-071](T-071-screen-capture-encode.md) | Client: capture + hardware encode | L | T-070, T-041 | awaiting-acceptance |
 | [T-072](T-072-stream-viewer.md) | Client: viewer (decode + wgpu window) | M | T-070, T-071 | awaiting-acceptance |
 | [T-073](T-073-screen-share-ui.md) | Screen share UI | S | T-071, T-072, T-044 | awaiting-acceptance |
-| [T-074](T-074-adaptive-bitrate.md) | Adaptive bitrate | M | T-070, T-071, T-072, T-100 | todo |
+| [T-074](T-074-adaptive-bitrate.md) | Adaptive bitrate | L | T-070, T-071, T-072, T-100 | todo |
 
 ## Phase 6 — Bots
 
@@ -209,7 +209,7 @@ T-100 the open screen-share decision. Phase is in each task file.
 | [T-097](T-097-release-pipeline-gating.md) | Gate releases: main only, tested commit, isolated signing, provenance | M | T-057, T-034 | awaiting-acceptance |
 | [T-098](T-098-deploy-ci-hygiene.md) | Deploy and CI hygiene: fail-closed checks, compose/NGINX limits, backups | M | T-034, T-001 | awaiting-acceptance |
 | [T-099](T-099-plan-doc-reconciliation.md) | Reconcile the plan with the code; acceptance status page | S | — | awaiting-acceptance |
-| [T-100](T-100-screen-share-backend-decision.md) | Decide the screen-share backend before adaptive bitrate | M | T-070, T-071, T-072 | in-progress |
+| [T-100](T-100-screen-share-backend-decision.md) | Decide the screen-share backend before adaptive bitrate | M | T-070, T-071, T-072 | done |
 | [T-101](T-101-router-tolerance-parser-fuzzing.md) | Router tolerates what the protocol allows; fuzz the real parsers | M | T-004, T-061 | done |
 
 Opened by T-095 for the shell business logic and download checks it did not

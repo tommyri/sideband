@@ -80,6 +80,9 @@ single server, and the crates were at 0.12.x with breaking changes between
 minor versions when this was decided. Voice has to stay on a small surface
 we control: `quinn` plus libopus.
 
+LiveKit was measured against this path for screen sharing (T-100,
+2026-11-16) and not adopted; see the screen-sharing rules below.
+
 ## D4 — The server forwards opaque media
 
 The server looks at the datagram header (version, kind, flags, track id,
@@ -280,7 +283,8 @@ Answers to the questions the review waves left open (T-106):
 - Bot tokens do not expire. Resetting or revoking is the only way to end
   one (T-080).
 - Screen sharing: the LiveKit experiment in T-100 runs before the backend
-  is chosen. Until then the rules below stand.
+  is chosen. Until then the rules below stand. Decided on 2026-11-16: see
+  rule 7 below.
 
 ## Screen sharing must fit the transport we have
 
@@ -300,6 +304,19 @@ These rules exist so phase 5 does not require a new voice protocol:
    a stream with the speaker's voice.
 6. The decoded picture is drawn in a native window. The webview is not the
    video surface. WebCodecs inside the webview is unreliable on Linux.
+7. Screen sharing stays on this transport. LiveKit was measured and not
+   adopted (T-100, 2026-11-16).
+   - On macOS it added 30–90 ms of latency and lost two thirds of the frame
+     rate on full-motion content with simulcast. It took over 30 s to bring
+     a recovered viewer back to full quality.
+   - Its costs: a second service with TURN, libwebrtc with statically linked
+     LGPL ffmpeg, tokens that self-hosted LiveKit does not revoke, and no
+     shared clock with voice (rule 5).
+   - A sharer may publish a second, lower rendition. The server picks one
+     rendition per subscriber, switching only at a keyframe group, and
+     never transcodes (D4). T-074 builds it.
+   - Reopen the question if Windows game capture fails 1080p60 through
+     moq-video while libwebrtc holds it.
 
 The first video codec is H.264, hardware-encoded, no B-frames, low-latency
 rate control. AV1 and HEVC can be added later as other `Codec.name` values

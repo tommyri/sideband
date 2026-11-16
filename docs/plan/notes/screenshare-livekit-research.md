@@ -8,7 +8,8 @@ Other upstream links describe the development branches/documentation inspected o
 the research date, not guaranteed features of every released Element X version.
 No upstream media pipeline was built or benchmarked during this investigation.
 The macOS half of the decision experiment ran on 2026-11-16 (T-100); see
-[Results](#results-2026-11-16-macos).
+[Results](#results-2026-11-16-macos). Decision, 2026-11-16: keep the QUIC
+backend; see [Decision](#decision-2026-11-16).
 
 ## Recommendation
 
@@ -382,6 +383,17 @@ every ban, kick, move and permission change.
 | Channel move | Server-side | Not implemented when self-hosted; reconnect with a new token |
 | Removal | Enforced by the server | Old token rejoins; Sideband must enforce it |
 | A/V sync with QUIC voice | Shared 48 kHz clock | No shared clock |
+
+### Decision (2026-11-16)
+
+The maintainer kept the QUIC backend. LiveKit is not adopted. On macOS its
+only gain for a slow viewer came from simulcast, and that gain can be had
+here with a second rendition. Its costs are certain: a second service,
+libwebrtc and its licences, tokens Sideband would have to police, and no
+shared clock with voice. T-074 now budgets the second rendition. The
+Windows and Linux runs below are not needed for this decision. Run the
+Windows game-capture row with T-071's Windows acceptance; if moq-video fails
+1080p60 there while libwebrtc holds it, reopen the question.
 
 ### Still to measure: Windows and Linux
 

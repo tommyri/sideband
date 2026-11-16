@@ -1,6 +1,6 @@
 # T-100 — Decide the screen-share backend before adaptive bitrate
 
-Status: in-progress
+Status: done
 Phase: 5
 Size: M
 Depends on: T-070, T-071, T-072
@@ -139,3 +139,18 @@ decision stays with you.
 
 Remaining before `done`: the maintainer's decision, the Windows and Linux
 measurements if wanted, then T-074's rewrite and the D3 update.
+
+2026-11-16, decision: the maintainer kept the QUIC backend. LiveKit is not
+adopted and no migration tasks are opened. The Windows and Linux runs were
+not required for the decision.
+- T-074 is rewritten around a second, low rendition chosen per subscriber
+  by the relay, plus sender-wide bitrate adaptation.
+- `docs/design/decisions.md` records the decision under D3 and the
+  screen-sharing rules.
+- The research note's results end with the decision.
+- The spike stays in `experiments/livekit-spike/` as T-074's measurement
+  harness and for a possible re-run.
+- Reopen the question if the Windows game-capture run (do it with T-071's
+  Windows acceptance) shows moq-video failing 1080p60 where libwebrtc holds
+  it. Also reopen it if T-074's second rendition grows larger than the
+  LiveKit costs above.
