@@ -5763,7 +5763,7 @@ dependencies = [
 
 [[package]]
 name = "ss-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audio_thread_priority",
  "cpal",
@@ -5780,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "ss-client-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -5804,7 +5804,7 @@ dependencies = [
 
 [[package]]
 name = "ss-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
@@ -5815,7 +5815,7 @@ dependencies = [
 
 [[package]]
 name = "ss-input"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ashpd",
  "evdev",
@@ -5836,7 +5836,7 @@ dependencies = [
 
 [[package]]
 name = "ss-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5861,7 +5861,7 @@ dependencies = [
 
 [[package]]
 name = "ss-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "pbjson",
@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "ss-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5927,7 +5927,7 @@ dependencies = [
 
 [[package]]
 name = "ss-video"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "hang",
