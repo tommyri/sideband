@@ -2168,6 +2168,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbjson"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8edd1efdd8ab23ba9cb9ace3d9987a72663d5d7c9f74fa00b51d6213645cf6c"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+]
+
+[[package]]
+name = "pbjson-build"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ed4d5c6ae95e08ac768883c8401cf0e8deb4e6e1d6a4e1fd3d2ec4f0ec63200"
+dependencies = [
+ "heck",
+ "itertools",
+ "prost",
+ "prost-types",
+]
+
+[[package]]
 name = "pear"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2502,7 +2524,7 @@ dependencies = [
  "cfg_aliases",
  "pin-project-lite",
  "quinn-proto",
- "quinn-udp",
+ "quinn-udp 0.5.16",
  "rustc-hash",
  "rustls",
  "socket2",
@@ -2545,6 +2567,18 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47091c86514c2e11452cb228dee77037334b99d92a23e4c69aa5982261f39247"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "socket2",
  "windows-sys 0.61.2",
 ]
 
@@ -3402,7 +3436,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "prost",
  "quinn",
- "quinn-udp",
+ "quinn-udp 0.6.3",
  "rcgen 0.14.10",
  "rustls",
  "serde",
@@ -3423,9 +3457,12 @@ name = "ss-proto"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "pbjson",
+ "pbjson-build",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "serde",
  "ss-core",
  "thiserror",
  "tokio",
