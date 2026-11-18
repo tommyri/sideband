@@ -3,7 +3,8 @@
 # native runners for each architecture.
 
 # Base images are pinned by digest; Dependabot (docker, /deploy) proposes updates.
-FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
+# Trixie, because bookworm's musl 1.2.3 gives a static-pie binary an ELF interpreter.
+FROM rust:1.99.1-trixie@sha256:8a4e90c7946b74626488b1446f712c0fe0ed1a596cbd3d871684bc9c5433ae07 AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends musl-tools binutils ca-certificates \
