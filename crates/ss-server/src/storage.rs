@@ -774,6 +774,7 @@ async fn load_key(data_dir: &Path) -> Result<[u8; 32], std::io::Error> {
     let mut key = [0; 32];
     getrandom::fill(&mut key).map_err(|_| std::io::Error::other("os random failed"))?;
     write_private(&path, &key).await?;
+    #[cfg(unix)]
     restrict_key(&path).await?;
     Ok(key)
 }
@@ -791,17 +792,11 @@ async fn write_private(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> 
     file.sync_all().await
 }
 
+/// Tightens a key file that already existed with wider permissions.
+#[cfg(unix)]
 async fn restrict_key(path: &Path) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
 }
 
 #[cfg(test)]
