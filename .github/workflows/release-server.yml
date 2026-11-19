@@ -209,7 +209,8 @@ jobs:
           docker buildx create --name sideband-release --driver docker-container \
             --driver-opt "image=$buildkit"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          trap 'docker logout ghcr.io; docker buildx rm sideband-release' EXIT
+          # The login stays for Attest image; the last step of this job logs out.
+          trap 'docker buildx rm sideband-release' EXIT
           docker buildx build --builder sideband-release --platform linux/amd64,linux/arm64 \
             -f deploy/Dockerfile.release --provenance=false --sbom=false \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
@@ -262,3 +263,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
               --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           fi
+      - name: Remove the registry login
+        if: always()
+        run: docker logout ghcr.io
