@@ -780,9 +780,10 @@ mod tests {
         time::timeout,
     };
 
+    #[cfg(unix)]
+    use super::private_dir;
     use super::{
-        ACME_TLS_ALPN, cached_fingerprint, cert_file_name, challenge_config, private_dir,
-        serve_challenges,
+        ACME_TLS_ALPN, cached_fingerprint, cert_file_name, challenge_config, serve_challenges,
     };
     use crate::{
         config::{ACME_DIRECTORY, AcmeChallenge, TlsMode},
