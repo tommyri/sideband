@@ -4,14 +4,10 @@
     reason = "D-Bus interface methods require instance receivers and owned wire arguments"
 )]
 use super::*;
-use ashpd::zbus::{
-    self, Connection,
-    message::Header,
-    zvariant::{OwnedObjectPath, OwnedValue, Value},
-};
+use ashpd::zbus::{self, Connection, OwnedObjectPath, OwnedVariant, Variant, message::Header};
 use std::{collections::HashMap, sync::atomic::AtomicUsize, time::Instant};
 
-type Dict = HashMap<String, OwnedValue>;
+type Dict = HashMap<String, OwnedVariant>;
 type Shortcuts = Vec<(String, Dict)>;
 
 #[derive(Default)]
@@ -31,8 +27,8 @@ impl MockSession {
     }
 }
 
-fn owned(value: &str) -> OwnedValue {
-    Value::from(value).try_into().unwrap()
+fn owned(value: &str) -> OwnedVariant {
+    Variant::from(value).try_into().unwrap()
 }
 
 fn shortcuts() -> Shortcuts {
@@ -133,7 +129,7 @@ impl Desktop {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<OwnedObjectPath> {
         assert_ne!(session.as_str(), "");
-        let value = Value::from(shortcuts());
+        let value = Variant::from(shortcuts());
         response(
             connection,
             &header,
@@ -187,11 +183,8 @@ fn bind_activate_deactivate_session_loss_and_rebind() {
     let state = Arc::new(State::default());
     let connection = runtime.block_on(async {
         zbus::connection::Builder::session()
-            .unwrap()
             .name("org.freedesktop.portal.Desktop")
-            .unwrap()
             .serve_at("/org/freedesktop/portal/desktop", Desktop(state.clone()))
-            .unwrap()
             .build()
             .await
             .unwrap()
