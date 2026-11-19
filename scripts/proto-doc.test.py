@@ -2,6 +2,7 @@
 """Tests for proto-doc.py. Run: python3 scripts/proto-doc.test.py"""
 
 import importlib.util
+import sys
 import io
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -13,6 +14,7 @@ _spec = importlib.util.spec_from_file_location(
     "proto_doc", Path(__file__).resolve().parent / "proto-doc.py"
 )
 doc = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = doc  # dataclasses looks the module up here
 _spec.loader.exec_module(doc)
 
 SOURCE = textwrap.dedent("""\

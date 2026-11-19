@@ -2,6 +2,7 @@
 """Tests for check-doc-links.py. Run: python3 scripts/check-doc-links.test.py"""
 
 import importlib.util
+import sys
 import io
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -13,6 +14,7 @@ _spec = importlib.util.spec_from_file_location(
     "check_doc_links", Path(__file__).resolve().parent / "check-doc-links.py"
 )
 links = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = links  # dataclasses looks the module up here
 _spec.loader.exec_module(links)
 
 

@@ -11,6 +11,9 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
+  # rustls-acme 0.15 still depends on chrono. Maintenance notice, not a vulnerability;
+  # remove when rustls-acme moves off it.
+  { id = "RUSTSEC-2026-0543", reason = "chrono via rustls-acme; maintenance notice with no safe upgrade" },
   # Loom, pulled by media/metrics dependencies, still needs this archived helper.
   # Maintenance notice only; remove when upstream replaces it.
   { id = "RUSTSEC-2026-0441", reason = "transitive loom dependency; maintenance-only with no safe upgrade" },

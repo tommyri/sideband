@@ -10,5 +10,13 @@ case "${1:-}" in
   *) echo 'Usage: install-linux-deps.sh desktop|audio|input|musl' >&2; exit 2 ;;
 esac
 options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=60)
-timeout --signal=TERM --kill-after=15s 3m sudo env DEBIAN_FRONTEND=noninteractive apt-get "${options[@]}" update
-timeout --signal=TERM --kill-after=15s 6m sudo env DEBIAN_FRONTEND=noninteractive apt-get "${options[@]}" install -y --no-install-recommends "${packages[@]}"
+run_apt() { timeout --signal=TERM --kill-after=15s "$1" sudo env DEBIAN_FRONTEND=noninteractive apt-get "${options[@]}" "${@:2}"; }
+fetch() { run_apt 75s update && run_apt "$1" install -y --no-install-recommends "${packages[@]}"; }
+if ! fetch 2m; then
+  # Hosted runners list a regional mirror first (priority:1), and it can stall.
+  # Drop it so apt falls back to archive.ubuntu.com. A healthy install takes under 40 s.
+  echo '::warning::apt stalled on the primary mirror; retrying on archive.ubuntu.com'
+  if [ -f /etc/apt/apt-mirrors.txt ]; then sudo sed -i '/priority:1$/d' /etc/apt/apt-mirrors.txt; fi
+  sudo dpkg --configure -a
+  fetch 4m
+fi

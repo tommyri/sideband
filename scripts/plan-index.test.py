@@ -2,6 +2,7 @@
 """Tests for plan-index.py. Run: python3 scripts/plan-index.test.py"""
 
 import importlib.util
+import sys
 from pathlib import Path
 import tempfile
 import textwrap
@@ -11,6 +12,7 @@ _spec = importlib.util.spec_from_file_location(
     "plan_index", Path(__file__).resolve().parent / "plan-index.py"
 )
 plan = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = plan  # dataclasses looks the module up here
 _spec.loader.exec_module(plan)
 
 INDEX = textwrap.dedent("""\

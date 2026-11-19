@@ -23,6 +23,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Debug info is most of each test binary; line tables keep panic locations.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   frontend:
@@ -66,9 +68,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo +nightly fmt --all -- --check
       - name: Workspace lints
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --keep-going --workspace --all-targets -- -D warnings
       - name: Workspace tests (includes desktop)
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-fail-fast
       - name: Linux input integration tests
         if: runner.os == 'Linux'
         run: |
