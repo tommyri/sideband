@@ -8,7 +8,7 @@ import { createHash, createPublicKey, verify } from 'node:crypto'
 import { appendFile, copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseUpdaterPublicKey, validateVersion, updateConfiguration } from './build-test-desktop.mjs'
+import { artifactDirectories, parseUpdaterPublicKey, validateVersion, updateConfiguration } from './build-test-desktop.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const feedPattern = /^(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu)\.json$/
@@ -77,9 +77,7 @@ export async function signUpdaters({ input, version, env, cli, run = runChecked 
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
   }
   let signed = 0
-  for (const entry of await readdir(input, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const directory = path.join(input, entry.name)
+  for (const directory of await artifactDirectories(input)) {
     const identity = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
     if (!identity.updater) continue
     if (identity.version !== version) throw new Error('Artifact version does not match this release')
@@ -105,9 +103,7 @@ export async function prepareAssets(input, output, version, commit, repo, notes 
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected a full source commit')
   await mkdir(output, { recursive: true })
   const files = [], seen = new Set()
-  for (const entry of await readdir(input, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const directory = path.join(input, entry.name)
+  for (const directory of await artifactDirectories(input)) {
     const identity = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8'))
     const platform = Object.values(platforms).find((item) => item.target === identity.target)
     if (!platform || seen.has(identity.target) || identity.version !== version || identity.commit !== commit ||

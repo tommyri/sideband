@@ -462,9 +462,9 @@ function onlyArtifact(directory, artifacts, suffix, required = true) {
 // Phase 1 of the signing job, before any secret is on the runner: list and check the
 // app ZIP, compare with zipinfo, extract it into a fresh private directory, then check
 // the tree and compare it with the listing. Nothing here signs or needs a credential.
-// The downloaded build output: actions/download-artifact puts one matching artifact
+// Downloaded build outputs: actions/download-artifact puts a lone matching artifact
 // straight into INPUT and several into one subdirectory each.
-export async function macosArtifactDirectories(input) {
+export async function artifactDirectories(input) {
   const entries = await readdir(input, { withFileTypes: true })
   if (entries.some((entry) => entry.isFile() && entry.name === 'build-info.json')) return [input]
   return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(input, entry.name))
@@ -871,7 +871,7 @@ async function main() {
     if (!input || !state) throw new Error('Usage: node scripts/build-test-desktop.mjs unpack-macos INPUT_DIRECTORY STATE_FILE')
     assertNoSigningSecrets(process.env)
     const unpacked = []
-    for (const directory of await macosArtifactDirectories(input)) unpacked.push(await unpackMacos(directory, { scratch }))
+    for (const directory of await artifactDirectories(input)) unpacked.push(await unpackMacos(directory, { scratch }))
     if (!unpacked.length) throw new Error('No macOS artifacts to unpack')
     await writeFile(state, JSON.stringify(unpacked, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
     for (const item of unpacked) console.log(`Checked and unpacked ${item.appName} from ${path.basename(item.directory)}`)

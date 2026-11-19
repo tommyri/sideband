@@ -44,7 +44,7 @@ docker compose logs
 ```
 
 From a repository checkout, add `-f deploy/docker-compose.yml` to these commands.
-The default image version is `0.0.1`. Override it with `SIDEBAND_IMAGE` in a
+The default image version is `0.1.3`. Override it with `SIDEBAND_IMAGE` in a
 Compose `.env` file, for example `SIDEBAND_IMAGE=ghcr.io/tommyri/sideband-server:latest`.
 A published version is replaced only by a deliberately forced rerun, and `latest`
 never moves to an older version. The workflow also publishes `sha-<full-commit>`

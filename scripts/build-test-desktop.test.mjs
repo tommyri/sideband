@@ -10,7 +10,7 @@ import {
   assertNoBundleHooks, assertNoSigningSecrets, buildEnvironment, bundleWindows, checkAppArchive, checkExtractedApp, checkUnbundledWindows,
   checkWindowsExecutable, compareTree, createUpdaterArchive, installTauriCli, listZip, mainBinaryName, makeIdentity,
   notarizationKey, parseOptions, parseUpdaterPublicKey, prepareWindows, readTar, signMacos, signUnpackedMacos,
-  tauriCliPackages, macosArtifactDirectories, unpackMacos, updateConfiguration, updaterPayloads, verifyTauriCli, windowsSigningConfig,
+  tauriCliPackages, artifactDirectories, unpackMacos, updateConfiguration, updaterPayloads, verifyTauriCli, windowsSigningConfig,
   windowsTarget, writeManifest, writeUnbundledManifest,
 } from './build-test-desktop.mjs'
 
@@ -361,12 +361,12 @@ test('macOS signing re-signs the app, rebuilds every package and notarizes with 
 
 test('macOS build output is found whether download-artifact nested it or not', async () => {
   const single = await macosArtifacts()
-  assert.deepEqual(await macosArtifactDirectories(single), [single])
+  assert.deepEqual(await artifactDirectories(single), [single])
   const several = await mkdtemp(path.join(tmpdir(), 'sideband-several-test-'))
   await mkdir(path.join(several, 'sideband-test-aarch64-apple-darwin-abc'))
   await mkdir(path.join(several, 'sideband-test-x86_64-apple-darwin-abc'))
   await writeFile(path.join(several, 'stray.txt'), 'x')
-  assert.deepEqual((await macosArtifactDirectories(several)).map((dir) => path.basename(dir)).sort(),
+  assert.deepEqual((await artifactDirectories(several)).map((dir) => path.basename(dir)).sort(),
     ['sideband-test-aarch64-apple-darwin-abc', 'sideband-test-x86_64-apple-darwin-abc'])
 })
 

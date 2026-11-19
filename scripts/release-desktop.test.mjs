@@ -87,6 +87,21 @@ test('selection schedules only requested operating systems and rejects empty sel
   for (const value of ['v0.0.1', '0.01.1', '1.2', '../1.0.0', '1.2.65536', '256.0.0', '1.256.0', '1.2.3;echo bad', undefined]) assert.throws(() => validateVersion(value))
 })
 
+test('a one-platform release finds its build output without a subdirectory', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sideband-release-single-'))
+  const input = path.join(root, 'input'), output = path.join(root, 'output')
+  await mkdir(input, { recursive: true })
+  const bytes = Buffer.from('fixture installer'), sha256 = createHash('sha256').update(bytes).digest('hex')
+  const identity = { version: '0.0.1', commit, target: 'x86_64-pc-windows-msvc', dirty: false, profile: 'release', origin: 'github-actions',
+    artifacts: ['installer.exe', 'installer.msi'].map(file => ({ file, bytes: bytes.length, sha256 })) }
+  await writeFile(path.join(input, 'installer.exe'), bytes)
+  await writeFile(path.join(input, 'installer.msi'), bytes)
+  await writeFile(path.join(input, 'INSTALL.md'), 'Instructions')
+  await writeFile(path.join(input, 'build-info.json'), JSON.stringify(identity))
+  const files = await prepareAssets(input, output, '0.0.1', commit)
+  assert(files.some(file => file.endsWith('Sideband-0.0.1-windows-x64-setup.exe')))
+})
+
 test('assets have stable platform-specific names and reject corrupt or mismatched builds', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'sideband-release-test-'))
   const input = path.join(root, 'input'), pkg = path.join(input, 'windows'), output = path.join(root, 'output')
