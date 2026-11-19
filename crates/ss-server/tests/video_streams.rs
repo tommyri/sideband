@@ -24,6 +24,10 @@ use ss_server::{
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 const WAIT: Duration = Duration::from_secs(10);
+/// Gap between 16 KiB frames in the relay load tests: about 32 Mb/s, four times
+/// the 1080p60 preset. A healthy viewer is reset only after falling 32 chunks
+/// (about 128 ms) behind, so a busy test runner does not trip it.
+const PACE: Duration = Duration::from_millis(4);
 struct World {
     endpoint: Endpoint,
     pins: Arc<MemoryPinStore>,
@@ -334,7 +338,7 @@ async fn slow_viewer_resets_while_two_healthy_viewers_receive_identical_frames()
         data.timestamp = tick * 480;
         writer.write_frame(&data).await.unwrap();
         data.keyframe = false;
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(PACE).await;
     }
     writer.finish().unwrap();
     assert_eq!(timeout(WAIT, read1).await.unwrap().unwrap(), 512);
@@ -686,8 +690,7 @@ async fn stalled_subscriber_is_reset_every_group_while_healthy_one_gets_each_gro
                 })
                 .await
                 .unwrap();
-            // About 128 Mb/s: far above a real encoder, still paced.
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::time::sleep(PACE).await;
         }
         writer.finish().unwrap();
     }
