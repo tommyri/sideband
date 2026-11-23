@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 
@@ -131,4 +131,42 @@ it('leaves the position to the virtualizer when the row being read is kept', asy
   await screen.findByText('message 04')
   expect(virtual.scrollToEnd).not.toHaveBeenCalled()
   expect(virtual.scrollToIndex).not.toHaveBeenCalled()
+})
+
+it('keeps Reply direct and returns focus to the originating row after Escape or copying', async () => {
+  messages = [
+    { ...run('01')[0]!, createdAt: Date.now() },
+    { ...run('02')[0]!, authorId: 'someone-else' },
+  ]
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  try {
+    render(<Chat server="s" channel="c" name="general" connected />)
+    const [own, other] = await screen.findAllByRole('listitem')
+    expect(
+      within(own!)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label') ?? button.textContent),
+    ).toEqual(['Reply', 'More actions'])
+    const trigger = within(own!).getByRole('button', { name: 'More actions' })
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(own).toHaveFocus()
+    fireEvent.click(within(other!).getByRole('button', { name: 'More actions' }))
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy ID' }))
+    expect(writeText).toHaveBeenCalledWith('02')
+    expect(await screen.findByText('Message ID copied.')).toBeInTheDocument()
+    expect(other).toHaveFocus()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancel).toHaveFocus()
+    fireEvent.click(cancel)
+    await waitFor(() => expect(own).toHaveFocus())
+  } finally {
+    Reflect.deleteProperty(navigator, 'clipboard')
+  }
 })

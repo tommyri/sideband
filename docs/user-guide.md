@@ -57,7 +57,7 @@ rail.
 
 Click a voice channel to join it (or tick **Double-click voice channels to
 join** under **Interaction settings** to need a double-click). Before your first call, open
-**Audio settings** (on the server page, in the channel sidebar, or the gear
+**Audio settings** (on the server page, in the server menu, or via the gear
 in the call controls) and choose your devices and talking mode.
 
 - **Push-to-talk** (the default): hold **Hold to talk** with the mouse, or
@@ -68,8 +68,10 @@ in the call controls) and choose your devices and talking mode.
   activation threshold.
 - **Open microphone**: you transmit continuously while connected and unmuted.
 
-Mute and deafen apply in every mode. **Leave** leaves voice; **Disconnect**
-closes the connection to the server. The latency figure in the call controls
+Mute and deafen apply in every mode. **Leave voice** in the call dock ends
+the call and keeps you connected to the server. To disconnect, select the
+server name above the channel list and choose **Disconnect from server**.
+The latency figure in the call controls
 is network round-trip time, not the delay from mouth to ear.
 
 Click or right-click a member for per-person volume, **Mute for me**,
@@ -224,6 +226,8 @@ The desktop-by-desktop details are in
 | Up / Down, then Enter or Tab | Mention and emoji suggestions | Choose a suggestion |
 | Up / Down, Page Up / Page Down, Home / End | Message history | Move between messages |
 | Enter | A message in the history | Focus its actions |
+| Up / Down, Home / End | Server or message menu | Move between available actions |
+| Escape | Server or message menu | Return to the server menu button or the originating message |
 | Escape | Message history | Back to the message box |
 
 Global shortcuts (previous section) are yours to choose; the app sets none.
@@ -233,6 +237,10 @@ Global shortcuts (previous section) are yours to choose; the app sets none.
 Text channels and direct messages support Markdown, mentions, replies, edits,
 attachments and link previews. **Search messages** in the channel header
 searches text channels and your DMs; see [message search](message-search.md).
+
+Choose **Reply** below a message to respond. Open **More actions** (the
+three dots beside **Reply**) to copy its text, link, or ID. **Edit** and
+**Delete** appear there when available.
 
 The bell in the server rail opens **Notification settings**: **Do not
 disturb** (silences sounds and desktop notifications and shows you as Do not
@@ -249,10 +257,10 @@ updates itself.
 
 ## For administrators
 
-The buttons in the channel sidebar's header appear only when your roles allow
-them:
+Select the server name above the channel list to open its menu. Your roles
+determine which administrative actions appear.
 
-| Button | Needs | What you do there |
+| Menu action | Needs | What you do there |
 |---|---|---|
 | **Invites** | Create invites; Manage server to see and revoke everyone's | Create invites with a use limit and expiry; revoke them |
 | **Members & moderation** | Kick members or Ban members | Search members, kick, ban for a time or permanently, unban |

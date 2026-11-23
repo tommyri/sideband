@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react'
 import { AudioSettings } from '../settings/audio/AudioSettings'
 import { environment, useAudioStore } from '../settings/audio/store'
 import { isTauri } from '../../lib/tauri'
-import { disconnect } from '../../lib/api'
 import { useAppStore } from '../../store/app-store'
 import { leaveVoice, voiceControl } from './api'
 import { runVoice, useVoiceStore } from './store'
+import { useChannelMicrophone } from './microphone'
+import { voiceShortcut } from './shortcuts'
 
 function ptt(enabled: boolean) {
   void voiceControl('ptt', enabled).catch(() => {
@@ -30,26 +31,15 @@ export function VoiceDock() {
   const stats = useVoiceStore((s) => (active ? s.stats[active.serverId] : undefined))
   const view = useVoiceStore((s) => (active ? s.views[active.serverId] : undefined))
   const servers = useAppStore((s) => s.servers)
-  const [held, setHeld] = useState(false)
   const [settings, setSettings] = useState(false)
   const server = servers.find((s) => s.id === active?.serverId)
   const channel = view?.channels.find((c) => c.id === active?.channelId)
   const own = view?.members.find((m) => m.id === view.ownUserId)
-  const serverMuted = view?.participants.some(
-    (p) => p.userId === view.ownUserId && p.channelId === active?.channelId && p.serverMuted,
-  )
-  const canTalk =
-    !!active &&
-    !active.muted &&
-    !active.deafened &&
-    !serverMuted &&
-    !!channel?.canSpeak &&
-    server?.status.kind === 'connected' &&
-    !busy
+  const mic = useChannelMicrophone(active?.serverId, view, channel, server?.status.kind)
+  const canTalk = mic.canPress && !busy
   useEffect(() => {
     const release = () => {
       ptt(false)
-      setHeld(false)
     }
     const hide = () => {
       if (document.hidden) release()
@@ -71,13 +61,8 @@ export function VoiceDock() {
   }, [canTalk])
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if (
-        !(event.ctrlKey || event.metaKey) ||
-        !event.shiftKey ||
-        event.repeat ||
-        document.querySelector('dialog[open]')
-      )
-        return
+      const action = voiceShortcut(event)
+      if (!action || event.repeat || document.querySelector('dialog[open]')) return
       if (
         event.target instanceof HTMLElement &&
         event.target.closest('input, textarea, select, [contenteditable="true"]')
@@ -85,20 +70,12 @@ export function VoiceDock() {
         return
       const state = useVoiceStore.getState()
       if (state.busy) return
-      if (
-        state.active &&
-        (event.key.toLowerCase() === 'm' ||
-          ((event.code === 'KeyD' || event.key.toLowerCase() === 'd') && event.altKey))
-      ) {
+      if (state.active && (action === 'mute' || action === 'deafen')) {
         event.preventDefault()
-        void runVoice(() =>
-          voiceControl(
-            event.key.toLowerCase() === 'm' ? 'mute' : 'deafen',
-            event.key.toLowerCase() === 'm' ? !state.active!.muted : !state.active!.deafened,
-          ),
-        )
+        const enabled = action === 'mute' ? !state.active.muted : !state.active.deafened
+        void runVoice(() => voiceControl(action, enabled))
       }
-      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      if (action === 'previous' || action === 'next') {
         const server = useAppStore.getState().selectedServerId
         const channels = server
           ? state.views[server]?.channels.filter((c) => c.kind !== 1)
@@ -107,9 +84,7 @@ export function VoiceDock() {
         event.preventDefault()
         const index = channels.findIndex((c) => c.id === state.selected[server])
         const next =
-          channels[
-            (index + (event.key === 'ArrowDown' ? 1 : -1) + channels.length) % channels.length
-          ]
+          channels[(index + (action === 'next' ? 1 : -1) + channels.length) % channels.length]
         if (next) state.select(server, next.id)
       }
     }
@@ -117,7 +92,7 @@ export function VoiceDock() {
     return () => window.removeEventListener('keydown', shortcut)
   }, [])
   useEffect(() => {
-    if (globalPtt || preferences.mode !== 'ptt' || !preferences.binding || !canTalk) return
+    if (globalPtt || !preferences.binding || !canTalk) return
     const matches = (event: KeyboardEvent | PointerEvent) =>
       'code' in event
         ? event.code === preferences.binding
@@ -151,10 +126,9 @@ export function VoiceDock() {
       window.removeEventListener('pointerdown', down)
       window.removeEventListener('pointerup', up)
     }
-  }, [globalPtt, preferences.mode, preferences.binding, canTalk])
+  }, [globalPtt, preferences.binding, canTalk])
   function gate(open: boolean) {
     ptt(open && canTalk)
-    setHeld(open && canTalk)
   }
   return (
     <div className="voice-dock-container">
@@ -199,8 +173,8 @@ export function VoiceDock() {
             </div>
           </div>
           <button
-            className={`button ${held && canTalk ? 'primary' : 'secondary'}`}
-            disabled={!canTalk || preferences.mode !== 'ptt'}
+            className={`button ${mic.transmitting ? 'primary' : 'secondary'}`}
+            disabled={!canTalk}
             onPointerDown={(e) => {
               if (e.button !== 0) return
               e.currentTarget.setPointerCapture(e.pointerId)
@@ -222,21 +196,9 @@ export function VoiceDock() {
                 gate(false)
               }
             }}
-            title={
-              serverMuted
-                ? 'A moderator muted you'
-                : !channel?.canSpeak
-                  ? 'Requires SPEAK permission'
-                  : 'Hold mouse, Space or Enter while focused'
-            }
+            title={canTalk ? 'Hold mouse, Space or Enter while focused' : mic.guidance}
           >
-            {preferences.mode === 'vad'
-              ? 'Voice activation'
-              : preferences.mode === 'open'
-                ? 'Open microphone'
-                : held && canTalk
-                  ? 'Talking…'
-                  : 'Hold to talk'}
+            {mic.label}
           </button>
           <button
             className="button secondary"
@@ -266,14 +228,7 @@ export function VoiceDock() {
             disabled={busy}
             onClick={() => void runVoice(leaveVoice)}
           >
-            Leave
-          </button>
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => void runVoice(() => disconnect(active.serverId))}
-          >
-            Disconnect
+            Leave voice
           </button>
         </section>
       )}

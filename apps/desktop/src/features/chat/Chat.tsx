@@ -1,3 +1,5 @@
+import { Ellipsis } from 'lucide-react'
+import { ActionMenu } from '../../components/ActionMenu'
 import { MessageFiles } from './MessageFiles'
 import { RichMessage } from './RichMessage'
 import { canonicalId, messageLink } from './rich-model'
@@ -54,6 +56,10 @@ export function Chat({
   )
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const cancelDelete = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (deleting) cancelDelete.current?.focus()
+  }, [deleting])
   const [notice, setNotice] = useState('')
   const [sending, setSending] = useState(false)
   const getItemKey = useCallback((index: number) => messages[index]!.id, [messages])
@@ -201,10 +207,7 @@ export function Chat({
   }, [pendingJump, byId, focusMessage])
   const copy = (value: string, label: string) =>
     void navigator.clipboard.writeText(value).then(
-      () => {
-        setNotice(`${label} copied.`)
-        focusComposer()
-      },
+      () => setNotice(`${label} copied.`),
       (e) => setError(errorText(e)),
     )
   const remove = async () => {
@@ -300,7 +303,7 @@ export function Chat({
           }
           if (e.key === 'Enter' && element !== e.currentTarget) {
             e.preventDefault()
-            element.querySelector<HTMLButtonElement>('button')?.focus()
+            element.querySelector<HTMLButtonElement>('button:enabled')?.focus()
           }
         }}
         onScroll={() => {
@@ -393,27 +396,40 @@ export function Chat({
                     >
                       Reply
                     </button>
-                    {canEdit(message, view?.ownUserId ?? null) && (
-                      <button
-                        disabled={sending || !connected}
-                        onClick={() => setTarget({ kind: 'edit', message })}
-                      >
-                        Edit
-                      </button>
-                    )}
-                    {((message.authorId !== null && message.authorId === view?.ownUserId) ||
-                      view?.canManage) && (
-                      <button disabled={!connected} onClick={() => setDeleting(message.id)}>
-                        Delete
-                      </button>
-                    )}
-                    <button onClick={() => copy(message.content, 'Message')}>Copy</button>
-                    <button onClick={() => copy(message.id, 'Message ID')}>Copy ID</button>
-                    <button
-                      onClick={() => copy(messageLink(server, channel, message.id), 'Message link')}
+                    <ActionMenu
+                      className="message-menu-trigger"
+                      label="More actions"
+                      returnFocus={(button) =>
+                        button.closest('article')?.focus({ preventScroll: true })
+                      }
+                      actions={[
+                        {
+                          label: 'Edit',
+                          hidden: !canEdit(message, view?.ownUserId ?? null),
+                          disabled: sending || !connected,
+                          onSelect: () => setTarget({ kind: 'edit', message }),
+                        },
+                        { label: 'Copy', onSelect: () => copy(message.content, 'Message') },
+                        {
+                          label: 'Copy link',
+                          onSelect: () =>
+                            copy(messageLink(server, channel, message.id), 'Message link'),
+                        },
+                        { label: 'Copy ID', onSelect: () => copy(message.id, 'Message ID') },
+                        {
+                          label: 'Delete',
+                          divider: true,
+                          hidden: !(
+                            (message.authorId !== null && message.authorId === view?.ownUserId) ||
+                            view?.canManage
+                          ),
+                          disabled: !connected,
+                          onSelect: () => setDeleting(message.id),
+                        },
+                      ]}
                     >
-                      Copy link
-                    </button>
+                      <Ellipsis size={16} aria-hidden="true" />
+                    </ActionMenu>
                   </div>
                 )}
               </article>
@@ -437,7 +453,7 @@ export function Chat({
         <div className="chat-delete" role="group" aria-label="Confirm message deletion">
           <p>Delete this message? This cannot be undone.</p>
           <button
-            className="button primary"
+            className="button primary danger"
             disabled={deleteBusy || !connected}
             onClick={() => void remove()}
           >
@@ -445,10 +461,12 @@ export function Chat({
           </button>
           <button
             className="button secondary"
+            ref={cancelDelete}
             disabled={deleteBusy}
             onClick={() => {
+              if (byId.has(deleting)) focusMessage(deleting)
+              else focusComposer()
               setDeleting(null)
-              focusComposer()
             }}
           >
             Cancel

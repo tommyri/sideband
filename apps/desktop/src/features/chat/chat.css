@@ -47,21 +47,35 @@
 }
 .chat-actions {
   display: flex;
-  gap: 14px;
+  align-items: center;
+  gap: 8px;
   margin-top: 7px;
 }
 .chat-actions button,
 .chat-reply {
-  color: var(--text-muted, #a6a6b3);
+  color: var(--muted);
   background: transparent;
   border: 0;
   cursor: pointer;
   font-size: 12px;
 }
-.chat-actions button:hover,
+.chat-actions button:enabled:hover,
 .chat-reply:hover {
-  color: white;
+  color: var(--text);
   text-decoration: underline;
+}
+.chat-actions button {
+  min-width: 28px;
+  min-height: 26px;
+}
+.message-menu-trigger {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 4px;
+}
+.message-menu-trigger:hover,
+.message-menu-trigger[aria-expanded='true'] {
+  background: var(--panel-hover);
 }
 .chat-actions button:disabled {
   opacity: 0.4;

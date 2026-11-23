@@ -1,3 +1,6 @@
+import { ChevronDown } from 'lucide-react'
+import { ActionMenu } from '../../components/ActionMenu'
+import { disconnect } from '../../lib/api'
 import { useStreamPolling } from '../stream/store'
 import { MemberManager } from '../admin/MemberManager'
 import { SearchPanel } from '../search/SearchPanel'
@@ -12,9 +15,13 @@ import { DmDialog, type DmMode } from '../dm/DmDialog'
 import { DmHeader } from '../dm/DmHeader'
 import { dmName } from '../dm/model'
 import { Chat } from '../chat/Chat'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../store/app-store'
 import type { ChannelView } from '../../lib/generated/ChannelView'
+import type { ServerView } from '../../lib/generated/ServerView'
+import type { ConnectionStatus } from '../../lib/generated/ConnectionStatus'
+import { useChannelMicrophone } from '../voice/microphone'
+import { shortcutLabel } from '../voice/shortcuts'
 import { refreshVoice, runVoice, useVoiceStore } from '../voice/store'
 import { joinVoice, leaveVoice, memberAction } from '../voice/api'
 import { MemberRow } from './MemberRow'
@@ -22,6 +29,21 @@ import { MemberMenu } from './MemberMenu'
 import { AudioSettings } from '../settings/audio/AudioSettings'
 import { ServerHome } from '../onboarding/ServerHome'
 import { ServerNotices } from '../onboarding/ServerNotices'
+
+function MicrophoneGuidance({
+  server,
+  view,
+  channel,
+  connection,
+}: {
+  server: string
+  view: ServerView
+  channel: ChannelView
+  connection?: ConnectionStatus['kind']
+}) {
+  const mic = useChannelMicrophone(server, view, channel, connection)
+  return <p>{mic.guidance}</p>
+}
 
 function visibleChannels(channels: ChannelView[], collapsed: Set<string>) {
   const byId = new Map(channels.map((c) => [c.id, c]))
@@ -52,6 +74,12 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [audioSettings, setAudioSettings] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [details, setDetails] = useState(false)
+  const navigationButton = useRef<HTMLButtonElement>(null)
+  const previousDetails = useRef(details)
+  useEffect(() => {
+    if (previousDetails.current !== details) navigationButton.current?.focus()
+    previousDetails.current = details
+  }, [details])
   const [membersOpen, setMembersOpen] = useState(false)
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(false)
@@ -96,20 +124,98 @@ export function ChannelWorkspace({ server }: { server: string }) {
   if (details)
     return (
       <section className="live-workspace details-view">
-        <button className="button secondary" onClick={() => setDetails(false)}>
+        <button
+          ref={navigationButton}
+          className="button secondary"
+          onClick={() => setDetails(false)}
+        >
           Back to channels
         </button>
         <ServerHome />
       </section>
     )
+  const connected = status?.kind === 'connected'
+  const serverHeader = (
+    <header>
+      <h2>
+        <ActionMenu
+          ref={navigationButton}
+          className="server-menu-trigger"
+          label={`Server menu for ${label ?? 'server'}`}
+          actions={[
+            { label: 'Server details', onSelect: () => setDetails(true) },
+            { label: 'Audio settings', onSelect: () => setAudioSettings(true) },
+            {
+              label: 'Members & moderation',
+              hidden: !view?.canModerateMembers,
+              disabled: !connected,
+              onSelect: () => setMembersOpen(true),
+            },
+            {
+              label: 'Server settings',
+              hidden: !view?.canManageServer,
+              disabled: !connected,
+              onSelect: () => setServerSettingsOpen(true),
+            },
+            {
+              label: 'Roles and permissions',
+              hidden: !(view?.canManageRoles || view?.canManageChannels),
+              disabled: !connected,
+              onSelect: () => setRolesOpen(true),
+            },
+            {
+              label: 'Manage channels',
+              hidden: !view?.canManageChannels,
+              disabled: !connected,
+              onSelect: () => setChannelsOpen(true),
+            },
+            {
+              label: 'Webhooks',
+              hidden: !view?.canManageWebhooks,
+              disabled: !connected,
+              onSelect: () => setWebhooksOpen(true),
+            },
+            {
+              label: 'Audit log',
+              hidden: !view?.canViewAuditLog,
+              disabled: !connected,
+              onSelect: () => setAuditOpen(true),
+            },
+            {
+              label: 'Invites',
+              hidden: !(view?.canCreateInvites || view?.canManageInvites),
+              disabled: !connected,
+              onSelect: () => setInvitesOpen(true),
+            },
+            {
+              label: 'Disconnect from server',
+              divider: true,
+              disabled: busy,
+              onSelect: () => void runVoice(() => disconnect(server)),
+            },
+          ]}
+        >
+          <span>{label ?? 'Server'}</span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </ActionMenu>
+      </h2>
+    </header>
+  )
+  const audioDialog = audioSettings && <AudioSettings close={() => setAudioSettings(false)} />
   if (!view)
     return (
-      <main className="server-home">
-        <p role="status">Loading channels…</p>
-        <button className="button secondary" onClick={() => void refreshVoice(server)}>
-          Retry
-        </button>
-      </main>
+      <section className="live-workspace">
+        {audioDialog}
+        <aside className="live-channels" aria-label="Channel tree">
+          {serverHeader}
+        </aside>
+        <main className="live-channel-main">
+          <p role="status">Loading channels…</p>
+          <button className="button secondary" onClick={() => void refreshVoice(server)}>
+            Retry
+          </button>
+        </main>
+      </section>
     )
   const current = view.channels.find(
     (c) => c.id === (selected ?? (active?.serverId === server ? active.channelId : undefined)),
@@ -118,7 +224,6 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const chatChannel = currentDm ?? (current?.kind === 2 ? current : undefined)
   const title = currentDm ? dmName(currentDm, members, view.ownUserId) : current?.name
   const chosenMember = view.members.find((m) => m.id === menu)
-  const connected = status?.kind === 'connected'
   const join = (channel: ChannelView) => {
     select(server, channel.id)
     if (channel.kind === 3) void runVoice(() => joinVoice(server, channel.id))
@@ -210,80 +315,9 @@ export function ChannelWorkspace({ server }: { server: string }) {
           close={() => setAuditOpen(false)}
         />
       )}
-      {audioSettings && <AudioSettings close={() => setAudioSettings(false)} />}
+      {audioDialog}
       <aside className="live-channels" aria-label="Channel tree">
-        <header>
-          <h2>{label}</h2>
-          <button className="button secondary" onClick={() => setAudioSettings(true)}>
-            Audio settings
-          </button>
-          <button className="button secondary" onClick={() => setDetails(true)}>
-            Server details
-          </button>
-          {view.canModerateMembers && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setMembersOpen(true)}
-            >
-              Members &amp; moderation
-            </button>
-          )}
-          {view.canManageServer && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setServerSettingsOpen(true)}
-            >
-              Server settings
-            </button>
-          )}
-          {(view.canManageRoles || view.canManageChannels) && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setRolesOpen(true)}
-            >
-              Roles and permissions
-            </button>
-          )}
-          {view.canManageChannels && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setChannelsOpen(true)}
-            >
-              Manage channels
-            </button>
-          )}
-          {view.canManageWebhooks && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setWebhooksOpen(true)}
-            >
-              Webhooks
-            </button>
-          )}
-          {view.canViewAuditLog && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setAuditOpen(true)}
-            >
-              Audit log
-            </button>
-          )}
-          {(view.canCreateInvites || view.canManageInvites) && (
-            <button
-              className="button secondary"
-              disabled={!connected}
-              onClick={() => setInvitesOpen(true)}
-            >
-              Invites
-            </button>
-          )}
-        </header>
+        {serverHeader}
         <div className="live-channel-scroll">
           <DmList
             server={server}
@@ -438,7 +472,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
         </header>
         {status?.kind === 'reconnecting' && (
           <p role="status" className="connection-banner">
-            Reconnecting to {label} (attempt {status.attempt})… Your microphone gate is closed.
+            Reconnecting to {label} (attempt {status.attempt})…
           </p>
         )}
         <ServerNotices server={server} />
@@ -461,10 +495,12 @@ export function ChannelWorkspace({ server }: { server: string }) {
                 Join voice
               </button>
             )}
-            <p>
-              Use Hold to talk in the call controls. Your microphone only transmits while held; mute
-              and deafen also close transmission.
-            </p>
+            <MicrophoneGuidance
+              server={server}
+              view={view}
+              channel={current}
+              connection={status?.kind}
+            />
             <div className="voice-stage">
               {view.participants
                 .filter((p) => p.channelId === current.id)
@@ -507,12 +543,13 @@ export function ChannelWorkspace({ server }: { server: string }) {
               Double-click voice channels to join
             </label>
             <p>
-              Ctrl/Cmd + Shift + M: mute · D: deafen · ↑/↓: select channel. Shortcuts work while
-              this app is focused.
+              Mute: {shortcutLabel('mute')} · Deafen: {shortcutLabel('deafen')} · Previous channel:{' '}
+              {shortcutLabel('previous')} · Next channel: {shortcutLabel('next')}. These shortcuts
+              work while the app is focused.
             </p>
             <p>
-              Microphone/output selection and global push-to-talk settings are coming in a future
-              test build. This build uses system-default devices.
+              Choose your devices and talking mode in Audio settings. Open Global shortcuts there to
+              set up push-to-talk outside the app.
             </p>
           </details>
         )}

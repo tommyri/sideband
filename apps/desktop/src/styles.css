@@ -58,6 +58,7 @@ textarea:focus-visible {
   --muted: #929eaa;
   --subtle: #66717d;
   --coral: #ff5b55;
+  --on-coral: #0d1116;
   --coral-muted: rgb(255 91 85 / 13%);
   --green: #49da75;
   display: grid;
@@ -1083,12 +1084,68 @@ textarea:focus-visible {
   min-width: 0;
 }
 .live-channels > header {
-  padding: 20px 16px;
+  padding: 10px 8px;
   border-bottom: 1px solid var(--border);
 }
 .live-channels h2 {
+  margin: 0;
   font-size: 17px;
   overflow-wrap: anywhere;
+}
+.server-menu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.server-menu-trigger svg {
+  flex: none;
+  color: var(--muted);
+}
+.server-menu-trigger:hover,
+.server-menu-trigger[aria-expanded='true'] {
+  background: var(--panel-hover);
+}
+.action-menu {
+  position: fixed;
+  z-index: 16;
+  display: grid;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 4px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px #0003;
+}
+.action-menu button {
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.action-menu button:enabled:hover,
+.action-menu button:focus-visible {
+  background: var(--panel-hover);
+  outline-offset: -2px;
+}
+.action-menu button:disabled {
+  color: var(--muted);
+  opacity: 0.65;
+  cursor: default;
+}
+.action-menu .menu-divider {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
 }
 .live-channel-scroll {
   padding: 12px 8px;
@@ -1466,7 +1523,7 @@ textarea:focus-visible {
 }
 
 .button.primary {
-  color: white;
+  color: var(--on-coral);
   background: var(--coral);
 }
 
@@ -1592,8 +1649,9 @@ textarea:focus-visible {
   cursor: not-allowed;
 }
 .audio-settings button.primary {
-  background: #ed5b56;
-  border-color: #ed5b56;
+  color: var(--on-coral);
+  background: var(--coral);
+  border-color: var(--coral);
 }
 .audio-test-actions,
 .audio-settings footer {

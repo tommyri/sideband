@@ -1,13 +1,15 @@
 import '@testing-library/jest-dom/vitest'
 import { Profiler } from 'react'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChannelWorkspace } from './ChannelWorkspace'
 import { MemberRow } from './MemberRow'
 import { VoiceDock } from '../voice/VoiceDock'
+import { defaults, useAudioStore } from '../settings/audio/store'
 import { useVoiceStore } from '../voice/store'
 import { useAppStore } from '../../store/app-store'
-import { getServerView, joinVoice, memberAction, voiceControl } from '../voice/api'
+import { getServerView, joinVoice, leaveVoice, memberAction, voiceControl } from '../voice/api'
+import { disconnect } from '../../lib/api'
 import type { ServerView } from '../../lib/generated/ServerView'
 
 vi.mock('../voice/api', () => ({
@@ -92,6 +94,7 @@ const fixture = (): ServerView => ({
 beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
+  useAudioStore.setState({ preferences: defaults, loaded: true })
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '')
   }
@@ -129,6 +132,170 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 describe('live channels and voice', () => {
+  it.each([
+    ['ptt', /After joining, hold the talk button/, /Hold the talk button or/, 'Hold to talk'],
+    [
+      'vad',
+      /After joining, your microphone will transmit when it detects speech/,
+      /listening for speech/,
+      'Voice activation',
+    ],
+    [
+      'open',
+      /transmit automatically as soon as you join/,
+      /Open microphone is on/,
+      'Open microphone',
+    ],
+  ] as const)(
+    'shows the selected %s mode before joining and follows the native transmit indicator in the call',
+    async (mode, preview, inCall, label) => {
+      const view = { ...fixture(), activeVoice: null }
+      vi.mocked(getServerView).mockResolvedValue(view)
+      useVoiceStore.setState({
+        active: null,
+        views: { server: view },
+        selected: { server: 'voice' },
+      })
+      useAudioStore.setState({ preferences: { ...defaults, mode } })
+      render(
+        <>
+          <ChannelWorkspace server="server" />
+          <VoiceDock />
+        </>,
+      )
+      await act(async () => {})
+      expect(screen.getByText(preview)).toBeInTheDocument()
+      act(() => useVoiceStore.setState({ active }))
+      expect(screen.getByText(inCall)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      act(() => useVoiceStore.setState({ speaking: { server: ['own'] } }))
+      expect(
+        screen.getByText('Your microphone is transmitting to this channel.'),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Transmitting' })).toBeInTheDocument()
+      act(() => useVoiceStore.setState({ speaking: { server: ['remote'] } }))
+      expect(screen.getByText(inCall)).toBeInTheDocument()
+    },
+  )
+  it('gives the reason transmission is blocked even if the last speaking event said otherwise', async () => {
+    render(
+      <>
+        <ChannelWorkspace server="server" />
+        <VoiceDock />
+      </>,
+    )
+    await act(async () => {})
+    act(() => {
+      useAudioStore.setState({ preferences: { ...defaults, mode: 'open' } })
+      useVoiceStore.setState({ speaking: { server: ['own'] }, active: { ...active, muted: true } })
+    })
+    expect(screen.getByRole('button', { name: 'Muted' })).toBeDisabled()
+    expect(screen.getByText('You are muted. Others cannot hear you.')).toBeInTheDocument()
+    act(() => useVoiceStore.setState({ active: { ...active, muted: true, deafened: true } }))
+    expect(screen.getByRole('button', { name: 'Deafened' })).toBeDisabled()
+    const view = fixture()
+    view.participants = [{ ...view.participants[0]!, userId: 'own', serverMuted: true }]
+    act(() => useVoiceStore.setState({ active, views: { server: view } }))
+    expect(screen.getByText('A moderator muted you in this channel.')).toBeInTheDocument()
+    act(() =>
+      useVoiceStore.setState({
+        views: {
+          server: {
+            ...view,
+            participants: [],
+            channels: [{ ...channel, canSpeak: false }],
+          },
+        },
+      }),
+    )
+    expect(screen.getByRole('button', { name: 'Listen only' })).toBeDisabled()
+    act(() =>
+      useAppStore.setState((s) => ({
+        servers: s.servers.map((item) => ({
+          ...item,
+          status: { kind: 'reconnecting', attempt: 1, delayMs: 2000 },
+        })),
+      })),
+    )
+    expect(
+      screen.getByText('Voice transmission is paused while this call reconnects.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Transmitting' })).toBeNull()
+  })
+  it('scopes the mic status to the selected channel and never assumes PTT before settings load', async () => {
+    const other = { ...channel, id: 'other', name: 'Other' }
+    const view = fixture()
+    view.channels.push(other)
+    vi.mocked(getServerView).mockResolvedValue(view)
+    useVoiceStore.setState({
+      views: { server: view },
+      selected: { server: 'other' },
+      speaking: { server: ['own'] },
+    })
+    useAudioStore.setState({ loaded: false })
+    render(<ChannelWorkspace server="server" />)
+    expect(screen.getByText('Check your talking mode in Audio settings.')).toBeInTheDocument()
+    act(() => useAudioStore.setState({ loaded: true, preferences: { ...defaults, mode: 'open' } }))
+    expect(
+      await screen.findByText(/transmit automatically as soon as you join/),
+    ).toBeInTheDocument()
+  })
+  it('keeps Leave voice in the call dock and disconnects the server whose menu was opened', async () => {
+    const view = { ...fixture(), activeVoice: { ...active, serverId: 'other' } }
+    useVoiceStore.setState({ views: { server: view }, active: view.activeVoice })
+    vi.mocked(getServerView).mockResolvedValue(view)
+    render(
+      <>
+        <ChannelWorkspace server="server" />
+        <VoiceDock />
+      </>,
+    )
+    const dock = within(screen.getByRole('region', { name: 'Voice controls' }))
+    expect(dock.queryByRole('button', { name: /Disconnect/ })).toBeNull()
+    fireEvent.click(dock.getByRole('button', { name: 'Leave voice' }))
+    await waitFor(() => expect(useVoiceStore.getState().busy).toBe(false))
+    expect(leaveVoice).toHaveBeenCalledOnce()
+    expect(disconnect).not.toHaveBeenCalled()
+    const trigger = screen.getByRole('button', { name: 'Server menu for Friends' })
+    fireEvent.keyDown(trigger, { key: 'ArrowUp' })
+    expect(screen.queryByRole('menuitem', { name: 'Server settings' })).toBeNull()
+    const end = screen.getByRole('menuitem', { name: 'Disconnect from server' })
+    expect(end).toHaveFocus()
+    fireEvent.click(end)
+    await waitFor(() => expect(disconnect).toHaveBeenCalledWith('server'))
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+  it('shows permitted administration in the menu and skips unavailable actions during reconnection', async () => {
+    const view = { ...fixture(), canManageChannels: true, canViewAuditLog: true, activeVoice: null }
+    useVoiceStore.setState({ views: { server: view }, active: null })
+    vi.mocked(getServerView).mockResolvedValue(view)
+    render(<ChannelWorkspace server="server" />)
+    await act(async () => {})
+    const trigger = screen.getByRole('button', { name: 'Server menu for Friends' })
+    expect(screen.queryByText('Manage channels')).toBeNull()
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menuitem', { name: 'Manage channels' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Roles and permissions' })).toBeEnabled()
+    expect(screen.queryByRole('menuitem', { name: 'Invites' })).toBeNull()
+    act(() =>
+      useAppStore.setState((s) => ({
+        servers: s.servers.map((item) => ({
+          ...item,
+          status: { kind: 'reconnecting', attempt: 1, delayMs: 2000 },
+        })),
+      })),
+    )
+    expect(screen.getByRole('menuitem', { name: 'Audit log' })).toBeDisabled()
+    const audio = screen.getByRole('menuitem', { name: 'Audio settings' })
+    fireEvent.keyDown(audio, { key: 'End' })
+    const end = screen.getByRole('menuitem', { name: 'Disconnect from server' })
+    expect(end).toHaveFocus()
+    fireEvent.keyDown(end, { key: 'ArrowUp' })
+    expect(audio).toHaveFocus()
+    fireEvent.keyDown(audio, { key: 'Escape' })
+    expect(trigger).toHaveFocus()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
   it('renders immutable usernames and collapses category descendants', async () => {
     render(<ChannelWorkspace server="server" />)
     expect(screen.getAllByText('@real_account').length).toBeGreaterThan(0)

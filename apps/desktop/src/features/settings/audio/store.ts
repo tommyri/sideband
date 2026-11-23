@@ -79,18 +79,26 @@ export function effectiveInput(choice: number, count: number | null): number {
   if (choice === 0) return count > 1 ? 0 : 1
   return choice <= count ? choice : 1
 }
-export const useAudioStore = create<{ preferences: AudioPreferences }>(() => ({
+export const useAudioStore = create<{ preferences: AudioPreferences; loaded: boolean }>(() => ({
   preferences: defaults,
+  loaded: false,
 }))
+let saveRevision = 0
 export async function environment() {
+  const revision = saveRevision
   const result = await invokeBridge<AudioEnvironment>('audio_environment')
-  result.preferences = migratePreferences(result.preferences)
-  useAudioStore.setState({ preferences: result.preferences })
-  return result
+  // Device enumeration can finish after a newly applied talking mode.
+  const preferences =
+    revision === saveRevision
+      ? migratePreferences(result.preferences)
+      : useAudioStore.getState().preferences
+  useAudioStore.setState({ preferences, loaded: true })
+  return { ...result, preferences }
 }
 export async function save(preferences: AudioPreferences) {
   await invokeBridge('save_audio', { preferences })
-  useAudioStore.setState({ preferences })
+  saveRevision++
+  useAudioStore.setState({ preferences, loaded: true })
 }
 export const audioLevel = () => invokeBridge<number>('audio_level')
 export const testAudio = (preferences: AudioPreferences, kind: string) =>
