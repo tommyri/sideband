@@ -136,7 +136,7 @@ independently confirmed certificate fingerprint, and account/invite details.
 Keep credentials out of screenshots and reports. A second installed client
 and an audible participant are necessary for actual call acceptance.
 
-Open **Guided tests** from the app, choose a checklist and **Start run**. The
+Open **Help** in the server rail and choose **Guided tests**. Select a checklist and **Start run**. The
 available checks cover PTT/fullscreen/focus, devices/permission/recovery,
 controlled listening trials and calibrated acoustic measurements. Connect and
 configure audio first. Close the panel to exercise voice controls, system settings

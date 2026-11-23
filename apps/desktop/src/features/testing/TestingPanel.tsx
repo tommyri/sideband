@@ -1,3 +1,5 @@
+import { CircleQuestionMark } from 'lucide-react'
+import { ActionMenu } from '../../components/ActionMenu'
 import { useEffect, useRef, useState } from 'react'
 import { buildIdentity, exportTestReport } from './api'
 import { useAppStore } from '../../store/app-store'
@@ -201,9 +203,18 @@ export function TestingPanel() {
   }
   return (
     <>
-      <button className="testing-launch" onClick={() => setOpen(true)}>
-        Guided tests{running ? ' · running' : ''}
-      </button>
+      <ActionMenu
+        className="server-button"
+        label="Help"
+        actions={[
+          {
+            label: running ? 'Guided tests · running' : 'Guided tests',
+            onSelect: () => setOpen(true),
+          },
+        ]}
+      >
+        <CircleQuestionMark size={20} />
+      </ActionMenu>
       {open && (
         <dialog
           ref={dialog}

@@ -1,3 +1,4 @@
+import { TestingPanel } from '../features/testing/TestingPanel'
 import { UpdateControl } from '../features/updates/UpdateControl'
 import { isTauri } from '../lib/tauri'
 import { useState } from 'react'
@@ -69,7 +70,12 @@ export function ServerRail() {
       >
         <Bell size={20} />
       </button>
-      {isTauri() && <UpdateControl />}
+      {isTauri() && (
+        <>
+          <UpdateControl />
+          <TestingPanel />
+        </>
+      )}
       {import.meta.env.DEV && (
         <button
           className="server-button"

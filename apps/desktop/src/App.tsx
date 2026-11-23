@@ -13,7 +13,6 @@ import { ServerHome } from './features/onboarding/ServerHome'
 import { ChannelWorkspace } from './features/channels/ChannelWorkspace'
 import { ShortcutGuard } from './features/settings/shortcuts/ShortcutGuard'
 import { DiagnosticsPanel } from './features/diagnostics/DiagnosticsPanel'
-import { TestingPanel } from './features/testing/TestingPanel'
 import { VoiceDock } from './features/voice/VoiceDock'
 
 export default function App() {
@@ -35,32 +34,33 @@ export default function App() {
 
   return (
     <div className="app-shell" data-theme={theme}>
-      <ServerRail />
-      {isTauri() ? (
-        server && ['connected', 'reconnecting'].includes(server.status.kind) ? (
-          <ChannelWorkspace key={server.id} server={server.id} />
+      <div className="app-workspace">
+        <ServerRail />
+        {isTauri() ? (
+          server && ['connected', 'reconnecting'].includes(server.status.kind) ? (
+            <ChannelWorkspace key={server.id} server={server.id} />
+          ) : (
+            <ServerHome />
+          )
         ) : (
-          <ServerHome />
-        )
-      ) : (
-        <>
-          <ChannelSidebar />
-          <Conversation />
-          <MemberList />
-        </>
-      )}
-      {startupError && (
-        <p role="alert" className="startup-error">
-          {startupError}
-        </p>
-      )}
-      {/* Development builds only: Vite drops the inspector from packaged builds. */}
-      {import.meta.env.DEV && <DebugPanel />}
+          <>
+            <ChannelSidebar />
+            <Conversation />
+            <MemberList />
+          </>
+        )}
+        {startupError && (
+          <p role="alert" className="startup-error">
+            {startupError}
+          </p>
+        )}
+        {/* Development builds only: Vite drops the inspector from packaged builds. */}
+        {import.meta.env.DEV && <DebugPanel />}
+      </div>
       <ConnectDialog />
       {isTauri() && (
         <>
           <ShortcutGuard />
-          <TestingPanel />
           <DiagnosticsPanel />
           <VoiceDock />
         </>

@@ -132,6 +132,16 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 describe('live channels and voice', () => {
+  it('releases the dock row when idle and keeps failed joins dismissible', () => {
+    const { container } = render(<VoiceDock />)
+    expect(screen.getByRole('region', { name: 'Voice controls' })).toBeInTheDocument()
+    act(() => useVoiceStore.setState({ active: null }))
+    expect(container).toBeEmptyDOMElement()
+    act(() => useVoiceStore.setState({ error: 'Could not join voice.' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not join voice.')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss voice notice' }))
+    expect(container).toBeEmptyDOMElement()
+  })
   it.each([
     ['ptt', /After joining, hold the talk button/, /Hold the talk button or/, 'Hold to talk'],
     [

@@ -500,7 +500,11 @@ export function Chat({
         target={target}
         cancel={() => {
           setTarget(null)
-          requestAnimationFrame(focusComposer)
+          // Sending temporarily disables the input. Refocus after it is enabled
+          // unless the user has already moved to the dock or another control.
+          requestAnimationFrame(() => {
+            if (document.activeElement === document.body) focusComposer()
+          })
         }}
         sent={toLatest}
       />

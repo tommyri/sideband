@@ -1,3 +1,5 @@
+import { CaseSensitive, Paperclip } from 'lucide-react'
+import { ActionMenu } from '../../components/ActionMenu'
 import { useUploads } from './useUploads'
 import { fileSize } from './attachments'
 import { draftNonce, clearDraftNonce } from './navigation'
@@ -139,7 +141,6 @@ export function Composer({
       clearDraftNonce(draftIdentity)
       cancel()
       sent()
-      input.current?.focus()
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -237,57 +238,31 @@ export function Composer({
           e.target.value = ''
         }}
       />
-      <div className="chat-format-tools" aria-label="Message formatting">
+      <div className="chat-format-tools">
         <button
           type="button"
+          className="compose-tool"
+          aria-label="Attach"
           disabled={disabled || busy || !canAttach || target?.kind === 'edit'}
           title="Attach files (up to 25 MiB each)"
           onClick={() => fileInput.current?.click()}
         >
-          Attach
+          <Paperclip size={18} />
         </button>
-        <button
-          type="button"
+        <ActionMenu
+          className="compose-tool"
+          label="Message formatting"
           disabled={disabled || busy}
-          title="Bold (Ctrl/Cmd+B)"
-          onClick={() => format('**')}
+          actions={[
+            { label: 'Bold', onSelect: () => format('**') },
+            { label: 'Italic', onSelect: () => format('*') },
+            { label: 'Code', onSelect: () => format('`') },
+            { label: 'Mention', onSelect: () => insertTrigger('@') },
+            { label: 'Emoji', onSelect: () => insertTrigger(':') },
+          ]}
         >
-          Bold
-        </button>
-        <button
-          type="button"
-          disabled={disabled || busy}
-          title="Italic (Ctrl/Cmd+I)"
-          onClick={() => format('*')}
-        >
-          Italic
-        </button>
-        <button
-          type="button"
-          disabled={disabled || busy}
-          title="Code (Ctrl/Cmd+E)"
-          onClick={() => format('`')}
-        >
-          Code
-        </button>
-        <button
-          type="button"
-          disabled={disabled || busy}
-          onClick={() => {
-            insertTrigger('@')
-          }}
-        >
-          Mention
-        </button>
-        <button
-          type="button"
-          disabled={disabled || busy}
-          onClick={() => {
-            insertTrigger(':')
-          }}
-        >
-          Emoji
-        </button>
+          <CaseSensitive size={20} />
+        </ActionMenu>
       </div>
       {options.length > 0 && (
         <div
@@ -323,7 +298,8 @@ export function Composer({
         aria-controls={options.length ? `completion-${channel}` : undefined}
         aria-activedescendant={options.length ? `completion-${channel}-${activeOption}` : undefined}
         onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
-        rows={3}
+        rows={1}
+        aria-describedby={`compose-hint-${channel}`}
         maxLength={4000}
         disabled={disabled || busy}
         placeholder={disabled ? 'You cannot send messages right now' : 'Write a message…'}
@@ -366,22 +342,21 @@ export function Composer({
           if (e.key === 'Escape' && target && !busy) cancel()
         }}
       />
-      <div className="chat-compose-footer">
-        <small>Enter to send · Shift + Enter for a new line</small>
-        <button
-          type="submit"
-          className="button primary"
-          disabled={
-            busy ||
-            disabled ||
-            (!draft.trim() && !uploads.items.length) ||
-            (target?.kind !== 'edit' &&
-              (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
-          }
-        >
-          {busy ? 'Sending…' : target?.kind === 'edit' ? 'Save edit' : 'Send'}
-        </button>
-      </div>
+      <span className="sr-only" id={`compose-hint-${channel}`}>
+        Enter to send · Shift + Enter for a new line
+      </span>
+      <button
+        type="submit"
+        className="button primary chat-send"
+        disabled={
+          busy ||
+          disabled ||
+          (!draft.trim() && !uploads.items.length) ||
+          (target?.kind !== 'edit' && (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
+        }
+      >
+        {busy ? 'Sending…' : target?.kind === 'edit' ? 'Save edit' : 'Send'}
+      </button>
       {error && <p role="alert">{error} Your message is still here; retry when ready.</p>}
     </form>
   )

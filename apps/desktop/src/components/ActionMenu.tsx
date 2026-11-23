@@ -18,6 +18,7 @@ export function ActionMenu({
   className,
   children,
   actions,
+  disabled,
   ref,
   returnFocus = (button) => button.focus({ preventScroll: true }),
 }: {
@@ -25,6 +26,7 @@ export function ActionMenu({
   className: string
   children: ReactNode
   actions: MenuAction[]
+  disabled?: boolean
   ref?: Ref<HTMLButtonElement>
   returnFocus?: (button: HTMLButtonElement) => void
 }) {
@@ -73,6 +75,7 @@ export function ActionMenu({
       <button
         ref={ref}
         type="button"
+        disabled={disabled}
         className={className}
         aria-label={label}
         title={label}

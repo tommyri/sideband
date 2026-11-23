@@ -50,11 +50,43 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 beforeEach(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
   vi.mocked(invokeBridge).mockReset().mockResolvedValue(undefined)
   vi.mocked(sendMessage).mockReset()
 })
 
 describe('chat composer', () => {
+  it('keeps keyboard focus on the call controls when a pending send completes', async () => {
+    vi.mocked(invokeBridge).mockImplementation(async (command) =>
+      command === 'chat_snapshot' ? snapshot : [],
+    )
+    let acknowledge!: (id: string) => void
+    vi.mocked(sendMessage).mockReturnValue(
+      new Promise((resolve) => {
+        acknowledge = resolve
+      }),
+    )
+    render(
+      <>
+        <Chat server="s" channel="focus" name="general" connected />
+        <button>Mute</button>
+      </>,
+    )
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+    const input = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'A draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    const mute = screen.getByRole('button', { name: 'Mute' })
+    mute.focus()
+    await act(async () => acknowledge('sent'))
+    await new Promise(requestAnimationFrame)
+    expect(input).toHaveValue('')
+    expect(mute).toHaveFocus()
+  })
   it('retains a failed draft and retries with the same nonce, clearing only after success', async () => {
     vi.mocked(sendMessage)
       .mockRejectedValueOnce({ message: 'Disconnected' })
@@ -276,11 +308,6 @@ it('requires the actual bottom of the scroll viewport', () => {
 })
 
 it('offers newer pages below a jumped-to run and does not mark it read', async () => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
   vi.mocked(invokeBridge).mockImplementation(async (command) =>
     command === 'chat_snapshot' ? { ...snapshot, start: false, latest: false } : [],
   )

@@ -1,3 +1,4 @@
+import { MonitorUp } from 'lucide-react'
 import { useState } from 'react'
 import { useVoiceStore } from '../voice/store'
 import { useStreams, useStreamPolling } from './store'
@@ -44,10 +45,12 @@ export function StreamControls({
         <button
           className="button secondary"
           disabled={!allowed}
-          title={!allowed ? 'Join voice with STREAM permission to share' : undefined}
+          aria-label="Share screen"
+          title={allowed ? 'Share screen' : 'Join voice with STREAM permission to share'}
           onClick={() => setPicker(true)}
         >
-          Share screen
+          <MonitorUp size={16} />
+          <span className="share-label">Share screen</span>
         </button>
       )}
       {(error || share?.error) && <p role="alert">{error || share?.error}</p>}

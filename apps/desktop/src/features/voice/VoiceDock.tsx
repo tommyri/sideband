@@ -1,3 +1,12 @@
+import {
+  ChevronDown,
+  Headphones,
+  HeadphoneOff,
+  Mic,
+  MicOff,
+  PhoneOff,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { StreamControls } from '../stream/StreamControls'
 import { useShortcuts } from '../settings/shortcuts/store'
 import { useEffect, useState } from 'react'
@@ -130,6 +139,7 @@ export function VoiceDock() {
   function gate(open: boolean) {
     ptt(open && canTalk)
   }
+  if (!active && !error && !notice && !settings) return null
   return (
     <div className="voice-dock-container">
       {(error || notice) && (
@@ -145,33 +155,44 @@ export function VoiceDock() {
       )}
       {active && (
         <section className="voice-dock" aria-label="Voice controls">
+          <details className="call-identity">
+            <summary title="Call details">
+              <span className="call-status">
+                <span
+                  className={`quality-dot ${server?.status.kind === 'connected' ? (stats && stats.rttMs > 300 ? 'poor' : stats && stats.rttMs > 150 ? 'fair' : 'good') : 'poor'}`}
+                  aria-hidden="true"
+                />
+                {server?.status.kind === 'connected'
+                  ? 'In voice'
+                  : server?.status.kind === 'reconnecting'
+                    ? 'Reconnecting'
+                    : 'Offline'}
+                <ChevronDown size={14} />
+              </span>
+              <strong title={channel?.name}>{channel?.name ?? 'Voice'}</strong>
+            </summary>
+            <div className="call-info">
+              <span>
+                {server?.label} / {channel?.name ?? 'Voice'} · {channel?.profile ?? 'voice'}
+              </span>
+              {own && (
+                <span>
+                  {own.displayName || own.username} · @{own.username}
+                </span>
+              )}
+              <span>
+                {stats
+                  ? `${Math.round(stats.encoderBitrate / 1000)} kbps · ${stats.rttMs} ms network RTT`
+                  : 'Measuring connection…'}
+              </span>
+            </div>
+          </details>
           <StreamControls
             key={`${active.serverId}:${active.channelId}`}
             server={active.serverId}
             channel={active.channelId}
             connected={server?.status.kind === 'connected'}
           />
-          <div className="call-identity">
-            <span
-              className={`quality-dot ${server?.status.kind === 'connected' ? (stats && stats.rttMs > 300 ? 'poor' : stats && stats.rttMs > 150 ? 'fair' : 'good') : 'poor'}`}
-              aria-label={`Connection ${server?.status.kind ?? 'disconnected'}`}
-            />
-            <div>
-              <strong>
-                {own?.displayName || own?.username || 'You'}
-                {own && <small> @{own.username}</small>}
-              </strong>
-              <p>
-                {server?.label} / {channel?.name ?? 'Voice'} · {channel?.profile ?? 'voice'}
-              </p>
-              <small>
-                {stats
-                  ? `${Math.round(stats.encoderBitrate / 1000)} kbps · ${stats.rttMs} ms network RTT`
-                  : 'Measuring connection…'}
-              </small>
-              {route && <small role="status">{route}</small>}
-            </div>
-          </div>
           <button
             className={`button ${mic.transmitting ? 'primary' : 'secondary'}`}
             disabled={!canTalk}
@@ -200,36 +221,49 @@ export function VoiceDock() {
           >
             {mic.label}
           </button>
-          <button
-            className="button secondary"
-            aria-pressed={active.muted}
-            disabled={busy || server?.status.kind !== 'connected'}
-            onClick={() => void runVoice(() => voiceControl('mute', !active.muted))}
-          >
-            {active.muted ? 'Unmute' : 'Mute'}
-          </button>
-          <button
-            className="button secondary"
-            aria-pressed={active.deafened}
-            disabled={busy || server?.status.kind !== 'connected'}
-            onClick={() => void runVoice(() => voiceControl('deafen', !active.deafened))}
-          >
-            {active.deafened ? 'Undeafen' : 'Deafen'}
-          </button>
-          <button
-            className="button secondary"
-            aria-label="Voice settings"
-            onClick={() => setSettings(!settings)}
-          >
-            ⚙
-          </button>
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => void runVoice(leaveVoice)}
-          >
-            Leave voice
-          </button>
+          <div className="call-actions">
+            <button
+              className="button secondary"
+              aria-pressed={active.muted}
+              disabled={busy || server?.status.kind !== 'connected'}
+              onClick={() => void runVoice(() => voiceControl('mute', !active.muted))}
+            >
+              {active.muted ? <MicOff size={16} /> : <Mic size={16} />}
+              {active.muted ? 'Unmute' : 'Mute'}
+            </button>
+            <button
+              className="button secondary"
+              aria-pressed={active.deafened}
+              disabled={busy || server?.status.kind !== 'connected'}
+              onClick={() => void runVoice(() => voiceControl('deafen', !active.deafened))}
+            >
+              {active.deafened ? <HeadphoneOff size={16} /> : <Headphones size={16} />}
+              {active.deafened ? 'Undeafen' : 'Deafen'}
+            </button>
+            <button
+              className="button secondary"
+              aria-label="Audio settings"
+              title="Voice settings"
+              onClick={(event) => {
+                event.currentTarget.focus()
+                setSettings(true)
+              }}
+            >
+              <SlidersHorizontal size={16} /> Audio
+            </button>
+            <button
+              className="button call-leave"
+              disabled={busy}
+              onClick={() => void runVoice(leaveVoice)}
+            >
+              <PhoneOff size={16} /> Leave voice
+            </button>
+          </div>
+          {route && (
+            <p className="call-route" role="status">
+              {route}
+            </p>
+          )}
         </section>
       )}
       {settings && <AudioSettings close={() => setSettings(false)} />}
