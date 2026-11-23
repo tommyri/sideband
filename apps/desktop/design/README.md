@@ -1,4 +1,8 @@
-# Desktop shell design direction
+# Original desktop shell concept
+
+The values below describe the original scaffold. For current workspace and
+onboarding work, use the [desktop design system](../../../DESIGN.md) and
+[FigCraft prototypes](../../../docs/design/README.md#desktop-prototypes).
 
 `socialspeak-shell-concept.png` is the reference composition for the scaffold.
 

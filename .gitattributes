@@ -6,6 +6,7 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.md text eol=lf
+*.figcraft binary
 *.png binary
 *.ico binary
 *.icns binary

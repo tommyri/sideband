@@ -9,6 +9,10 @@ Read the [engineering conventions](docs/plan/04-conventions.md). Changes to voic
 transport or input also need the [design decisions](docs/design/README.md).
 Keep protocol fields append-only and database migrations immutable.
 
+For desktop UI work, start with the [design system](DESIGN.md) and the
+[FigCraft prototypes](docs/design/README.md#desktop-prototypes). The design
+guide records the intended UI. The user guide describes the shipping app.
+
 ## How tasks work
 
 The plan lives in [`docs/plan/`](docs/plan/00-overview.md). Work is split into

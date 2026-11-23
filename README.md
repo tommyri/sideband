@@ -99,7 +99,8 @@ you trust. A local macOS package can be built with
 | Running a server | [Self-hosting guide](docs/self-hosting.md), [deployment](deploy/README.md), [server diagnostics](deploy/grafana/README.md) |
 | Writing a bot or client | [Protocol reference](docs/protocol/README.md) |
 | Contributing | [Contributing](CONTRIBUTING.md), [engineering conventions](docs/plan/04-conventions.md), [task index](docs/plan/tasks/INDEX.md) |
-| Design | [Architecture and plan](docs/plan/00-overview.md), [design decisions and codec contract](docs/design/README.md) |
+| Designing the desktop UI | [Design system](DESIGN.md), [FigCraft workspace and walkthroughs](docs/design/README.md#desktop-prototypes) |
+| Architecture and audio | [Architecture and plan](docs/plan/00-overview.md), [design decisions and codec contract](docs/design/README.md#technical-design-notes) |
 | Testing and releases | [Testing builds and evidence](docs/testing-app.md), [desktop releases](docs/desktop-releases.md), [release guide](docs/release.md), [publishing](docs/publishing.md) |
 | Security | [Reporting](SECURITY.md), [security design](docs/security.md) |
 
