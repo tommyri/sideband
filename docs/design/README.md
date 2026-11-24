@@ -39,6 +39,25 @@ figcraft-cli export "$workspace" --node 'Reply during a call · 760 × 600' -o d
 figcraft-cli export "$workspace" --node 'Join your first server' -o docs/design/onboarding-preview.png
 ```
 
+### Connect FigCraft to Codex over MCP
+
+FigCraft CLI 0.18.1 includes a headless MCP server. On macOS, unzip the `figcraft-cli-0.18.1-macos-universal.zip` release asset and put `figcraft-cli` in a permanent directory on your `PATH`. You can also build the CLI from the tagged FigCraft source with `cargo build --release -p figcraft-cli`. [FigCraft 0.18.1 release](https://github.com/storytold/figcraft/releases/tag/v0.18.1) · [Upstream MCP guide](https://github.com/storytold/figcraft/blob/v0.18.1/docs/mcp.md)
+
+Run these commands from the Sideband repository root. Codex records the absolute executable path and starts FigCraft over standard input and output. The write root lets the tools open the workspace, save design changes, and export previews under `docs/design`. For a read-only review, use `--automation-read-root` in the same command.
+
+```sh
+figcraft-cli --version
+codex mcp add sideband-design -- "$(command -v figcraft-cli)" mcp \
+  --automation-write-root "$PWD/docs/design"
+codex mcp get sideband-design
+```
+
+Use this request in a new Codex chat for the checkout.
+
+> Use the sideband-design MCP server to open `docs/design/Sideband workspace.figcraft` by absolute path with `open_file`. Call `inspect_document` with `{"depth":0,"fields":["name","type"]}` and report the document name and pages.
+
+The result should be **Sideband — workspace design**, with **Workspace prototypes**, **Design system**, **Interaction plan**, and **New user onboarding**. A new headless session starts with an untitled file, so open the repository file at the start of each session. After editing, call `save_file` on the opened workspace and regenerate the affected preview with the CLI commands above.
+
 ## Technical design notes
 
 The [project plan](../plan/00-overview.md) sets the order of implementation.
