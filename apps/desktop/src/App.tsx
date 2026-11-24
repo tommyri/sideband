@@ -22,14 +22,23 @@ export default function App() {
   const [startupError, setStartupError] = useState('')
 
   useEffect(() => {
+    let live = true
     void subscribeToClientEvents()
       .then(() => getSnapshot())
-      .then((snapshot) => hydrate(snapshot.servers))
-      .catch(() =>
-        setStartupError(
-          'Could not load saved servers. Restart the app and check that its data directory is writable.',
-        ),
-      )
+      .then((snapshot) => {
+        if (!live) return
+        hydrate(snapshot.servers)
+        if (isTauri() && !snapshot.servers.length) useAppStore.getState().setConnectOpen(true)
+      })
+      .catch(() => {
+        if (live)
+          setStartupError(
+            'Could not load saved servers. Restart the app and check that its data directory is writable.',
+          )
+      })
+    return () => {
+      live = false
+    }
   }, [hydrate])
 
   return (

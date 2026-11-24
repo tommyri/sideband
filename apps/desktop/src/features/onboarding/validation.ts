@@ -3,6 +3,11 @@ import type { ApiError, ProbeInput } from '../../lib/bindings'
 /** `ss_net::DEFAULT_PORT`: QUIC on UDP and HTTPS on TCP, as `ss-server init` writes. */
 export const DEFAULT_PORT = 443
 
+export class InvalidHttpsPort extends Error {
+  constructor() {
+    super('Enter an HTTPS port between 1 and 65535.')
+  }
+}
 export function parseAddress(value: string, httpsPort?: string): ProbeInput {
   const raw = value.trim().replace(/^ss:\/\//i, '')
   if (!raw || /[\s/@?#]/.test(raw) || raw.includes('://'))
@@ -11,17 +16,30 @@ export function parseAddress(value: string, httpsPort?: string): ProbeInput {
   if (!match || !match[1]) throw new Error('Use [IPv6]:port for an IPv6 address.')
   const port = match[2] ? Number(match[2]) : DEFAULT_PORT
   const https = httpsPort ? Number(httpsPort) : port
-  if (![port, https].every((p) => Number.isInteger(p) && p > 0 && p <= 65535))
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('Ports must be between 1 and 65535.')
+  if (httpsPort && (!/^\d+$/.test(httpsPort) || https < 1 || https > 65535))
+    throw new InvalidHttpsPort()
   return { host: match[1].replace(/^\[|\]$/g, '').toLowerCase(), port, httpsPort: https }
 }
-export function authError(username: string, password: string, register: boolean): string | null {
-  if (!username.trim() || !password) return 'Enter your username and password.'
-  if (register && !/^[a-z0-9_.]{3,32}$/.test(username))
-    return 'Use 3–32 lowercase letters, digits, underscores, or dots for your username.'
+export type AccountField = 'username' | 'password' | 'invite'
+export function accountErrors(
+  username: string,
+  password: string,
+  register: boolean,
+  inviteRequired: boolean,
+  invite: string,
+): Partial<Record<AccountField, string>> {
+  const errors: Partial<Record<AccountField, string>> = {}
+  if (!username.trim()) errors.username = 'Enter your server username.'
+  else if (register && !/^[a-z0-9_.]{3,32}$/.test(username.trim()))
+    errors.username = 'Use 3–32 lowercase letters, digits, underscores or dots.'
   const length = new TextEncoder().encode(password).length
-  if (length > 128 || (register && length < 8)) return 'Use a password between 8 and 128 bytes.'
-  return null
+  if (!password) errors.password = 'Enter your password.'
+  else if (length > 128 || (register && length < 8))
+    errors.password = 'Use a password between 8 and 128 bytes.'
+  if (inviteRequired && !invite.trim()) errors.invite = 'Enter the invite code from your host.'
+  return errors
 }
 const errors: Record<string, string> = {
   server_1: 'Your login or saved session was not accepted. Check your username and password.',

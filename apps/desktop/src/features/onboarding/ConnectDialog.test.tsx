@@ -10,7 +10,7 @@ import {
   probeServer,
   enablePublicCertificate,
 } from '../../lib/api'
-import { authError, parseAddress } from './validation'
+import { accountErrors, parseAddress } from './validation'
 
 vi.mock('../../lib/api', () => ({
   probeServer: vi.fn(),
@@ -53,11 +53,12 @@ async function discover() {
   fireEvent.change(screen.getByLabelText('Server address'), {
     target: { value: 'ss://friends.example:5781' },
   })
-  await screen.findByText('Friends · Invite required')
-  fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Find server' }))
+  await waitFor(() => expect(screen.queryByLabelText('Server address')).not.toBeInTheDocument())
 }
 async function trust() {
   await discover()
+  fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
   await screen.findByLabelText('Username')
 }
@@ -66,6 +67,7 @@ describe('onboarding', () => {
     await discover()
     expect(connect).not.toHaveBeenCalled()
     expect(approveFingerprint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
     await screen.findByLabelText('Username')
     expect(approveFingerprint).toHaveBeenCalledWith({
@@ -73,7 +75,6 @@ describe('onboarding', () => {
       port: 5781,
       fingerprint: metadata.fingerprint,
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'friend' } })
     fireEvent.change(screen.getByLabelText('Password'), {
       target: { value: 'a unique passphrase' },
@@ -97,11 +98,16 @@ describe('onboarding', () => {
     expect(screen.getByText(/intercepting/)).toBeInTheDocument()
     expect(approveFingerprint).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Replace trusted certificate' }))
+    expect(screen.getByRole('checkbox')).toHaveFocus()
+    expect(approveFingerprint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Replace trusted certificate' }))
     await screen.findByLabelText('Username')
     expect(approveFingerprint).toHaveBeenCalledTimes(1)
   })
   it('maps login errors and clears the failed password', async () => {
     await trust()
+    fireEvent.click(screen.getByRole('button', { name: 'Log in instead' }))
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'friend' } })
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong-password' } })
     vi.mocked(connect).mockRejectedValue({ code: 'server_1', message: 'internal detail' })
@@ -112,13 +118,43 @@ describe('onboarding', () => {
   })
   it('rejects invalid registration without invoking the bridge', async () => {
     await trust()
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'UPPER' } })
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'long-enough' } })
     fireEvent.change(screen.getByLabelText('Invite code'), { target: { value: 'invite' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create account and join' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('lowercase')
     expect(connect).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['open', true],
+    ['closed', false],
+  ])('uses the registration policy advertised as %s', async (registrationMode, register) => {
+    vi.mocked(probeServer).mockResolvedValue({
+      ...metadata,
+      registrationMode: String(registrationMode),
+      trusted: true,
+    })
+    await discover()
+    expect(screen.queryByLabelText('Invite code')).toBeNull()
+    expect(
+      screen.getByRole('button', {
+        name: register ? 'Create account and join' : 'Log in and join',
+      }),
+    ).toBeEnabled()
+    if (!register) expect(screen.queryByRole('button', { name: 'Create an account' })).toBeNull()
+  })
+  it('keeps the username and focuses the rejected invite after clearing the password', async () => {
+    await trust()
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'friend' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'long-enough' } })
+    fireEvent.change(screen.getByLabelText('Invite code'), { target: { value: 'old' } })
+    vi.mocked(connect).mockRejectedValue({ code: 'server_4', message: 'invite is not valid' })
+    fireEvent.click(screen.getByRole('button', { name: 'Create account and join' }))
+    await screen.findByRole('alert')
+    expect(screen.getByLabelText('Invite code')).toHaveAccessibleDescription(/new code/)
+    expect(screen.getByLabelText('Invite code')).toHaveFocus()
+    expect(screen.getByLabelText('Password')).toHaveValue('')
+    expect(screen.getByLabelText('Username')).toHaveValue('friend')
   })
   it('ignores late discovery responses after the address changes', async () => {
     let finish!: (value: typeof metadata) => void
@@ -130,11 +166,13 @@ describe('onboarding', () => {
     )
     render(<ConnectDialog />)
     fireEvent.change(screen.getByLabelText('Server address'), { target: { value: 'old.example' } })
+    expect(probeServer).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Find server' }))
     await waitFor(() => expect(probeServer).toHaveBeenCalled())
     fireEvent.change(screen.getByLabelText('Server address'), { target: { value: '' } })
     await act(async () => finish(metadata))
-    expect(screen.queryByText('Friends · Invite required')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Find server' })).toBeEnabled()
   })
   it('validates addresses, IPv6, ports and password byte limits', () => {
     expect(parseAddress('host')).toEqual({ host: 'host', port: 443, httpsPort: 443 })
@@ -145,7 +183,7 @@ describe('onboarding', () => {
     })
     for (const value of ['https://host', 'host:0', 'host:65536', 'host/path', 'user@host', '::1'])
       expect(() => parseAddress(value)).toThrow()
-    expect(authError('friend', 'é'.repeat(65), true)).toContain('128 bytes')
+    expect(accountErrors('friend', 'é'.repeat(65), true, false, '').password).toContain('128 bytes')
   })
   it('keeps keyboard focus within the dialog and focuses each new step', async () => {
     const geometry = vi
@@ -153,11 +191,12 @@ describe('onboarding', () => {
       .mockReturnValue({ length: 1 } as DOMRectList)
     try {
       await discover()
-      expect(screen.getByRole('heading', { name: 'Trust this server?' })).toHaveFocus()
+      expect(screen.getByRole('heading', { name: 'Check the server fingerprint' })).toHaveFocus()
       fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
-      expect(screen.getByRole('button', { name: 'Trust this server' })).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Go back' })).toHaveFocus()
       fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
       expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+      fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
       fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
       await waitFor(() => expect(screen.getByLabelText('Username')).toHaveFocus())
     } finally {
@@ -174,7 +213,7 @@ describe('onboarding', () => {
       fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
       expect(screen.getByText('Advanced connection options')).toHaveFocus()
       fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
-      expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Find server' })).toHaveFocus()
     } finally {
       geometry.mockRestore()
     }
@@ -208,7 +247,6 @@ it('explicitly switches a legacy pin only through the validated domain action', 
   fireEvent.change(screen.getByLabelText('Server address'), {
     target: { value: 'friends.example:443' },
   })
-  await screen.findByText('Friends · Invite required')
   fireEvent.click(screen.getByText('Advanced connection options'))
   fireEvent.click(screen.getByRole('button', { name: 'Use domain certificate validation' }))
   await screen.findByText(/Verified domain certificate/)
@@ -227,11 +265,14 @@ it('keeps a failed domain switch out of the login step', async () => {
   fireEvent.change(screen.getByLabelText('Server address'), {
     target: { value: 'friends.example:443' },
   })
-  await screen.findByText('Friends · Invite required')
   fireEvent.click(screen.getByText('Advanced connection options'))
   fireEvent.click(screen.getByRole('button', { name: 'Use domain certificate validation' }))
   await screen.findByText('Certificate validation failed')
   expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry domain validation' }))
+  await screen.findByText('Certificate validation failed')
+  expect(enablePublicCertificate).toHaveBeenCalledTimes(2)
+  expect(probeServer).not.toHaveBeenCalled()
   expect(approveFingerprint).not.toHaveBeenCalled()
   expect(connect).not.toHaveBeenCalled()
 })

@@ -16,26 +16,22 @@ To report a problem with evidence, see
 
 ## Add a server
 
-You need three things from the server's owner: its address (for example
-`voice.example.com`, with `:port` added if the server does not use 443), an
-invite code, and its certificate fingerprint.
-
-1. Choose **Add your first server** (or **Add server** in the server rail).
-2. Enter the **Server address** as `host`, `host:port`, `ss://host:port`,
-   or `[IPv6 address]:port`. Without a port the app uses 443, the server's
-   default.
-3. If the owner told you the HTTPS port differs from the server port, open
-   **Advanced connection options** and enter it in **HTTPS port**.
-4. **Continue.** The app checks both connections and shows the server's name
-   and whether it needs an invite.
-5. **Trust this server?** Compare the SHA-256 fingerprint shown with the one
-   the owner sent you through a channel you already trust. No login details
-   have been sent at this point. A server with a publicly trusted domain
-   certificate skips this step and shows "Verified domain certificate".
-6. **Create account** with your username, a password of 8 to 128 bytes (16 or
-   more characters recommended) and the invite code, or **Log in** if you
-   already have an account. Usernames are 3 to 32 lowercase letters, digits,
-   underscores or dots.
+1. On first launch, **Join your first server** opens with the address field focused.
+   To join another server later, choose **Add server** in the server rail.
+2. Paste the address your host shared and choose **Find server**. Sideband accepts
+   `host`, `host:port`, `ss://host:port`, and `[IPv6 address]:port`. The default
+   port is 443. If your host gave you a separate HTTPS port, enter it under
+   **Advanced connection options**. You can edit the address and retry a failed check.
+3. A verified domain or previously trusted fingerprint takes you to the account
+   form. For a new self-signed certificate, compare the full SHA-256 fingerprint
+   with your host through a conversation you already trust. Confirm that it
+   matches and choose **Trust this server** to continue.
+4. Create your account on this server, or choose **Log in instead**. Usernames
+   are 3–32 lowercase letters, digits, underscores or dots. Passwords are
+   8–128 UTF-8 bytes. Invite-only servers also ask for the code from your host.
+   Servers with closed registration offer login. A rejected attempt keeps your
+   username and clears the password. Once connected, you can send a message
+   before setting up your microphone.
 
 The app remembers your session on this computer, never your password.
 Next time, select the server and choose **Reconnect / log in**, then

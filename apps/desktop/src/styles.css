@@ -78,6 +78,7 @@ textarea:focus-visible {
 }
 
 /* Shared FigCraft surfaces. */
+.join-server,
 .personal-audio,
 .has-chat,
 .has-voice-room,
@@ -100,7 +101,7 @@ textarea:focus-visible {
   --rose-tint: #432a30;
 }
 .app-shell[data-theme='light']
-  :is(.personal-audio, .has-chat, .chat-composer, .voice-dock, .has-voice-room) {
+  :is(.join-server, .personal-audio, .has-chat, .chat-composer, .voice-dock, .has-voice-room) {
   --panel: #f1f2ef;
   --panel-raised: #fff;
   --panel-hover: #e6e8e5;
