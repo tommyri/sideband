@@ -16,7 +16,7 @@ import { isTauri } from '../../lib/tauri'
 import { useAppStore } from '../../store/app-store'
 import { leaveVoice, voiceControl } from './api'
 import { runVoice, useVoiceStore } from './store'
-import { useChannelMicrophone } from './microphone'
+import { useMicrophoneGuidance } from './microphone'
 import { voiceShortcut } from './shortcuts'
 
 function ptt(enabled: boolean) {
@@ -44,7 +44,12 @@ export function VoiceDock() {
   const server = servers.find((s) => s.id === active?.serverId)
   const channel = view?.channels.find((c) => c.id === active?.channelId)
   const own = view?.members.find((m) => m.id === view.ownUserId)
-  const mic = useChannelMicrophone(active?.serverId, view, channel, server?.status.kind)
+  const mic = useMicrophoneGuidance({
+    server: active?.serverId,
+    view,
+    channel,
+    connection: server?.status.kind,
+  })
   const canTalk = mic.canPress && !busy
   useEffect(() => {
     const release = () => {
@@ -54,14 +59,10 @@ export function VoiceDock() {
       if (document.hidden) release()
     }
     window.addEventListener('blur', release)
-    window.addEventListener('pointerup', release)
-    window.addEventListener('pointercancel', release)
     document.addEventListener('visibilitychange', hide)
     return () => {
       ptt(false)
       window.removeEventListener('blur', release)
-      window.removeEventListener('pointerup', release)
-      window.removeEventListener('pointercancel', release)
       document.removeEventListener('visibilitychange', hide)
     }
   }, [active?.serverId, active?.channelId])
@@ -102,38 +103,53 @@ export function VoiceDock() {
   }, [])
   useEffect(() => {
     if (globalPtt || !preferences.binding || !canTalk) return
+    let bindingHeld = false
     const matches = (event: KeyboardEvent | PointerEvent) =>
       'code' in event
         ? event.code === preferences.binding
         : `Mouse${event.button}` === preferences.binding
     const down = (event: KeyboardEvent | PointerEvent) => {
       if (
+        event.defaultPrevented ||
         !matches(event) ||
         ('repeat' in event && event.repeat) ||
         document.querySelector('dialog[open]')
       )
         return
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('input,textarea,select,[contenteditable="true"]')
-      )
-        return
+      if (event.target instanceof Element) {
+        if (event.target.closest('input,textarea,select,[contenteditable="true"]')) return
+        const activatesControl =
+          'key' in event ? event.key === ' ' || event.key === 'Enter' : event.button === 0
+        if (activatesControl && event.target.closest('button,summary,a[href]')) return
+      }
       event.preventDefault()
+      bindingHeld = true
       ptt(true)
     }
     const up = (event: KeyboardEvent | PointerEvent) => {
-      if (matches(event)) ptt(false)
+      if (bindingHeld && matches(event)) {
+        bindingHeld = false
+        ptt(false)
+      }
+    }
+    const cancel = () => {
+      if (bindingHeld && preferences.binding.startsWith('Mouse')) {
+        bindingHeld = false
+        ptt(false)
+      }
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('pointerdown', down)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
     return () => {
       ptt(false)
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
       window.removeEventListener('pointerdown', down)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
     }
   }, [globalPtt, preferences.binding, canTalk])
   function gate(open: boolean) {
@@ -243,7 +259,7 @@ export function VoiceDock() {
             <button
               className="button secondary"
               aria-label="Audio settings"
-              title="Voice settings"
+              title="Personal audio settings"
               onClick={(event) => {
                 event.currentTarget.focus()
                 setSettings(true)

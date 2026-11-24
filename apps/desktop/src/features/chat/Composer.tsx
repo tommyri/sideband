@@ -1,10 +1,10 @@
-import { CaseSensitive, Paperclip } from 'lucide-react'
+import { CaseSensitive, Paperclip, Reply, SendHorizontal, X } from 'lucide-react'
 import { ActionMenu } from '../../components/ActionMenu'
 import { useUploads } from './useUploads'
 import { fileSize } from './attachments'
 import { draftNonce, clearDraftNonce } from './navigation'
 import { completeOptions, completionAt, wrapSelection, type ChatMember } from './rich-model'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 import { sendMessage } from '../../lib/api'
 import { chatAction, errorText, notifyTyping } from './api'
@@ -46,6 +46,26 @@ export function Composer({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
+  // Older webviews need an explicit height when the text wraps or the pane resizes.
+  useLayoutEffect(() => {
+    const field = input.current
+    if (!field || globalThis.CSS?.supports('field-sizing', 'content')) return
+    const fit = () => {
+      field.style.height = 'auto'
+      field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`
+    }
+    fit()
+    if (typeof ResizeObserver === 'undefined') return
+    let width = field.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (width !== field.clientWidth) {
+        width = field.clientWidth
+        fit()
+      }
+    })
+    observer.observe(field)
+    return () => observer.disconnect()
+  }, [draft])
   const [cursor, setCursor] = useState(initialDraft.length)
   const [activeOption, setActiveOption] = useState(0)
   const [dismissed, setDismissed] = useState(false)
@@ -182,13 +202,25 @@ export function Composer({
     >
       {target && (
         <div className="chat-target">
-          <span>
+          {target.kind === 'reply' && <Reply size={16} aria-hidden="true" />}
+          <span className="target-label">
             {target.kind === 'edit'
               ? 'Editing message'
               : `Replying to ${target.message.authorName ?? 'Unknown author'}`}
           </span>
-          <button type="button" className="button secondary" disabled={busy} onClick={cancel}>
-            Cancel
+          {target.kind === 'reply' && (
+            <span className="target-excerpt">
+              {target.message.content.trim() || target.message.attachments[0]?.filename}
+            </span>
+          )}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={target.kind === 'reply' ? 'Cancel reply' : 'Cancel edit'}
+            disabled={busy}
+            onClick={cancel}
+          >
+            <X size={17} />
           </button>
         </div>
       )}
@@ -355,6 +387,7 @@ export function Composer({
           (target?.kind !== 'edit' && (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
         }
       >
+        <SendHorizontal size={16} aria-hidden="true" />{' '}
         {busy ? 'Sending…' : target?.kind === 'edit' ? 'Save edit' : 'Send'}
       </button>
       {error && <p role="alert">{error} Your message is still here; retry when ready.</p>}

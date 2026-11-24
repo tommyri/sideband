@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AudioSettings } from '../settings/audio/AudioSettings'
+import { AudioSettings, type AudioSettingsFocus } from '../settings/audio/AudioSettings'
 import { getSnapshot, removeServer, reorderServers } from '../../lib/api'
 import { useAppStore } from '../../store/app-store'
 import { friendlyError } from './validation'
@@ -14,7 +14,11 @@ export function ServerHome() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
-  const [settings, setSettings] = useState(false)
+  const [settings, setSettings] = useState<AudioSettingsFocus | 'general' | null>(null)
+  function openSettings(button: HTMLButtonElement, destination: NonNullable<typeof settings>) {
+    button.focus()
+    setSettings(destination)
+  }
 
   async function change(action: () => Promise<void>) {
     setBusy(true)
@@ -41,9 +45,17 @@ export function ServerHome() {
   }
   return (
     <main className="server-home">
-      {settings && <AudioSettings close={() => setSettings(false)} />}
-      <button className="button secondary" onClick={() => setSettings(true)}>
-        Audio settings
+      {settings && (
+        <AudioSettings
+          initialFocus={settings === 'general' ? undefined : settings}
+          close={() => setSettings(null)}
+        />
+      )}
+      <button
+        className="button secondary"
+        onClick={(e) => openSettings(e.currentTarget, 'general')}
+      >
+        Personal settings
       </button>
       <p className="eyebrow">Sideband · Testing app</p>
       <h1>{server?.label ?? 'A place for your people'}</h1>
@@ -97,10 +109,12 @@ export function ServerHome() {
                   : 'Connect to your server'}
               </li>
               <li>
-                <button onClick={() => setSettings(true)}>Pick your microphone and output</button>
+                <button onClick={(e) => openSettings(e.currentTarget, 'microphone')}>
+                  Pick your microphone and output
+                </button>
               </li>
               <li>
-                <button onClick={() => setSettings(true)}>
+                <button onClick={(e) => openSettings(e.currentTarget, 'talkingMode')}>
                   Choose a push-to-talk key or voice activation
                 </button>
               </li>
@@ -113,20 +127,24 @@ export function ServerHome() {
           <section className="server-management" aria-label="Manage server">
             <h2>Manage server</h2>
             <div className="dialog-actions">
-              <button
-                className="button secondary"
-                disabled={busy || servers[0]?.id === server.id}
-                onClick={() => move(-1)}
-              >
-                Move earlier
-              </button>
-              <button
-                className="button secondary"
-                disabled={busy || servers.at(-1)?.id === server.id}
-                onClick={() => move(1)}
-              >
-                Move later
-              </button>
+              {servers.length > 1 && (
+                <>
+                  <button
+                    className="button secondary"
+                    disabled={busy || servers[0]?.id === server.id}
+                    onClick={() => move(-1)}
+                  >
+                    Move earlier
+                  </button>
+                  <button
+                    className="button secondary"
+                    disabled={busy || servers.at(-1)?.id === server.id}
+                    onClick={() => move(1)}
+                  >
+                    Move later
+                  </button>
+                </>
+              )}
               <button
                 className="button secondary"
                 disabled={busy}

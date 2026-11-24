@@ -10,6 +10,7 @@ import type {
   ServerProbe,
 } from './bindings'
 import { invokeBridge, isTauri } from './tauri'
+import { forgetConversations } from '../features/channels/destination'
 
 const previewServer: ServerSummary = {
   id: 'preview.local:5781',
@@ -43,8 +44,21 @@ export function probeServer(input: ProbeInput): Promise<ServerProbe> {
 export function enablePublicCertificate(input: ProbeInput): Promise<ServerProbe> {
   return invokeBridge('use_public_certificate', { input })
 }
-export function removeServer(serverId: string): Promise<void> {
-  return invokeBridge('remove_server', { serverId })
+export async function removeServer(serverId: string): Promise<void> {
+  await invokeBridge('remove_server', { serverId })
+  forgetConversations(serverId)
+}
+
+// The sidebar and conversation restoration can request the same cursor concurrently.
+const dmPages = new Map<string, Promise<boolean>>()
+export function loadDmPage(serverId: string) {
+  const pending = dmPages.get(serverId)
+  if (pending) return pending
+  const request = invokeBridge<boolean>('load_dms', { serverId }).finally(() =>
+    dmPages.delete(serverId),
+  )
+  dmPages.set(serverId, request)
+  return request
 }
 export function reorderServers(serverIds: string[]): Promise<void> {
   return invokeBridge('reorder_servers', { serverIds })

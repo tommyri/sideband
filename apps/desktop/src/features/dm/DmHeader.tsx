@@ -16,8 +16,11 @@ export function DmHeader({
   const members = new Map(view.members.map((m) => [m.id, m]))
   return (
     <div className="dm-header">
-      <details>
-        <summary>{conversation.memberIds.length} participants</summary>
+      <section aria-label="Participants">
+        <h3>
+          {conversation.memberIds.length}{' '}
+          {conversation.memberIds.length === 1 ? 'participant' : 'participants'}
+        </h3>
         <ul>
           {conversation.memberIds.map((id) => (
             <li key={id}>
@@ -26,7 +29,7 @@ export function DmHeader({
             </li>
           ))}
         </ul>
-      </details>
+      </section>
       {conversation.kind === 5 && (
         <div className="dm-header-actions">
           <button

@@ -1,4 +1,14 @@
-import { ChevronDown } from 'lucide-react'
+import {
+  ArrowLeft,
+  ChevronDown,
+  Hash,
+  MessageCircle,
+  PanelLeft,
+  Search,
+  SlidersHorizontal,
+  Users,
+  Volume2,
+} from 'lucide-react'
 import { ActionMenu } from '../../components/ActionMenu'
 import { disconnect } from '../../lib/api'
 import { useStreamPolling } from '../stream/store'
@@ -12,38 +22,25 @@ import { AuditLog } from '../admin/AuditLog'
 import { InviteManager } from '../admin/InviteManager'
 import { DmList } from '../dm/DmList'
 import { DmDialog, type DmMode } from '../dm/DmDialog'
+import { ChatMembers } from './ChatMembers'
 import { DmHeader } from '../dm/DmHeader'
 import { dmName } from '../dm/model'
 import { Chat } from '../chat/Chat'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../store/app-store'
 import type { ChannelView } from '../../lib/generated/ChannelView'
-import type { ServerView } from '../../lib/generated/ServerView'
-import type { ConnectionStatus } from '../../lib/generated/ConnectionStatus'
-import { useChannelMicrophone } from '../voice/microphone'
+import type { ParticipantView } from '../../lib/generated/ParticipantView'
+import { VoiceRoomPreview } from './VoiceRoomPreview'
+import { NoChannels, VoiceLobby } from './ServerLanding'
+import { lastConversation, rememberConversation, workspaceDestination } from './destination'
 import { shortcutLabel } from '../voice/shortcuts'
 import { refreshVoice, runVoice, useVoiceStore } from '../voice/store'
-import { joinVoice, leaveVoice, memberAction } from '../voice/api'
+import { memberAction } from '../voice/api'
 import { MemberRow } from './MemberRow'
 import { MemberMenu } from './MemberMenu'
 import { AudioSettings } from '../settings/audio/AudioSettings'
 import { ServerHome } from '../onboarding/ServerHome'
 import { ServerNotices } from '../onboarding/ServerNotices'
-
-function MicrophoneGuidance({
-  server,
-  view,
-  channel,
-  connection,
-}: {
-  server: string
-  view: ServerView
-  channel: ChannelView
-  connection?: ConnectionStatus['kind']
-}) {
-  const mic = useChannelMicrophone(server, view, channel, connection)
-  return <p>{mic.guidance}</p>
-}
 
 function visibleChannels(channels: ChannelView[], collapsed: Set<string>) {
   const byId = new Map(channels.map((c) => [c.id, c]))
@@ -67,6 +64,18 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const select = useVoiceStore((s) => s.select)
   const busy = useVoiceStore((s) => s.busy)
   const active = useVoiceStore((s) => s.active)
+  const current = view?.channels.find(
+    (c) => c.id === (selected ?? (active?.serverId === server ? active.channelId : undefined)),
+  )
+  const currentDm = view?.directMessages.find((dm) => dm.id === selected)
+  const chatChannel = currentDm ?? (current?.kind === 2 ? current : undefined)
+  const conversationId = chatChannel?.id
+  const conversationKind = currentDm ? 'dm' : 'channel'
+  const user = view?.ownUserId
+  useEffect(() => {
+    if (user && conversationId)
+      rememberConversation(server, user, { id: conversationId, kind: conversationKind })
+  }, [server, user, conversationId, conversationKind])
   const status = useAppStore((s) => s.servers.find((item) => item.id === server)?.status)
   const label = useAppStore((s) => s.servers.find((item) => item.id === server)?.label)
   const [collapsed, setCollapsed] = useState(new Set<string>())
@@ -81,6 +90,31 @@ export function ChannelWorkspace({ server }: { server: string }) {
     previousDetails.current = details
   }, [details])
   const [membersOpen, setMembersOpen] = useState(false)
+  const [showRoomMembers, setShowRoomMembers] = useState(false)
+  const [showChannels, setShowChannels] = useState(false)
+  const channelsButton = useRef<HTMLButtonElement>(null)
+  const channelTree = useRef<HTMLElement>(null)
+  const destinationHeading = useRef<HTMLHeadingElement>(null)
+  const focusDestination = useRef(false)
+  const returnToRoom = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (showChannels) {
+      const tree = channelTree.current
+      const target =
+        tree?.querySelector<HTMLElement>('[aria-current="page"]') ??
+        tree?.querySelector<HTMLElement>('.live-channel, button')
+      target?.focus()
+    } else if (focusDestination.current) destinationHeading.current?.focus({ preventScroll: true })
+    else if (returnToRoom.current)
+      document.getElementById(`lobby-preview-${returnToRoom.current}`)?.focus()
+    focusDestination.current = false
+    returnToRoom.current = null
+  }, [showChannels, selected])
+  function openChannel(channel: ChannelView, fromLobby = false) {
+    focusDestination.current = fromLobby || !!window.matchMedia?.('(max-width: 900px)').matches
+    setShowChannels(false)
+    select(server, channel.id)
+  }
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(false)
   const [channelsOpen, setChannelsOpen] = useState(false)
@@ -89,15 +123,38 @@ export function ChannelWorkspace({ server }: { server: string }) {
   const [invitesOpen, setInvitesOpen] = useState(false)
   const [dmDialog, setDmDialog] = useState<DmMode | null>(null)
   const [dmWarning, setDmWarning] = useState('')
-  const openMenu = useCallback((id: string) => setMenu(id), [])
   useEffect(() => {
     void refreshVoice(server)
+    return () => {
+      if (useAppStore.getState().selectedServerId === server) return
+      const state = useVoiceStore.getState()
+      const previous = state.views[server]
+      if (previous)
+        state.select(
+          server,
+          workspaceDestination(
+            previous,
+            server,
+            undefined,
+            lastConversation(server, previous.ownUserId),
+          ),
+        )
+    }
   }, [server])
   const members = useMemo(() => new Map(view?.members.map((m) => [m.id, m])), [view?.members])
   const participantsByUser = useMemo(
     () => new Map(view?.participants.map((participant) => [participant.userId, participant])),
     [view?.participants],
   )
+  const participantsByRoom = useMemo(() => {
+    const rooms = new Map<string, ParticipantView[]>()
+    for (const participant of view?.participants ?? []) {
+      const room = rooms.get(participant.channelId)
+      if (room) room.push(participant)
+      else rooms.set(participant.channelId, [participant])
+    }
+    return rooms
+  }, [view?.participants])
   const groups = useMemo(() => {
     const groups = new Map<
       string,
@@ -144,7 +201,6 @@ export function ChannelWorkspace({ server }: { server: string }) {
           label={`Server menu for ${label ?? 'server'}`}
           actions={[
             { label: 'Server details', onSelect: () => setDetails(true) },
-            { label: 'Audio settings', onSelect: () => setAudioSettings(true) },
             {
               label: 'Members & moderation',
               hidden: !view?.canModerateMembers,
@@ -201,6 +257,15 @@ export function ChannelWorkspace({ server }: { server: string }) {
       </h2>
     </header>
   )
+  function openPersonalSettings(event: React.MouseEvent<HTMLButtonElement>) {
+    event.currentTarget.focus()
+    setAudioSettings(true)
+  }
+  const personalSettingsButton = (
+    <button className="personal-settings-sidebar" onClick={openPersonalSettings}>
+      <SlidersHorizontal size={16} /> Personal settings
+    </button>
+  )
   const audioDialog = audioSettings && <AudioSettings close={() => setAudioSettings(false)} />
   if (!view)
     return (
@@ -208,6 +273,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
         {audioDialog}
         <aside className="live-channels" aria-label="Channel tree">
           {serverHeader}
+          {personalSettingsButton}
         </aside>
         <main className="live-channel-main">
           <p role="status">Loading channels…</p>
@@ -217,19 +283,33 @@ export function ChannelWorkspace({ server }: { server: string }) {
         </main>
       </section>
     )
-  const current = view.channels.find(
-    (c) => c.id === (selected ?? (active?.serverId === server ? active.channelId : undefined)),
-  )
-  const currentDm = view.directMessages.find((dm) => dm.id === selected)
-  const chatChannel = currentDm ?? (current?.kind === 2 ? current : undefined)
   const title = currentDm ? dmName(currentDm, members, view.ownUserId) : current?.name
   const chosenMember = view.members.find((m) => m.id === menu)
-  const join = (channel: ChannelView) => {
-    select(server, channel.id)
-    if (channel.kind === 3) void runVoice(() => joinVoice(server, channel.id))
-  }
+  const voiceRoom = current?.kind === 3 ? current : undefined
+  const rooms = view.channels.filter((c) => c.kind === 3)
+  const voiceOnly = rooms.length > 0 && !view.channels.some((c) => c.kind === 2)
+  const roster = groups.map((group) => (
+    <section key={`${group.position}:${group.name}`}>
+      <h3 style={{ color: group.color ?? undefined }}>
+        {group.name} — {group.users.length}
+      </h3>
+      {group.users.map((member) => (
+        <MemberRow
+          key={member.id}
+          server={server}
+          member={member}
+          participant={participantsByUser.get(member.id)}
+          onMenu={setMenu}
+        />
+      ))}
+    </section>
+  ))
   return (
-    <section className={`live-workspace ${chatChannel ? 'has-chat' : ''}`}>
+    <section
+      className={`live-workspace ${chatChannel ? 'has-chat' : 'has-voice-room'}`}
+      data-members-open={showRoomMembers || undefined}
+      data-channels-open={showChannels || undefined}
+    >
       {searchOpen && connected && (
         <SearchPanel
           key={`${server}:${view.ownUserId}`}
@@ -316,7 +396,19 @@ export function ChannelWorkspace({ server }: { server: string }) {
         />
       )}
       {audioDialog}
-      <aside className="live-channels" aria-label="Channel tree">
+      <aside
+        className="live-channels"
+        aria-label="Channel tree"
+        id="channel-tree"
+        ref={channelTree}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && showChannels && channelsButton.current?.offsetWidth) {
+            event.preventDefault()
+            setShowChannels(false)
+            channelsButton.current.focus()
+          }
+        }}
+      >
         {serverHeader}
         <div className="live-channel-scroll">
           <DmList
@@ -325,6 +417,8 @@ export function ChannelWorkspace({ server }: { server: string }) {
             selected={selected}
             connected={connected}
             select={(id) => {
+              focusDestination.current = !!window.matchMedia?.('(max-width: 900px)').matches
+              setShowChannels(false)
               select(server, id)
               setDmDialog(null)
               setDmWarning('')
@@ -332,7 +426,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
             create={() => setDmDialog('create')}
           />
           {visibleChannels(view.channels, collapsed).map(({ channel, depth }) => {
-            const participants = view.participants.filter((p) => p.channelId === channel.id)
+            const participants = participantsByRoom.get(channel.id) ?? []
             return (
               <div
                 key={channel.id}
@@ -385,22 +479,17 @@ export function ChannelWorkspace({ server }: { server: string }) {
                 ) : (
                   <button
                     className={`live-channel ${current?.id === channel.id ? 'selected' : ''}`}
-                    aria-label={`${channel.kind === 3 ? 'Join voice channel' : 'Open text channel'} ${channel.name}`}
-                    disabled={busy || !connected || (channel.kind === 3 && !channel.canJoin)}
-                    title={
-                      channel.kind === 3 && !channel.canJoin
-                        ? 'Requires VIEW_CHANNEL and CONNECT'
-                        : undefined
-                    }
-                    onClick={() => {
-                      select(server, channel.id)
-                      if (localStorage.getItem('ss.doubleClickJoin') !== 'true') join(channel)
-                    }}
-                    onDoubleClick={() => {
-                      if (localStorage.getItem('ss.doubleClickJoin') === 'true') join(channel)
-                    }}
+                    aria-label={`${channel.kind === 3 ? 'Preview voice room' : 'Open text channel'} ${channel.name}`}
+                    aria-current={current?.id === channel.id ? 'page' : undefined}
+                    aria-describedby={channel.kind === 3 ? `occupancy-${channel.id}` : undefined}
+                    onClick={() => openChannel(channel)}
                   >
-                    <span>{channel.kind === 3 ? '◖' : '#'}</span> {channel.name}
+                    {channel.kind === 3 ? (
+                      <Volume2 size={17} className="room-speaker" />
+                    ) : (
+                      <Hash size={17} />
+                    )}{' '}
+                    {channel.name}
                     {channel.unread && (
                       <span className="unread-marker" aria-label="Unread messages">
                         ●
@@ -412,9 +501,10 @@ export function ChannelWorkspace({ server }: { server: string }) {
                       </span>
                     )}
                     {channel.kind === 3 && (
-                      <small>
+                      <small id={`occupancy-${channel.id}`}>
                         {participants.length}
-                        {channel.userLimit != null ? `/${channel.userLimit}` : ''}
+                        {channel.userLimit != null ? `/${channel.userLimit}` : ''}{' '}
+                        <span className="sr-only">in voice</span>
                       </small>
                     )}
                   </button>
@@ -427,151 +517,172 @@ export function ChannelWorkspace({ server }: { server: string }) {
                       server={server}
                       member={member}
                       participant={participant}
-                      onMenu={openMenu}
+                      onMenu={setMenu}
                     />
                   ) : null
                 })}
               </div>
             )
           })}
-          {view.channels.length === 0 && <p>No channels are visible to your account.</p>}
         </div>
+        {personalSettingsButton}
       </aside>
       <main className={`live-channel-main ${chatChannel ? 'text-workspace' : ''}`}>
-        <header>
-          <p className="eyebrow">
-            {currentDm
-              ? 'Direct messages'
-              : current?.kind === 3
-                ? 'Voice channel'
-                : 'Your community'}
-          </p>
-          <h1>{title ?? 'Choose a channel'}</h1>
+        <header className={chatChannel ? 'room-toolbar conversation-toolbar' : 'room-toolbar'}>
           <button
-            className="button secondary"
-            disabled={!connected}
-            onClick={() => setSearchOpen(true)}
+            ref={channelsButton}
+            className="button secondary room-channels-toggle"
+            aria-label="Channels"
+            title="Channels"
+            aria-controls="channel-tree"
+            aria-expanded={showChannels}
+            onClick={() => setShowChannels(!showChannels)}
           >
-            Search messages
+            <PanelLeft size={18} />
           </button>
-          {currentDm && (
-            <DmHeader
-              conversation={currentDm}
-              view={view}
-              connected={connected}
-              manage={setDmDialog}
-            />
+
+          {chatChannel ? (
+            <div className="conversation-title">
+              <small>{currentDm ? 'Direct messages' : label}</small>
+              <h1 ref={destinationHeading} tabIndex={-1} title={title}>
+                {currentDm ? (
+                  <MessageCircle aria-hidden="true" size={20} />
+                ) : (
+                  <Hash aria-hidden="true" size={20} />
+                )}
+                <span>{title}</span>
+              </h1>
+            </div>
+          ) : voiceRoom && voiceOnly ? (
+            <button
+              className="button secondary lobby-back"
+              onClick={() => {
+                returnToRoom.current = voiceRoom.id
+                select(server, '')
+              }}
+            >
+              <ArrowLeft size={16} /> Voice rooms
+            </button>
+          ) : voiceRoom ? (
+            <span>
+              <Volume2 size={20} /> Voice rooms
+            </span>
+          ) : (
+            <span className="landing-context">
+              <small>{label}</small>
+              {rooms.length ? 'Voice rooms' : 'Channels'}
+            </span>
           )}
-          {dmWarning && <p role="alert">{dmWarning}</p>}
-          {current?.kind === 3 && (
-            <p>
-              {current.profile} profile ·{' '}
-              {view.participants.filter((p) => p.channelId === current.id).length} in voice
-            </p>
+          {(voiceRoom || chatChannel) && (
+            <button
+              className="button secondary"
+              aria-label="Search messages"
+              title="Search messages"
+              disabled={!connected}
+              onClick={(event) => {
+                event.currentTarget.focus()
+                setSearchOpen(true)
+              }}
+            >
+              <Search size={16} />
+              {chatChannel && 'Search'}
+            </button>
           )}
+          {chatChannel ? (
+            <ChatMembers key={chatChannel.id}>
+              {currentDm ? (
+                <DmHeader
+                  conversation={currentDm}
+                  view={view}
+                  connected={connected}
+                  manage={setDmDialog}
+                />
+              ) : (
+                roster
+              )}
+            </ChatMembers>
+          ) : (
+            <button
+              className="button secondary"
+              aria-expanded={showRoomMembers}
+              aria-controls="server-roster"
+              onClick={() => setShowRoomMembers(!showRoomMembers)}
+            >
+              <Users size={16} /> Members
+            </button>
+          )}
+          <button
+            className="button secondary personal-settings-compact"
+            onClick={openPersonalSettings}
+          >
+            <SlidersHorizontal size={16} /> Personal settings
+          </button>
         </header>
+        {dmWarning && <p role="alert">{dmWarning}</p>}
         {status?.kind === 'reconnecting' && (
           <p role="status" className="connection-banner">
             Reconnecting to {label} (attempt {status.attempt})…
           </p>
         )}
         <ServerNotices server={server} />
-        {current?.kind === 3 ? (
-          <>
-            {active?.serverId === server && active.channelId === current.id ? (
-              <button
-                className="button secondary"
-                onClick={() => void runVoice(leaveVoice)}
-                disabled={busy}
-              >
-                Leave voice
-              </button>
-            ) : (
-              <button
-                className="button primary"
-                disabled={busy || !connected || !current.canJoin}
-                onClick={() => join(current)}
-              >
-                Join voice
-              </button>
-            )}
-            <MicrophoneGuidance
-              server={server}
-              view={view}
-              channel={current}
-              connection={status?.kind}
-            />
-            <div className="voice-stage">
-              {view.participants
-                .filter((p) => p.channelId === current.id)
-                .map((participant) => {
-                  const member = members.get(participant.userId)
-                  return member ? (
-                    <MemberRow
-                      key={participant.connectionId}
-                      server={server}
-                      member={member}
-                      participant={participant}
-                      onMenu={openMenu}
-                    />
-                  ) : null
-                })}
-            </div>
-          </>
+        {voiceRoom ? (
+          <VoiceRoomPreview
+            headingRef={destinationHeading}
+            server={server}
+            serverName={label}
+            view={view}
+            channel={voiceRoom}
+            connection={status?.kind}
+            members={members}
+            participants={participantsByRoom.get(voiceRoom.id) ?? []}
+            openMember={setMenu}
+            openAudio={() => setAudioSettings(true)}
+          />
         ) : chatChannel ? (
           <Chat
-            key={`${server}:${chatChannel.id}`}
+            key={`${server}:${view.ownUserId}:${chatChannel.id}`}
             server={server}
             channel={chatChannel.id}
             name={title ?? 'Conversation'}
             connected={connected}
           />
+        ) : rooms.length ? (
+          <VoiceLobby
+            server={server}
+            rooms={rooms}
+            members={members}
+            participants={participantsByRoom}
+            connected={connected}
+            preview={(room) => openChannel(room, true)}
+          />
         ) : (
-          <p>Select a channel to join the conversation.</p>
+          <NoChannels server={server} />
         )}
-        {!chatChannel && (
+        {voiceRoom && (
           <details className="voice-ui-settings">
-            <summary>Interaction settings</summary>
-            <label>
-              <input
-                type="checkbox"
-                defaultChecked={localStorage.getItem('ss.doubleClickJoin') === 'true'}
-                onChange={(e) =>
-                  localStorage.setItem('ss.doubleClickJoin', String(e.target.checked))
-                }
-              />{' '}
-              Double-click voice channels to join
-            </label>
+            <summary>Keyboard shortcuts</summary>
             <p>
               Mute: {shortcutLabel('mute')} · Deafen: {shortcutLabel('deafen')} · Previous channel:{' '}
               {shortcutLabel('previous')} · Next channel: {shortcutLabel('next')}. These shortcuts
               work while the app is focused.
             </p>
             <p>
-              Choose your devices and talking mode in Audio settings. Open Global shortcuts there to
-              set up push-to-talk outside the app.
+              Choose your devices and talking mode in Personal settings. Open Global shortcuts under
+              More audio controls to set up push-to-talk outside the app.
             </p>
           </details>
         )}
       </main>
-      <aside className="live-members" aria-label="Members">
-        {groups.map((group) => (
-          <section key={`${group.position}:${group.name}`}>
-            <h3 style={{ color: group.color ?? undefined }}>
-              {group.name} — {group.users.length}
-            </h3>
-            {group.users.map((member) => (
-              <MemberRow
-                key={member.id}
-                server={server}
-                member={member}
-                participant={participantsByUser.get(member.id)}
-                onMenu={openMenu}
-              />
-            ))}
-          </section>
-        ))}
-      </aside>
+      {!chatChannel && (
+        <aside
+          className="live-members"
+          id="server-roster"
+          aria-label="Members"
+          hidden={!showRoomMembers}
+        >
+          {roster}
+        </aside>
+      )}
       {chosenMember && (
         <MemberMenu
           connected={connected}

@@ -1,4 +1,4 @@
-import { Ellipsis } from 'lucide-react'
+import { Ellipsis, Reply } from 'lucide-react'
 import { ActionMenu } from '../../components/ActionMenu'
 import { MessageFiles } from './MessageFiles'
 import { RichMessage } from './RichMessage'
@@ -11,7 +11,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 import { chatAction, errorText, messageContext } from './api'
 import { useChat } from './useChat'
-import { afterTrim, atBottom, canEdit, day, grouped } from './model'
+import { afterTrim, atBottom, canEdit, day, dayLabel, grouped } from './model'
 import { Composer } from './Composer'
 import './chat.css'
 
@@ -231,24 +231,20 @@ export function Chat({
   )
   return (
     <section className="chat" aria-label={`Messages in ${name}`}>
-      <div className="chat-history-tools">
-        <button
-          className="button secondary"
-          disabled={loading || !connected || !hasOlder}
-          onClick={() => void load(messages[0]?.id ?? null)}
-        >
-          {loading
-            ? 'Loading messages…'
-            : hasOlder
-              ? 'Load older messages'
-              : 'Beginning of conversation'}
-        </button>
-        {(!bottom || !latest) && (
-          <button className="button secondary" onClick={toLatest}>
-            Jump to latest
-          </button>
-        )}
-      </div>
+      {(loading || hasOlder || !bottom || !latest) && (
+        <div className="chat-history-tools">
+          {loading ? (
+            <span role="status">Loading messages…</span>
+          ) : (
+            hasOlder && (
+              <button disabled={!connected} onClick={() => void load(messages[0]?.id ?? null)}>
+                Load older messages
+              </button>
+            )
+          )}
+          {(!bottom || !latest) && <button onClick={toLatest}>Jump to latest</button>}
+        </div>
+      )}
       {error && (
         <div role="alert">
           {error}{' '}
@@ -303,7 +299,7 @@ export function Chat({
           }
           if (e.key === 'Enter' && element !== e.currentTarget) {
             e.preventDefault()
-            element.querySelector<HTMLButtonElement>('button:enabled')?.focus()
+            element.querySelector<HTMLButtonElement>('.chat-actions button:enabled')?.focus()
           }
         }}
         onScroll={() => {
@@ -324,6 +320,7 @@ export function Chat({
             const message = messages[row.index]!
             const previous = messages[row.index - 1]
             const group = grouped(previous, message)
+            const author = message.authorName || message.username || 'Unknown author'
             return (
               <article
                 role="listitem"
@@ -345,93 +342,115 @@ export function Chat({
                 }}
               >
                 {(!previous || day(previous.createdAt) !== day(message.createdAt)) && (
-                  <div className="chat-day">{day(message.createdAt)}</div>
+                  <div className="chat-day">
+                    {!previous && view?.start && (
+                      <span className="sr-only">Beginning of conversation. </span>
+                    )}
+                    <time
+                      dateTime={new Date(message.createdAt).toISOString()}
+                      title={day(message.createdAt)}
+                    >
+                      {dayLabel(message.createdAt)}
+                    </time>
+                  </div>
                 )}
                 {row.index === firstUnread && <div className="chat-unread">New messages</div>}
-                {!group && (
-                  <header>
-                    <strong>{message.authorName ?? 'Unknown author'}</strong>
-                    {message.username && <span>@{message.username}</span>}
-                    {!message.authorId && <span>Integration</span>}
-                    <time dateTime={new Date(message.createdAt).toISOString()}>
-                      {new Date(message.createdAt).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </time>
-                  </header>
-                )}
-                {message.replyTo && (
-                  <button className="chat-reply" onClick={() => void jump(message.replyTo!)}>
-                    ↳{' '}
-                    {byId.get(message.replyTo)?.content.slice(0, 100) ||
-                      byId.get(message.replyTo)?.attachments[0]?.filename ||
-                      'Reply to an earlier message'}
-                  </button>
-                )}
-                {message.deleted ? (
-                  <p className="chat-deleted">Message deleted</p>
-                ) : (
-                  <div className="chat-body">
-                    <RichMessage content={message.content} members={members} own={own} />
-                    {message.editedAt !== null && <small> (edited)</small>}
-                  </div>
-                )}
-                {!message.deleted && (
-                  <MessageFiles
-                    server={server}
-                    message={message.id}
-                    attachments={message.attachments}
-                    previews={message.previews}
-                  />
-                )}
-                {!message.deleted && (
-                  <div className="chat-actions">
-                    <button
-                      disabled={sending || !connected || !view?.canSend}
-                      onClick={() => {
-                        setTarget({ kind: 'reply', message })
-                        focusComposer()
-                      }}
-                    >
-                      Reply
+                <div className="message-content">
+                  {!group && (
+                    <>
+                      <span
+                        className="message-avatar"
+                        aria-hidden="true"
+                        data-tone={(author.codePointAt(0) ?? 0) % 4}
+                      >
+                        {Array.from(author.trim())[0]?.toLocaleUpperCase()}
+                      </span>
+                      <header>
+                        <strong>{author}</strong>
+                        {message.username && <span>@{message.username}</span>}
+                        {!message.authorId && <span>Integration</span>}
+                        <time dateTime={new Date(message.createdAt).toISOString()}>
+                          {new Date(message.createdAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </time>
+                      </header>
+                    </>
+                  )}
+                  {message.replyTo && (
+                    <button className="chat-reply" onClick={() => void jump(message.replyTo!)}>
+                      ↳{' '}
+                      {byId.get(message.replyTo)?.content.slice(0, 100) ||
+                        byId.get(message.replyTo)?.attachments[0]?.filename ||
+                        'Reply to an earlier message'}
                     </button>
-                    <ActionMenu
-                      className="message-menu-trigger"
-                      label="More actions"
-                      returnFocus={(button) =>
-                        button.closest('article')?.focus({ preventScroll: true })
-                      }
-                      actions={[
-                        {
-                          label: 'Edit',
-                          hidden: !canEdit(message, view?.ownUserId ?? null),
-                          disabled: sending || !connected,
-                          onSelect: () => setTarget({ kind: 'edit', message }),
-                        },
-                        { label: 'Copy', onSelect: () => copy(message.content, 'Message') },
-                        {
-                          label: 'Copy link',
-                          onSelect: () =>
-                            copy(messageLink(server, channel, message.id), 'Message link'),
-                        },
-                        { label: 'Copy ID', onSelect: () => copy(message.id, 'Message ID') },
-                        {
-                          label: 'Delete',
-                          divider: true,
-                          hidden: !(
-                            (message.authorId !== null && message.authorId === view?.ownUserId) ||
-                            view?.canManage
-                          ),
-                          disabled: !connected,
-                          onSelect: () => setDeleting(message.id),
-                        },
-                      ]}
-                    >
-                      <Ellipsis size={16} aria-hidden="true" />
-                    </ActionMenu>
-                  </div>
-                )}
+                  )}
+                  {message.deleted ? (
+                    <p className="chat-deleted">Message deleted</p>
+                  ) : (
+                    <div className="chat-body">
+                      <RichMessage content={message.content} members={members} own={own} />
+                      {message.editedAt !== null && <small> (edited)</small>}
+                    </div>
+                  )}
+                  {!message.deleted && (
+                    <MessageFiles
+                      server={server}
+                      message={message.id}
+                      attachments={message.attachments}
+                      previews={message.previews}
+                    />
+                  )}
+                  {!message.deleted && (
+                    <div className="chat-actions">
+                      <button
+                        disabled={sending || !connected || !view?.canSend}
+                        onClick={() => {
+                          setTarget({ kind: 'reply', message })
+                          focusComposer()
+                        }}
+                      >
+                        <Reply size={15} aria-hidden="true" />
+                        <span>Reply</span>
+                      </button>
+                      <ActionMenu
+                        className="message-menu-trigger"
+                        label="More actions"
+                        returnFocus={(button) =>
+                          button.closest('article')?.focus({ preventScroll: true })
+                        }
+                        actions={[
+                          {
+                            label: 'Edit',
+                            hidden: !canEdit(message, view?.ownUserId ?? null),
+                            disabled: sending || !connected,
+                            onSelect: () => setTarget({ kind: 'edit', message }),
+                          },
+                          { label: 'Copy', onSelect: () => copy(message.content, 'Message') },
+                          {
+                            label: 'Copy link',
+                            onSelect: () =>
+                              copy(messageLink(server, channel, message.id), 'Message link'),
+                          },
+                          { label: 'Copy ID', onSelect: () => copy(message.id, 'Message ID') },
+                          {
+                            label: 'Delete',
+                            divider: true,
+                            hidden: !(
+                              (message.authorId !== null && message.authorId === view?.ownUserId) ||
+                              view?.canManage
+                            ),
+                            disabled: !connected,
+                            onSelect: () => setDeleting(message.id),
+                          },
+                        ]}
+                      >
+                        <Ellipsis size={16} aria-hidden="true" />
+                      </ActionMenu>
+                    </div>
+                  )}
+                </div>
               </article>
             )
           })}

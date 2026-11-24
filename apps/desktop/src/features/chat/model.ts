@@ -2,6 +2,13 @@ import type { BridgeMessage } from '../../lib/generated/BridgeMessage'
 export function day(timestamp: number) {
   return new Date(timestamp).toLocaleDateString()
 }
+export function dayLabel(timestamp: number) {
+  const now = new Date()
+  const date = day(timestamp)
+  if (date === now.toLocaleDateString()) return 'Today'
+  now.setDate(now.getDate() - 1)
+  return date === now.toLocaleDateString() ? 'Yesterday' : date
+}
 export function grouped(previous: BridgeMessage | undefined, message: BridgeMessage) {
   return Boolean(
     previous &&

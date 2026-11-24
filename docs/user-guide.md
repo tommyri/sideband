@@ -42,6 +42,13 @@ Next time, select the server and choose **Reconnect / log in**, then
 **Reconnect with saved session**. While the app is open it reconnects by
 itself after a network drop.
 
+Sideband reopens the last text channel or direct message you viewed with this
+account on this server. On your first visit, or if that conversation is gone,
+it opens **#general** or the first text channel you can read. If there are
+only voice rooms, the lobby shows who’s there. Select a room to preview it,
+or choose **Join voice** to enter the call. If you have no accessible channels
+or conversations, you can switch servers from the same screen.
+
 If the app later says **Server certificate changed**, stop and ask the owner.
 It can mean the server was reinstalled, or that someone is intercepting your
 connection. Replace the trusted certificate only after the owner confirms the
@@ -55,10 +62,12 @@ rail.
 
 ## Talk
 
-Click a voice channel to join it (or tick **Double-click voice channels to
-join** under **Interaction settings** to need a double-click). Before your first call, open
-**Audio settings** (on the server page, in the server menu, or via the gear
-in the call controls) and choose your devices and talking mode.
+Select a voice room to see who’s there and how your saved talking mode will work.
+Choose **Join voice** when you’re ready. You can browse other rooms and text
+channels during a call. Choosing **Join voice** in another room switches the call there.
+
+Open **Personal settings** at the bottom of the channel list or in the compact
+channel header. During a call, **Audio** in the dock opens the same preferences.
 
 - **Push-to-talk** (the default): hold **Hold to talk** with the mouse, or
   press Space or Enter while it has focus, or hold your push-to-talk key
@@ -81,17 +90,18 @@ stop it. The tray menu also has **Mute microphone** and **Deafen**.
 
 ## Audio settings
 
-Open **Audio settings**, change what you need, then **Apply settings**.
-Settings are saved and apply to a call in progress without leaving it.
+Choose your microphone, output device and talking mode in **Personal settings**.
+**Apply settings** saves changes and updates an active call. **Done** or Escape
+returns you to the conversation. **Cancel** discards unapplied changes.
 
 ### Devices
 
 - **Microphone** and **Output device**: **System default** follows the
-  operating system's choice. **Refresh devices** after plugging something in.
+  operating system's choice. Open **More audio controls** and choose **Refresh devices** after plugging something in.
 - **Microphone input**: for audio interfaces with several inputs, pick the one
   your microphone is plugged into. **Average of all inputs** lowers a single
   microphone's level and adds the noise of the unused inputs.
-- **Test mic · 10 seconds** plays your raw microphone back after a one-second
+- **Check mic** plays your raw microphone back for 10 seconds after a one-second
   delay; use headphones. **Test output** plays a sound. Tests run only on this
   computer, only outside a call, and send nothing to the server.
 
@@ -102,6 +112,8 @@ Microphone** **(unverified)**.
 
 ### Transmission
 
+Open **More audio controls** for the settings specific to your talking mode.
+
 | Setting | Mode | What it does | Default |
 |---|---|---|---|
 | **Release delay (ms)** | Push-to-talk | Keeps transmitting this long after you release the key, so the ends of words are not cut | 150 |
@@ -111,6 +123,8 @@ Microphone** **(unverified)**.
 | **Auto-calibrate** | Voice activation | Listens to 2 seconds of background noise and sets the threshold 12 dB above it; leave voice first | |
 
 ### Processing
+
+Expand **Advanced processing** to configure these options.
 
 All processing is **off by default**, because each stage adds delay or CPU
 work and none of it is needed with a good headset. The software stages share
@@ -129,6 +143,8 @@ How the processing chain is built and why it is opt-in:
 
 ### Output and advanced
 
+These options are in **More audio controls**.
+
 - **Master volume** (0 to 200 %), **Cue volume** for join/leave and other
   sounds, and **Reduce other voices while speaking** (0 to 50 %).
 - **People in this server** (during a call): per-person volume, and **Reset
@@ -144,8 +160,8 @@ How the processing chain is built and why it is opt-in:
 ## Push-to-talk outside the app
 
 The in-app binding only works while Sideband is focused. For push-to-talk,
-mute and deafen while a game or another app is in front, open **Audio
-settings → Global shortcuts**:
+mute and deafen while a game or another app is in front, open **Personal
+settings → More audio controls → Global shortcuts**:
 
 1. **Capture push-to-talk** (or mute, or deafen), then press and release the
    key or mouse button. Capture times out after 15 seconds; **Cancel capture**
@@ -238,9 +254,14 @@ Text channels and direct messages support Markdown, mentions, replies, edits,
 attachments and link previews. **Search messages** in the channel header
 searches text channels and your DMs; see [message search](message-search.md).
 
-Choose **Reply** below a message to respond. Open **More actions** (the
+Hover over a message or focus it in the history to reveal **Reply**. Open **More actions** (the
 three dots beside **Reply**) to copy its text, link, or ID. **Edit** and
 **Delete** appear there when available.
+
+Choose **Members** in the conversation header to see the server roster or
+the participants in a direct message. Press Escape or choose **Close members**
+to return to the Members button. Your draft and reply stay in place. In a
+compact window, **Channels** opens the channel list and server rail.
 
 The bell in the server rail opens **Notification settings**: **Do not
 disturb** (silences sounds and desktop notifications and shows you as Do not

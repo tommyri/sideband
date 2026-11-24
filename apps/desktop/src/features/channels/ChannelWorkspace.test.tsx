@@ -6,10 +6,11 @@ import { ChannelWorkspace } from './ChannelWorkspace'
 import { MemberRow } from './MemberRow'
 import { VoiceDock } from '../voice/VoiceDock'
 import { defaults, useAudioStore } from '../settings/audio/store'
-import { useVoiceStore } from '../voice/store'
+import { refreshVoice, useVoiceStore } from '../voice/store'
 import { useAppStore } from '../../store/app-store'
 import { getServerView, joinVoice, leaveVoice, memberAction, voiceControl } from '../voice/api'
-import { disconnect } from '../../lib/api'
+import { disconnect, loadDmPage } from '../../lib/api'
+import { lastConversation, rememberConversation } from './destination'
 import type { ServerView } from '../../lib/generated/ServerView'
 
 vi.mock('../voice/api', () => ({
@@ -34,6 +35,7 @@ vi.mock('../../lib/api', () => ({
     ],
   })),
   disconnect: vi.fn(),
+  loadDmPage: vi.fn(),
 }))
 const member = {
   id: 'remote',
@@ -93,6 +95,14 @@ const fixture = (): ServerView => ({
 })
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
   localStorage.clear()
   useAudioStore.setState({ preferences: defaults, loaded: true })
   HTMLDialogElement.prototype.showModal = function () {
@@ -122,6 +132,7 @@ beforeEach(() => {
     stats: {},
     selected: {},
     busy: false,
+    joining: null,
     error: '',
     deviceNotice: '',
   })
@@ -130,8 +141,183 @@ beforeEach(() => {
   vi.mocked(memberAction).mockResolvedValue()
   vi.mocked(voiceControl).mockResolvedValue()
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 describe('live channels and voice', () => {
+  it('opens the chat roster on demand, returns focus, and shows only participants in a DM', async () => {
+    const view = fixture()
+    view.channels.push({ ...channel, kind: 2, id: 'text', name: 'general' })
+    view.directMessages = [
+      {
+        id: 'dm',
+        name: 'Crew',
+        kind: 5,
+        memberIds: ['own'],
+        creatorId: 'own',
+        lastActivity: 0,
+        mentions: 0,
+        unread: false,
+      },
+    ]
+    vi.mocked(getServerView).mockResolvedValue(view)
+    useVoiceStore.setState({ views: {}, selected: {} })
+    render(<ChannelWorkspace server="server" />)
+    await screen.findByRole('heading', { name: 'general' })
+    const trigger = screen.getByRole('button', { name: 'Members' })
+    expect(screen.queryByRole('dialog', { name: 'Members' })).toBeNull()
+    fireEvent.click(trigger)
+    const roster = screen.getByRole('dialog', { name: 'Members' })
+    expect(within(roster).getByText('@real_account')).toBeInTheDocument()
+    fireEvent(roster, new Event('cancel', { cancelable: true }))
+    expect(trigger).toHaveFocus()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Open group message Crew' }))
+    const dmTrigger = screen.getByRole('button', { name: 'Members' })
+    fireEvent.click(dmTrigger)
+    const dm = within(screen.getByRole('dialog', { name: 'Members' }))
+    expect(dm.getByText('@me')).toBeInTheDocument()
+    expect(dm.queryByText('@real_account')).toBeNull()
+    expect(dm.getByRole('button', { name: 'Rename' })).toBeInTheDocument()
+    fireEvent.click(dm.getByRole('button', { name: 'Close members' }))
+    expect(dmTrigger).toHaveFocus()
+  })
+  it('restores the last viewed chat on restart and rechecks access for each server and account', async () => {
+    const general = { ...channel, kind: 2, id: 'general-id', name: 'General' }
+    const news = { ...general, id: 'news-id', name: 'News' }
+    const view = { ...fixture(), channels: [news, channel, general], activeVoice: null }
+    useVoiceStore.setState({ selected: {}, views: {}, active: null })
+    vi.mocked(getServerView).mockResolvedValue(view)
+    const workspace = render(<ChannelWorkspace server="server" />)
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open text channel News' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview voice room Studio' }))
+    expect(lastConversation('server', 'own')?.id).toBe(news.id)
+    workspace.unmount()
+    useVoiceStore.setState({ selected: {}, views: {} })
+    render(<ChannelWorkspace server="server" />)
+    expect(await screen.findByRole('heading', { name: 'News' })).toBeInTheDocument()
+    await act(async () => refreshVoice('other'))
+    expect(useVoiceStore.getState().selected.other).toBe(general.id)
+
+    vi.mocked(getServerView).mockResolvedValue({ ...view, ownUserId: 'another-user' })
+    await act(async () => refreshVoice('server'))
+    expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument()
+    vi.mocked(getServerView).mockResolvedValue({ ...view, channels: [channel, general] })
+    await act(async () => refreshVoice('server'))
+    expect(screen.queryByRole('button', { name: 'Open text channel News' })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument()
+    vi.mocked(getServerView).mockResolvedValue({ ...view, channels: [channel, news] })
+    await act(async () => refreshVoice('server'))
+    expect(screen.getByRole('heading', { name: 'News' })).toBeInTheDocument()
+  })
+  it('checks older DM pages for membership before restoring a saved DM', async () => {
+    const dm = {
+      id: 'old-dm',
+      name: '',
+      kind: 4,
+      memberIds: ['own', 'remote'],
+      creatorId: null,
+      lastActivity: 0,
+      mentions: 0,
+      unread: false,
+    }
+    const view = { ...fixture(), moreDirectMessages: true, activeVoice: null }
+    rememberConversation('server', 'own', { id: dm.id, kind: 'dm' })
+    vi.mocked(getServerView)
+      .mockResolvedValueOnce(view)
+      .mockResolvedValueOnce({ ...view, moreDirectMessages: false, directMessages: [dm] })
+    await refreshVoice('server')
+    expect(loadDmPage).toHaveBeenCalledOnce()
+    expect(useVoiceStore.getState().selected.server).toBe(dm.id)
+    vi.mocked(getServerView)
+      .mockResolvedValueOnce(view)
+      .mockResolvedValueOnce({ ...view, moreDirectMessages: false })
+    await refreshVoice('server')
+    expect(useVoiceStore.getState().selected.server).toBe('')
+    expect(useVoiceStore.getState().views.server!.directMessages).toEqual([])
+  })
+  it('honors a new DM selected before its membership event without mounting unverified history', async () => {
+    const dm = {
+      id: 'new',
+      name: '',
+      kind: 4,
+      memberIds: ['own', 'remote'],
+      creatorId: null,
+      lastActivity: 0,
+      mentions: 0,
+      unread: false,
+    }
+    const view = { ...fixture(), activeVoice: null }
+    vi.mocked(getServerView)
+      .mockResolvedValueOnce(view)
+      .mockResolvedValueOnce({ ...view, directMessages: [dm] })
+    useVoiceStore.getState().select('server', dm.id)
+    await refreshVoice('server')
+    expect(useVoiceStore.getState().selected.server).toBe('')
+    await refreshVoice('server')
+    expect(useVoiceStore.getState().selected.server).toBe(dm.id)
+  })
+  it('previews occupied and empty rooms from the lobby and joins only on request', async () => {
+    const view = { ...fixture(), activeVoice: null }
+    view.channels.push({ ...channel, id: 'other', name: 'Backstage', canJoin: false })
+    useVoiceStore.setState({ views: {}, active: null })
+    vi.mocked(getServerView).mockResolvedValue(view)
+    render(<ChannelWorkspace server="server" />)
+    const lobby = within(await screen.findByRole('region', { name: 'Voice rooms' }))
+    expect(lobby.getByRole('button', { name: 'Preview Studio' })).toHaveAccessibleDescription(
+      'Same nickname',
+    )
+    expect(lobby.getByRole('button', { name: 'Preview Backstage' })).toHaveAccessibleDescription(
+      /Room is empty/,
+    )
+    expect(lobby.getByRole('button', { name: 'Join voice in Backstage' })).toBeDisabled()
+    fireEvent.click(lobby.getByRole('button', { name: 'Preview Studio' }))
+    expect(screen.getByRole('heading', { name: 'Studio' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Voice rooms' }))
+    expect(screen.getByRole('button', { name: 'Preview Studio' })).toHaveFocus()
+    expect(joinVoice).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Join voice in Studio' }))
+    await waitFor(() => expect(joinVoice).toHaveBeenCalledExactlyOnceWith('server', 'voice'))
+  })
+  it('lets someone with no accessible rooms choose another saved server or add one', async () => {
+    const view = {
+      ...fixture(),
+      channels: [],
+      activeVoice: null,
+      directMessages: [
+        {
+          id: 'unopened',
+          name: 'Project group',
+          kind: 5,
+          memberIds: ['own', 'remote'],
+          creatorId: 'remote',
+          lastActivity: 1,
+          unread: true,
+          mentions: 0,
+        },
+      ],
+    }
+    vi.mocked(getServerView).mockResolvedValue(view)
+    useVoiceStore.setState({ views: {}, active: null })
+    useAppStore.setState((s) => ({
+      servers: [...s.servers, { ...s.servers[0]!, id: 'work', label: 'Work' }],
+    }))
+    render(<ChannelWorkspace server="server" />)
+    expect(
+      await screen.findByRole('heading', { name: 'No channels available' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Open group message Project group' }),
+    ).not.toHaveAttribute('aria-current')
+    fireEvent.click(screen.getByRole('button', { name: 'Switch server' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Work' }))
+    expect(useAppStore.getState().selectedServerId).toBe('work')
+    act(() => useAppStore.setState((s) => ({ servers: s.servers.slice(0, 1) })))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to another server' }))
+    expect(useAppStore.getState().connectOpen).toBe(true)
+  })
   it('releases the dock row when idle and keeps failed joins dismissible', () => {
     const { container } = render(<VoiceDock />)
     expect(screen.getByRole('region', { name: 'Voice controls' })).toBeInTheDocument()
@@ -143,7 +329,7 @@ describe('live channels and voice', () => {
     expect(container).toBeEmptyDOMElement()
   })
   it.each([
-    ['ptt', /After joining, hold the talk button/, /Hold the talk button or/, 'Hold to talk'],
+    ['ptt', /After joining, hold the talk button/, /Hold the talk button to speak/, 'Hold to talk'],
     [
       'vad',
       /After joining, your microphone will transmit when it detects speech/,
@@ -296,38 +482,133 @@ describe('live channels and voice', () => {
       })),
     )
     expect(screen.getByRole('menuitem', { name: 'Audit log' })).toBeDisabled()
-    const audio = screen.getByRole('menuitem', { name: 'Audio settings' })
-    fireEvent.keyDown(audio, { key: 'End' })
+    expect(screen.queryByRole('menuitem', { name: /audio|personal settings/i })).toBeNull()
+    const details = screen.getByRole('menuitem', { name: 'Server details' })
+    fireEvent.keyDown(details, { key: 'End' })
     const end = screen.getByRole('menuitem', { name: 'Disconnect from server' })
     expect(end).toHaveFocus()
     fireEvent.keyDown(end, { key: 'ArrowUp' })
-    expect(audio).toHaveFocus()
-    fireEvent.keyDown(audio, { key: 'Escape' })
+    expect(details).toHaveFocus()
+    fireEvent.keyDown(details, { key: 'Escape' })
     expect(trigger).toHaveFocus()
     expect(screen.queryByRole('menu')).toBeNull()
   })
   it('renders immutable usernames and collapses category descendants', async () => {
     render(<ChannelWorkspace server="server" />)
     expect(screen.getAllByText('@real_account').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Join voice channel Studio' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Preview voice room Studio' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: /Social/ }))
     expect(
-      screen.queryByRole('button', { name: 'Join voice channel Studio' }),
+      screen.queryByRole('button', { name: 'Preview voice room Studio' }),
     ).not.toBeInTheDocument()
     await waitFor(() => expect(getServerView).toHaveBeenCalled())
   })
-  it('joins on click and honors the double-click preference', async () => {
-    render(<ChannelWorkspace server="server" />)
-    fireEvent.click(screen.getByRole('button', { name: 'Join voice channel Studio' }))
-    await waitFor(() => expect(joinVoice).toHaveBeenCalledWith('server', 'voice'))
-    await waitFor(() => expect(useVoiceStore.getState().busy).toBe(false))
-    vi.mocked(joinVoice).mockClear()
-    localStorage.setItem('ss.doubleClickJoin', 'true')
-    fireEvent.click(screen.getByRole('button', { name: 'Join voice channel Studio' }))
+  it.each(['true', 'false'])(
+    'previews without joining with the legacy double-click setting %s',
+    async (setting) => {
+      const view = { ...fixture(), activeVoice: null }
+      localStorage.setItem('ss.doubleClickJoin', setting)
+      vi.mocked(getServerView).mockResolvedValue(view)
+      useVoiceStore.setState({ views: { server: view }, active: null })
+      render(<ChannelWorkspace server="server" />)
+      const row = screen.getByRole('button', { name: 'Preview voice room Studio' })
+      fireEvent.click(row)
+      fireEvent.doubleClick(row)
+      const preview = within(screen.getByRole('region', { name: 'Studio' }))
+      expect(preview.getByRole('region', { name: 'In the room' })).toHaveTextContent(
+        '@real_account',
+      )
+      expect(preview.getByText('Push to talk')).toBeInTheDocument()
+      expect(row).toHaveAccessibleDescription('1/30 in voice')
+      expect(joinVoice).not.toHaveBeenCalled()
+      expect(voiceControl).not.toHaveBeenCalled()
+      expect(leaveVoice).not.toHaveBeenCalled()
+
+      let finish!: () => void
+      vi.mocked(joinVoice).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+      )
+      fireEvent.click(preview.getByRole('button', { name: 'Join voice' }))
+      const joining = preview.getByRole('button', { name: 'Joining…' })
+      expect(joining).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(joining)
+      expect(joinVoice).toHaveBeenCalledTimes(1)
+      expect(joinVoice).toHaveBeenCalledWith('server', 'voice')
+      vi.mocked(getServerView).mockResolvedValue(fixture())
+      await act(async () => finish())
+      expect(preview.getByRole('status')).toHaveTextContent('You’re in Studio.')
+    },
+  )
+  it('keeps the current call while previewing another room and allows retry after a failed join', async () => {
+    const view = fixture()
+    view.channels.push({ ...channel, id: 'other', name: 'Backstage' })
+    vi.mocked(getServerView).mockResolvedValue(view)
+    useVoiceStore.setState({ views: { server: view } })
+    render(
+      <>
+        <ChannelWorkspace server="server" />
+        <VoiceDock />
+      </>,
+    )
+    const row = screen.getByRole('button', { name: 'Preview voice room Backstage' })
+    fireEvent.click(row)
+    const preview = within(screen.getByRole('region', { name: 'Backstage' }))
+    expect(preview.getByText('No one is here yet.')).toBeInTheDocument()
+    expect(preview.getByRole('status')).toHaveTextContent(
+      'Joining this room will leave your current call.',
+    )
+    expect(screen.getByRole('region', { name: 'Voice controls' })).toHaveTextContent('Studio')
+    expect(leaveVoice).not.toHaveBeenCalled()
     expect(joinVoice).not.toHaveBeenCalled()
-    fireEvent.doubleClick(screen.getByRole('button', { name: 'Join voice channel Studio' }))
-    await waitFor(() => expect(joinVoice).toHaveBeenCalledTimes(1))
+    vi.mocked(joinVoice).mockRejectedValueOnce({ message: 'Room is full.' })
+    fireEvent.click(preview.getByRole('button', { name: 'Join voice' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not join Backstage. Room is full.',
+    )
+    await waitFor(() => expect(useVoiceStore.getState().busy).toBe(false))
+    vi.mocked(getServerView).mockResolvedValue({
+      ...view,
+      activeVoice: { ...active, channelId: 'other' },
+    })
+    fireEvent.click(preview.getByRole('button', { name: 'Join voice' }))
+    await waitFor(() =>
+      expect(preview.getByRole('status')).toHaveTextContent('You’re in Backstage.'),
+    )
+    expect(screen.queryByRole('alert')).toBeNull()
   })
+  it.each(['Space', 'Mouse0'])(
+    'keeps room activation separate from the in-app %s talk binding',
+    async (binding) => {
+      useAudioStore.setState({ preferences: { ...defaults, binding } })
+      const view = fixture()
+      view.channels.push({ ...channel, id: 'backstage', name: 'Backstage' })
+      vi.mocked(getServerView).mockResolvedValue(view)
+      useVoiceStore.setState({ views: { server: view } })
+      render(
+        <>
+          <ChannelWorkspace server="server" />
+          <VoiceDock />
+        </>,
+      )
+      await act(async () => {})
+      vi.mocked(voiceControl).mockClear()
+      const row = screen.getByRole('button', { name: 'Preview voice room Backstage' })
+      if (binding === 'Space') {
+        fireEvent.keyDown(row, { key: ' ', code: 'Space' })
+        fireEvent.keyUp(row, { key: ' ', code: 'Space' })
+      } else {
+        fireEvent.pointerDown(row, { button: 0 })
+        fireEvent.pointerUp(row, { button: 0 })
+      }
+      fireEvent.click(row)
+      expect(screen.getByRole('region', { name: 'Backstage' })).toBeInTheDocument()
+      expect(voiceControl).not.toHaveBeenCalled()
+      expect(joinVoice).not.toHaveBeenCalled()
+      expect(useVoiceStore.getState().active).toEqual(active)
+    },
+  )
   it('disables denied moderation but allows local playback controls', async () => {
     render(<ChannelWorkspace server="server" />)
     fireEvent.click(screen.getAllByRole('button', { name: /@real_account/ })[0]!)
@@ -367,13 +648,15 @@ describe('live channels and voice', () => {
     })
     await waitFor(() => expect(voiceControl).toHaveBeenCalledWith('deafen', true))
   })
-  it('does not join a channel when permissions are absent', async () => {
-    const view = fixture()
+  it('lets a member preview a visible room without permission to join', async () => {
+    const view = { ...fixture(), activeVoice: null }
     view.channels[1] = { ...channel, canJoin: false }
-    useVoiceStore.setState({ views: { server: view } })
+    useVoiceStore.setState({ views: { server: view }, active: null })
     vi.mocked(getServerView).mockResolvedValue(view)
     render(<ChannelWorkspace server="server" />)
-    expect(screen.getByRole('button', { name: 'Join voice channel Studio' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview voice room Studio' }))
+    expect(screen.getByRole('button', { name: 'Join voice' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('permission to join')
     await waitFor(() => expect(getServerView).toHaveBeenCalled())
     expect(joinVoice).not.toHaveBeenCalled()
   })
