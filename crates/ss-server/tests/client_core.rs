@@ -1257,7 +1257,7 @@ async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
         async move {
             for index in 0..EACH {
                 let content = format!("{mention} ping {who}.{index}");
-                sender.send_message(post(general, &content)).await.unwrap();
+                let _ = sender.send_message(post(general, &content)).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(3)).await;
             }
         }
