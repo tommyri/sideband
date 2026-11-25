@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ServerSummary } from '../../lib/generated/ServerSummary'
 import type { CreatedInvite } from '../../lib/generated/CreatedInvite'
 import { DEFAULT_PORT, parseAddress } from '../onboarding/validation'
@@ -39,7 +39,7 @@ export function InvitationResult({
   useEffect(() => {
     heading.current?.focus()
   }, [])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (status === 'manual') {
       manual.current?.focus()
       manual.current?.select()
@@ -84,6 +84,7 @@ export function InvitationResult({
       setStatus('copied')
     } catch {
       setStatus('manual')
+      manual.current?.focus()
       manual.current?.select()
     }
   }
