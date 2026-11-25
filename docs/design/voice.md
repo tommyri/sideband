@@ -142,8 +142,7 @@ measured playback and capture device delays plus the capture queue.
 `sonora` runs at its full 48 kHz internal rate so nothing above 16 kHz is
 dropped. Each stage is its own instance, so it can be measured alone; the
 settings UI reads each stage's added latency and CPU per frame from the
-chain's monitor. AEC3 and AGC2 allocate inside `sonora` every frame, which
-the capture worker tolerates and a device callback would not.
+chain's monitor. All three stages run on the capture worker.
 
 DeepFilterNet3 (feature `deepfilter`) is reserved and not built. The
 crates.io `deep_filter` release has no inference, the inference crate is
