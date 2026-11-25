@@ -18,6 +18,7 @@ import {
   type AccountField,
 } from './validation'
 import { ServerIdentity } from '../../components/ServerIdentity'
+import { ProfileSettings } from '../profile/ProfileSettings'
 import './onboarding.css'
 import { createLocalProfile, getLocalProfile, suggestedUsername } from './localProfile'
 
@@ -108,6 +109,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   const [chosenMode, setMode] = useState<JoinMode | null>(null)
   const [localProfile, setLocalProfile] = useState<string | null>()
   const [profileName, setProfileName] = useState('')
+  const [restoreOpen, setRestoreOpen] = useState(false)
   const [checking, setChecking] = useState(false)
   const [retryDomain, setRetryDomain] = useState(false)
   const [pending, setPending] = useState(false)
@@ -122,16 +124,23 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   const revision = useRef(0)
   const canRegister = probe?.registrationMode === 'invite' || probe?.registrationMode === 'open'
   const changedPin = !!probe?.previousFingerprint && probe.previousFingerprint !== probe.fingerprint
-  const savedServer = target && servers.some((s) => matchesServer(s, target))
+  const savedServer = target && servers.find((s) => matchesServer(s, target))
+  const knownUsername = savedServer?.profileUsername
   const profileSupported =
     localProfile !== undefined && probe?.capabilities?.includes('profileSignIn') === true
   const legacyMode = savedServer || !canRegister ? 'login' : 'register'
   const mode =
     chosenMode ??
-    (profileSupported && !savedServer && (canRegister || localProfile) ? 'profile' : legacyMode)
+    (profileSupported && (knownUsername || (!savedServer && (canRegister || localProfile)))
+      ? 'profile'
+      : legacyMode)
   const wantsProfile = mode === 'profile'
-  const needsInvite = mode !== 'login' && probe?.registrationMode === 'invite'
-  const username = enteredUsername ?? (wantsProfile ? suggestedUsername(localProfile) : '')
+  const needsInvite =
+    mode !== 'login' && !(wantsProfile && knownUsername) && probe?.registrationMode === 'invite'
+  const username =
+    wantsProfile && knownUsername
+      ? knownUsername
+      : (enteredUsername ?? (wantsProfile ? suggestedUsername(localProfile) : ''))
   const invalidFocus = useRef<Field | undefined>(undefined)
   const form = useRef<HTMLFormElement>(null)
 
@@ -164,11 +173,11 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   }
   useEffect(() => {
     if (step === 'trust') dialog.current?.querySelector<HTMLElement>('h2')?.focus()
-    else if (step === 'auth' && wantsProfile && !localProfile)
+    else if (step === 'auth' && wantsProfile && (!localProfile || knownUsername))
       dialog.current?.querySelector<HTMLElement>('h2')?.focus()
     else
       focusField(step === 'address' ? 'address' : step === 'profile' ? 'profileName' : 'username')
-  }, [step, mode, wantsProfile, localProfile])
+  }, [step, mode, wantsProfile, localProfile, knownUsername])
   // After a native request, wait until the inputs are enabled again before focusing the error.
   useEffect(() => {
     if (invalidFocus.current && !pending) {
@@ -393,10 +402,16 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
           title: localProfile
             ? `Join ${probe?.name} with your profile`
             : 'Join with a local profile',
-          description: localProfile
-            ? `Use ${localProfile} to sign in. Your membership belongs to this server.`
-            : 'Choose a name once and use your profile to sign in to compatible servers.',
-          action: localProfile ? 'Join with profile' : 'Create a local profile',
+          description: knownUsername
+            ? `Sign in again as ${knownUsername}.`
+            : localProfile
+              ? `Use ${localProfile} to sign in. Your membership belongs to this server.`
+              : 'Choose a name once and use your profile to sign in to compatible servers.',
+          action: knownUsername
+            ? 'Sign in with profile'
+            : localProfile
+              ? 'Join with profile'
+              : 'Create a local profile',
         }
       : {
           title: mode === 'register' ? 'Create your account' : `Log in to ${probe?.name}`,
@@ -417,7 +432,8 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         if (!pending) close(false)
       }}
       onKeyDown={(e) => {
-        if (e.key !== 'Tab') return
+        if (e.key !== 'Tab' || (e.target as HTMLElement).closest('dialog') !== e.currentTarget)
+          return
         const controls = Array.from(
           e.currentTarget.querySelectorAll<HTMLElement>('button,input,summary'),
         ).filter(
@@ -438,6 +454,17 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         controls[next]?.focus()
       }}
     >
+      {restoreOpen && (
+        <ProfileSettings
+          initialSection="restore"
+          close={() => setRestoreOpen(false)}
+          onRestored={(name) => {
+            setLocalProfile(name)
+            setRestoreOpen(false)
+            if (useAppStore.getState().servers.length > 0) close(false)
+          }}
+        />
+      )}
       <header className="join-header">
         <span className="join-brand">
           <img src="/brand/sideband-mark.svg" alt="" width="28" height="28" />
@@ -582,7 +609,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
             )}
             {step === 'auth' && (
               <>
-                {savedServer && (
+                {savedServer && !wantsProfile && (
                   <button
                     type="button"
                     className="join-link"
@@ -592,7 +619,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                     Reconnect with saved session
                   </button>
                 )}
-                {(!wantsProfile || localProfile) && (
+                {(!wantsProfile || (localProfile && !knownUsername)) && (
                   <JoinField
                     name="username"
                     label="Username"
@@ -663,6 +690,16 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                   onClick={openProfileSetup}
                 >
                   Create a local profile
+                </button>
+              )}
+              {step === 'address' && localProfile === null && (
+                <button
+                  type="button"
+                  className="join-link"
+                  disabled={pending || checking}
+                  onClick={() => setRestoreOpen(true)}
+                >
+                  Restore from backup
                 </button>
               )}
               {step === 'auth' && profileSupported && (canRegister || localProfile) && (

@@ -159,7 +159,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login, Register, bot_token, ProfileAuth }` | Must be first. `bot_token` (tag 9) signs in a bot. `profile` (tag 10) carries a [profile device proof](../protocol/profile-identity.md). |
+| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login, Register, bot_token, ProfileAuth, RecoverProfile }` | Must be first. `bot_token` (tag 9) signs in a bot. `profile` (tag 10) carries a [profile device proof](../protocol/profile-identity.md). `recover_profile` (tag 12) authorizes a replacement device with an offline backup grant. |
 | `Ping` | `sent_at` | Keepalive / RTT |
 | `JoinVoice` | `channel_id`, `self_mute`, `self_deaf` | Join or switch voice channel |
 | `LeaveVoice` | — | |

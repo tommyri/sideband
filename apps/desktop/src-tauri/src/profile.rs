@@ -14,6 +14,7 @@ use std::{
 use tauri::State;
 use zeroize::Zeroizing;
 
+pub(crate) mod backup;
 pub(crate) mod catalog;
 pub(crate) mod relay;
 mod vault;
@@ -24,6 +25,8 @@ struct Record {
     key_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     memberships: Vec<catalog::Membership>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    recovery_grants: backup::Grants,
 }
 
 trait Vault {
@@ -78,6 +81,33 @@ fn create(path: &Path, name: &str, vault: &impl Vault) -> Result<String, ApiErro
     if let Some(current) = record(path)? {
         return existing(current, name);
     }
+    let mut roots = Zeroizing::new([0_u8; 64]);
+    getrandom::fill(roots.as_mut()).map_err(storage_error)?;
+    match install(
+        path,
+        name.to_owned(),
+        Vec::new(),
+        backup::Grants::new(),
+        &roots,
+        vault,
+    ) {
+        Err(error) if error.code == "profile_exists" => {
+            existing(record(path)?.ok_or_else(catalog::missing)?, name)
+        }
+        result => result,
+    }
+}
+
+// Publish the descriptor last. A failed import cannot replace the current profile
+// or partially publish its restored memberships, pins or credential-store item.
+fn install(
+    path: &Path,
+    name: String,
+    memberships: Vec<catalog::Membership>,
+    recovery_grants: backup::Grants,
+    roots: &[u8; 64],
+    vault: &impl Vault,
+) -> Result<String, ApiError> {
     let parent = path
         .parent()
         .ok_or_else(|| storage_error("missing directory"))?;
@@ -86,25 +116,20 @@ fn create(path: &Path, name: &str, vault: &impl Vault) -> Result<String, ApiErro
     let mut id = [0; 16];
     getrandom::fill(&mut id).map_err(storage_error)?;
     let profile = Record {
-        name: name.to_owned(),
+        name,
         key_id: URL_SAFE_NO_PAD.encode(id),
-        memberships: Vec::new(),
+        memberships,
+        recovery_grants,
     };
     serde_json::to_writer(file.as_file_mut(), &profile).map_err(storage_error)?;
     file.as_file().sync_all().map_err(storage_error)?;
-    // The first half is recoverable membership authority. The independently
-    // random second half is local to this device and is never synced.
-    let mut roots = Zeroizing::new([0_u8; 64]);
-    getrandom::fill(roots.as_mut()).map_err(storage_error)?;
-    vault.put(&profile.key_id, roots.as_ref())?;
+    vault.put(&profile.key_id, roots)?;
     match file.persist_noclobber(path) {
         Ok(_) => Ok(profile.name),
         Err(error) => {
             vault.remove(&profile.key_id)?;
-            if error.error.kind() == ErrorKind::AlreadyExists
-                && let Some(winner) = record(path)?
-            {
-                return existing(winner, name);
+            if error.error.kind() == ErrorKind::AlreadyExists {
+                return Err(backup::already_exists());
             }
             Err(storage_error(error))
         }
@@ -123,8 +148,20 @@ fn profile_credentials(
     let roots = vault.read(&record.key_id)?;
     let (membership, device) = roots.split_first_chunk::<32>().ok_or_else(locked)?;
     let device = device.try_into().map_err(|_| locked())?;
-    let scoped = ProfileCredentials::new(membership, device, server, username, invite)
+    let mut scoped = ProfileCredentials::new(membership, device, server, username, invite)
         .map_err(crate::commands::api_error)?;
+    if let Some(member) = record
+        .memberships
+        .iter()
+        .find(|m| m.server_id().ok().as_ref() == Some(server))
+    {
+        let user = member.user_id.parse().map_err(storage_error)?;
+        scoped = if let Some(grants) = record.recovery_grants.get(server.as_str()) {
+            scoped.recovering(user, grants.to_wire())
+        } else {
+            scoped.existing_member(user)
+        };
+    }
     Ok(Credentials::Profile(Box::new(scoped)))
 }
 
@@ -179,7 +216,7 @@ mod tests {
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
     #[derive(Default)]
-    struct MemoryVault(RefCell<HashMap<String, Zeroizing<Vec<u8>>>>);
+    pub(super) struct MemoryVault(RefCell<HashMap<String, Zeroizing<Vec<u8>>>>);
 
     impl Vault for MemoryVault {
         fn put(&self, id: &str, secret: &[u8]) -> Result<(), ApiError> {

@@ -61,6 +61,58 @@ async fn advertised(world: &World) -> bool {
         .any(|value| value == "profileSync")
 }
 
+#[tokio::test]
+async fn a_recovered_device_can_read_the_original_linked_members_relay_copy() {
+    let mut world = World::new().await;
+    let https = start_https(&mut world).await;
+    let original = world.owner().await;
+    let member = super::own_id(&original);
+    let keys = super::backup_keys(&world, 2);
+    let review = original.review_profile_link(&keys).await.unwrap();
+    assert_eq!(review.role, "Admin");
+    original
+        .link_profile_account(&keys, member, &review.role)
+        .await
+        .unwrap();
+    let mut settings = original.server_settings().await.unwrap().settings;
+    settings.profile_sync = Some(true);
+    original.save_server_settings(&settings).await.unwrap();
+    let relay = RelayKey::new(&[1; 32], world.address.id().unwrap()).unwrap();
+    let portable = serde_json::to_vec(&serde_json::json!({
+        "name": "Jules",
+        "memberships": [{
+            "name": "Friday Games", "host": world.address.host, "port": world.address.port,
+            "httpsPort": world.address.https_port, "username": review.username,
+            "userId": member.to_string(), "trust": original.verified_trust().unwrap()
+        }]
+    }))
+    .unwrap();
+    original
+        .write_relay_copy(&relay, None, relay.seal(&portable).unwrap())
+        .await
+        .unwrap();
+    let grant = keys.recovery_grant(member);
+    original.close().await;
+    https.abort();
+    let _ = https.await;
+
+    world.restart().await;
+    let https = start_https(&mut world).await;
+    let new_device = super::recover_profile(&world, 3, member, grant)
+        .await
+        .unwrap();
+    assert_eq!(super::own_id(&new_device), member);
+    let review = new_device
+        .review_profile_link(&super::backup_keys(&world, 3))
+        .await
+        .unwrap();
+    assert_eq!(review.role, "Admin");
+    let mut copy = new_device.relay_copy(&relay).await.unwrap().unwrap();
+    assert_eq!(relay.open(&mut copy.ciphertext).unwrap(), portable);
+    new_device.close().await;
+    https.abort();
+}
+
 async fn incomplete_upload_keeps_existing_copy(
     world: &World,
     owner: &Client,

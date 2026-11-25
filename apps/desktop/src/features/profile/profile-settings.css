@@ -1,0 +1,107 @@
+.profile-settings {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel);
+}
+.profile-settings[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.profile-settings::backdrop {
+  background: rgb(6 10 15 / 58%);
+}
+.profile-settings > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.profile-settings .profile-close {
+  margin-left: auto;
+}
+.profile-settings h2 {
+  font-size: 24px;
+  line-height: 32px;
+  margin: 0;
+}
+.profile-settings-content {
+  overflow: auto;
+  min-height: 0;
+  padding: 16px 24px 24px;
+}
+.profile-settings-content > p:first-child {
+  margin-top: 0;
+}
+.profile-settings-content > form label {
+  display: grid;
+  gap: 6px;
+}
+.profile-settings-content > form input {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--voice-canvas);
+  color: var(--text);
+}
+.profile-settings .profile-back,
+.profile-settings .profile-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--secondary);
+  padding: 6px;
+  cursor: pointer;
+}
+.profile-settings .profile-back {
+  padding-left: 0;
+}
+.profile-settings .profile-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.profile-owner {
+  display: flex;
+  gap: 8px;
+  color: var(--secondary);
+}
+.profile-owner strong {
+  color: var(--text);
+}
+.profile-settings nav[aria-label='Profile settings'] {
+  display: grid;
+}
+.profile-settings nav[aria-label='Profile settings'] button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  padding: 14px 4px;
+  text-align: start;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+.profile-settings nav[aria-label='Profile settings'] button:hover {
+  background: var(--panel-hover);
+}
+.profile-settings nav[aria-label='Profile settings'] small {
+  display: block;
+  color: var(--secondary);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 3px;
+}

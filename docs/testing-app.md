@@ -87,6 +87,22 @@ includes version, full commit, target, test channel, profile, local/CI origin,
 and whether the source tree had changes, including untracked files. No source
 paths or credentials are copied into the identity.
 
+### Test profile recovery on Mac and Windows
+
+The desktop test suite restores the same synthetic backup fixture on either
+platform. To exercise the OS credential store as well, run this from a local
+checkout in a signed-in desktop session:
+
+```sh
+cargo test -p socialspeak-desktop --lib restore_and_export_the_interoperability_fixture_with_system_credentials -- --ignored
+```
+
+The check uses a temporary profile directory, restores the macOS-generated
+fixture, exports a new backup and removes its temporary credential. For a
+hands-on check, save a backup on one computer, then choose **Restore from
+backup** on a fresh installation on the other with the relay offline. Check
+the server name and username before reconnecting.
+
 ## Download workflow artifacts
 
 After the repository has a GitHub remote and this workflow is pushed to its

@@ -67,6 +67,122 @@ async function startReply(t) {
   return { page, dock, input, target, send, leave, audio: button('Audio settings', dock) }
 }
 
+test('reach account linking, sync, and recovery backup in compact personal settings', async (t) => {
+  const { page, dock, input } = await startReply(t)
+  await page.evaluate(() => {
+    const bridge = window.__TAURI_INTERNALS__
+    const invoke = bridge.invoke
+    bridge.invoke = async (command, args) => {
+      if (command === 'get_local_profile') return 'Jules'
+      if (command === 'review_profile_account')
+        return { status: 'eligible', userId: 'jules', username: 'jules', role: 'Admin' }
+      if (command === 'sync_server_list') return { available: [], chosen: null, unchecked: 0 }
+      return invoke(command, args)
+    }
+  })
+  await dock.getByRole('button', { name: 'Audio settings', exact: true }).click()
+  const entry = page.getByRole('button', { name: 'Profile and devices', exact: true })
+  await assertReachable(entry)
+  await entry.click()
+  const settings = page.getByRole('dialog', { name: 'Profile and devices', exact: true })
+  const account = settings.getByRole('button', { name: /^Link existing accounts/ })
+  await assertReachable(account)
+  await account.click()
+  await settings.getByText('Ready to link').waitFor()
+  await settings.getByRole('button', { name: 'Back to profile and devices' }).click()
+  assert.ok(await account.evaluate((el) => document.activeElement === el))
+  await settings.getByRole('button', { name: /^Sync servers/ }).click()
+  await settings.getByRole('button', { name: 'Manage recovery backup' }).click()
+  await assertReachable(settings.getByRole('button', { name: 'Save backup file' }))
+  await page.keyboard.press('Escape')
+  await settings.waitFor({ state: 'hidden' })
+  assert.ok(await entry.evaluate((el) => document.activeElement === el))
+  await page.keyboard.press('Escape')
+  assert.equal(await input.inputValue(), draft)
+})
+
+test('restore from first launch offline, then sign in with the restored membership', async (t) => {
+  const page = await browser.newPage({ viewport: { width: 760, height: 600 } })
+  t.after(() => page.close())
+  page.setDefaultTimeout(5000)
+  await page.addInitScript(() => {
+    let restored = false
+    let callback = 0
+    const server = {
+      id: '[games.example]:443',
+      label: 'Friday Games',
+      host: 'games.example',
+      port: 443,
+      httpsPort: 8443,
+      profileUsername: 'jules',
+      status: { kind: 'disconnected' },
+      unread: 0,
+    }
+    window.profileCalls = []
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: () => ++callback,
+      invoke: async (command, args) => {
+        window.profileCalls.push(command)
+        switch (command) {
+          case 'get_snapshot':
+            return { servers: restored ? [server] : [] }
+          case 'get_local_profile':
+            return restored ? 'Jules' : null
+          case 'choose_profile_backup':
+            return { id: 'example-file', filename: 'My profile.sideband-backup' }
+          case 'restore_profile_backup':
+            restored = true
+            return 'Jules'
+          case 'probe_server':
+            return {
+              name: server.label,
+              capabilities: ['profileSignIn'],
+              hasPublicIcon: false,
+              registrationMode: 'invite',
+              trusted: true,
+              publicCertificate: true,
+              previousFingerprint: null,
+              fingerprint: 'ab'.repeat(32),
+            }
+          case 'connect':
+            window.profileSignIn = args.input
+            throw { code: 'unreachable', message: 'Server is offline.' }
+          case 'plugin:event|listen':
+            return args.handler
+          default:
+            return null
+        }
+      },
+    }
+  })
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
+  await page.getByRole('button', { name: 'Restore from backup' }).click()
+  await page.getByRole('button', { name: 'Choose backup file' }).click()
+  await page.getByLabel('Recovery key').fill('synthetic test words')
+  await page.getByRole('button', { name: 'Restore profile', exact: true }).click()
+  await page.getByRole('heading', { name: 'Profile restored' }).waitFor()
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.profileCalls.includes('probe_server')), false)
+  await page.getByRole('button', { name: 'Reconnect / log in' }).click()
+  await page.getByRole('button', { name: 'Find server' }).click()
+  const signIn = page.getByRole('button', { name: 'Sign in with profile' })
+  await assertReachable(signIn)
+  assert.equal(await page.getByLabel('Password', { exact: true }).count(), 0)
+  assert.equal(await page.getByLabel('Invite code', { exact: true }).count(), 0)
+  await signIn.click()
+  await page.getByRole('alert').filter({ hasText: 'Cannot reach' }).waitFor()
+  assert.deepEqual(await page.evaluate(() => window.profileSignIn), {
+    host: 'games.example',
+    port: 443,
+    httpsPort: 8443,
+    mode: 'profile',
+    username: 'jules',
+    password: '',
+    inviteCode: '',
+  })
+})
+
 test('open dock Audio by keyboard, return to the reply, and send it in the call', async (t) => {
   const { page, input, target, send, leave, audio } = await startReply(t)
   const hasFocus = () => audio.evaluate((el) => document.activeElement === el)

@@ -3,6 +3,17 @@
 /// TLS exporter label used with an empty context and a 32-byte output.
 pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-Sideband-profile-v1";
 
+/// A source device delegates recovery of this existing local member to its membership authority.
+#[must_use]
+pub fn recovery_authorization(membership: &[u8], user: &[u8]) -> Vec<u8> {
+    [
+        b"Sideband/v1/backup-recovery\0".as_slice(),
+        membership,
+        user,
+    ]
+    .concat()
+}
+
 /// Membership approval for one 32-byte, server-specific device key.
 #[must_use]
 pub fn device_authorization(device_key: &[u8]) -> Vec<u8> {

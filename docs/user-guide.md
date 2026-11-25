@@ -56,9 +56,29 @@ host’s invite code if the server asks for one. On your next visit, use your
 saved session or choose **Use a local profile** to sign in again. Your roles
 and messages belong to your membership on that server.
 
-Keep this installation and its credential store if you need to return with the
-same profile. Pairing another computer, linking an existing password account
-and restoring a backup are planned separately.
+Open **Personal settings → Profile and devices** to manage your profile.
+
+- **Link existing accounts** shows the accounts on this computer. Check the
+  server address, signed-in username and role before you confirm. You can
+  review more accounts together. **Server sign-in only** means you can keep
+  using that community with its usual login on this computer.
+- **Sync servers** lets you choose a joined community that offers encrypted
+  profile storage. Confirm the server name and address. Sideband encrypts the
+  membership list on your computer before sending the first copy. If no server
+  offers sync, you can still make a recovery backup.
+- **Manage backup** saves a file and shows you 12 words that open it. A private
+  iCloud Drive or Google Drive folder is an option for the file. Keep the
+  words separately in a password manager or on paper. A USB drive also works.
+  If you store the file as a password-manager attachment, keep the words on
+  paper. **Copy words** and **I saved my key** are separate steps.
+
+On a fresh Mac or Windows installation, choose **Restore from backup** on the
+first join screen. Select the file and enter its words. You can open it even
+when every server is offline. Select a restored server and choose **Sign in
+with profile** when it is reachable. Its current roles, bans and device
+permissions still apply. If that server revoked the device that made your
+backup before you recovered access, contact its host. A file restores the memberships it contained when
+you saved it. Make a new backup after important changes.
 
 ### After joining
 

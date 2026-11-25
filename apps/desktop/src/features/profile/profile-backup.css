@@ -1,0 +1,69 @@
+.profile-backup {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+.profile-backup h3,
+.profile-backup p {
+  margin: 0;
+}
+.profile-backup p,
+.profile-backup details {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.profile-backup strong {
+  color: var(--text);
+}
+.profile-backup button {
+  justify-self: start;
+}
+.profile-backup summary {
+  cursor: pointer;
+}
+.profile-backup details p {
+  margin-top: 0.55rem;
+}
+.backup-instruction,
+.backup-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+}
+.backup-instruction svg {
+  flex: 0 0 1.25rem;
+  color: var(--muted);
+}
+.backup-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.backup-filename {
+  overflow-wrap: anywhere;
+}
+.profile-backup .backup-words {
+  padding: 0.85rem;
+  user-select: all;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel-raised);
+  border-radius: 6px;
+  line-height: 1.8;
+}
+.profile-backup label {
+  display: grid;
+  gap: 0.4rem;
+}
+.profile-backup input {
+  min-width: 0;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.65rem;
+}
+.profile-backup .backup-error {
+  color: var(--text);
+  border-inline-start: 3px solid var(--coral);
+  padding-inline-start: 0.6rem;
+}

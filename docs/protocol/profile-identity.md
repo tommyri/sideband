@@ -9,8 +9,10 @@ username when they first join a server.
 
 The desktop creates two independent 32-byte random secrets and stores them
 in macOS Keychain or Windows Credential Manager. The app's local profile
-file contains the display name and a random credential-store lookup ID.
-Only the name crosses the native bridge to the UI.
+file contains the display name, a random credential-store lookup ID, confirmed
+memberships, their trust settings and any pending public recovery grants.
+The roots stay native. The backup screen displays the recovery words so the
+person can save them separately.
 
 For each server, the native client derives two Ed25519 signing seeds using
 HMAC-SHA-256. For the membership seed, the HMAC key is the membership root
@@ -41,7 +43,7 @@ keys and the username the user chose. It receives neither root.
    invite. A captured device proof cannot be reused on another TLS connection.
    The usual saved-session and ban checks apply.
 
-## Device removal and future recovery
+## Device removal
 
 An operator can list the account's enrolled devices with
 `ss-server user devices --username NAME list` and revoke one with
@@ -49,14 +51,6 @@ An operator can list the account's enrolled devices with
 `--data-dir PATH` before `list` or `revoke` when using a custom data
 directory. Revocation invalidates that device’s sessions and retains a record
 of its revoked credential. The membership and its moderation history survive.
-
-This release enrolls the first device. An additional device presenting a
-valid membership signature still needs an explicit enrollment path. Future
-pairing and recovery must authorize a fresh device key while preserving the
-existing server member, bans and revoked-device records. The membership root
-is the recoverable material. The device root belongs to its installation and
-must be excluded from transfers and backups. Linking a password account also
-requires proof of access to that existing account.
 
 ## Link an existing server account
 
@@ -81,3 +75,44 @@ the account's password login, messages, roles and bans. Each selected account
 commits independently. A retry after a lost reply or failed catalog write can
 complete the same binding. Existing bearer tokens and passwords remain local
 to the installation.
+
+## File-and-words recovery
+
+A backup can be saved and opened offline. Version 1 contains the membership
+root and a JSON body with the profile name, server addresses, local member IDs,
+usernames, trust policies, and one recovery grant for each membership. The
+enrolled device signs each grant over its server-specific membership key and
+local member ID, using the recovery transcript defined in
+[the protocol code](../../crates/ss-proto/src/profile.rs).
+
+The desktop generates 128 random bits per file and displays them as 12 English
+BIP39 words with a transcription checksum. This entropy is the AES-128-GCM
+key. The file begins with the ASCII bytes `Sideband backup`, a zero byte and
+version byte 1, followed by a random 12-byte nonce and ciphertext with a
+16-byte authentication tag. The header is AEAD associated data. A final
+SHA-256 digest over the preceding bytes helps identify damaged downloads
+before asking the person to reenter the words. AES-GCM authenticates the
+contents even if someone replaces that digest. The decoder caps files at 8 MiB.
+Every export creates fresh words. An earlier copy still needs its own words.
+
+A successful restore installs the membership root together with a newly
+generated device root in the destination OS credential store. It publishes
+the profile descriptor, server list, and trust policies atomically on a fresh
+installation. The source device secret, passwords and session tokens are
+excluded. The relay plays no part in opening this file.
+
+On the first trusted connection to each community, the new device sends
+`Hello.recover_profile` (tag 12) with a connection-bound device proof, a
+membership signature over its fresh device key, the saved member ID, and
+the grant from the source device. The server checks the membership still
+maps to that member, enforces current bans, and checks its source-device
+enrollment and revocation records. A revoked target key is always refused.
+A valid recovery adds a device to the existing local account in the same
+transaction as issuing its session. A server reset or a missing membership
+cannot register a new account through this operation.
+
+After successful enrollment the new device signs in independently of the
+source. Revoking the source before enrollment prevents the old grant from
+adding a device. If a restored computer makes another backup while the
+server is offline, it preserves the outstanding grant. After enrollment,
+new backups carry a grant from the replacement device.

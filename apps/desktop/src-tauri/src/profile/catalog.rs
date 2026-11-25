@@ -152,6 +152,7 @@ fn persist(path: &Path, current: &Record) -> Result<(), ApiError> {
 fn remember(path: &Path, membership: Membership) -> Result<(), ApiError> {
     let id = membership.validate()?;
     let mut current = record(path)?.ok_or_else(missing)?;
+    let recovered = current.recovery_grants.remove(id.as_str()).is_some();
     if let Some(existing) = current
         .memberships
         .iter_mut()
@@ -163,7 +164,7 @@ fn remember(path: &Path, membership: Membership) -> Result<(), ApiError> {
                 "This server returned a different member for your profile. Verify the server with its host.",
             ));
         }
-        if *existing == membership {
+        if *existing == membership && !recovered {
             return Ok(());
         }
         *existing = membership;
@@ -181,10 +182,11 @@ pub(crate) fn forget(path: &Path, id: &ServerId) -> Result<(), ApiError> {
         return Ok(());
     };
     let count = current.memberships.len();
+    let pending = current.recovery_grants.remove(id.as_str()).is_some();
     current
         .memberships
         .retain(|m| m.server_id().ok().as_ref() != Some(id));
-    if count != current.memberships.len() {
+    if count != current.memberships.len() || pending {
         persist(path, &current)?;
     }
     Ok(())
@@ -241,7 +243,10 @@ mod tests {
         let path = dir.path().join("profile.json");
         std::fs::write(&path, r#"{"name":"Sam","key_id":"local-item"}"#).unwrap();
         let m = member();
-        assert!(snapshot(&path).unwrap().memberships.is_empty());
+        assert_eq!(
+            snapshot(&path).unwrap().memberships,
+            Vec::<Membership>::new()
+        );
         remember(&path, m.clone()).unwrap();
         remember(&path, m.clone()).unwrap();
         let other = Membership {
@@ -253,7 +258,7 @@ mod tests {
             "membership_changed"
         );
         let portable = snapshot(&path).unwrap();
-        assert_eq!(portable.memberships, [m.clone()]);
+        assert_eq!(portable.memberships.as_slice(), std::slice::from_ref(&m));
         let json = serde_json::to_string(&portable).unwrap();
         assert!(!json.contains("local-item"));
         let listed = server_list(Vec::new(), portable.memberships).unwrap();
@@ -273,7 +278,10 @@ mod tests {
             Some(TrustPolicy::PublicCertificate)
         );
         forget(&path, &id).unwrap();
-        assert!(snapshot(&path).unwrap().memberships.is_empty());
+        assert_eq!(
+            snapshot(&path).unwrap().memberships,
+            Vec::<Membership>::new()
+        );
     }
 
     #[test]

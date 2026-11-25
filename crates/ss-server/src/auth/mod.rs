@@ -200,7 +200,9 @@ impl Auth {
                 self.resume(token).await
             }
             Some(v1::hello::Auth::BotToken(token)) => self.authenticate_bot(token).await,
-            Some(v1::hello::Auth::Profile(_)) => Err(Error::InvalidProfile), // Requires the TLS exporter.
+            Some(v1::hello::Auth::Profile(_) | v1::hello::Auth::RecoverProfile(_)) => {
+                Err(Error::InvalidProfile)
+            } // Requires the TLS exporter.
             None => Err(Error::Invalid("missing credentials")),
         }
     }

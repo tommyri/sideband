@@ -4,6 +4,7 @@ import { useMicrophoneGuidance } from '../../voice/microphone'
 import './audio.css'
 import { openDiagnostics } from '../../diagnostics/model'
 import { ShortcutSettings } from '../shortcuts/ShortcutSettings'
+import { ProfileSettings } from '../../profile/ProfileSettings'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useVoiceStore, refreshVoice } from '../../voice/store'
 import { memberAction } from '../../voice/api'
@@ -118,6 +119,7 @@ export function AudioSettings({
   initialFocus?: AudioSettingsFocus
 }) {
   const [shortcuts, setShortcuts] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
   const microphone = useRef<HTMLSelectElement>(null)
   const talkingMode = useRef<HTMLSelectElement>(null)
@@ -302,11 +304,20 @@ export function AudioSettings({
           <span>Personal settings</span>
           <h2 id="audio-title">Audio</h2>
         </div>
+        <button
+          type="button"
+          className="button secondary audio-profile"
+          disabled={busy || testing !== null || capturing}
+          onClick={() => setProfileOpen(true)}
+        >
+          Profile and devices
+        </button>
         <button className="audio-close" aria-label="Close audio settings" onClick={close}>
           <X size={19} />
         </button>
       </header>
       {shortcuts && <ShortcutSettings close={() => setShortcuts(false)} />}
+      {profileOpen && <ProfileSettings close={() => setProfileOpen(false)} />}
       <div className="personal-audio-body">
         {!env ? (
           !error && <p role="status">Loading audio devices…</p>
