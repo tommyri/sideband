@@ -295,7 +295,10 @@ async fn server_info_is_public() {
     assert_eq!(value["fingerprint"], "ab".repeat(32));
     assert!(value.get("version").is_none());
     assert!(value.get("iconUrl").is_none());
-    assert_eq!(value["capabilities"], serde_json::json!(["profileSignIn"]));
+    assert_eq!(
+        value["capabilities"],
+        serde_json::json!(["profileSignIn", "profileAccountLinking"])
+    );
 }
 
 fn hex(tls: &ss_net::tls::TlsConfig) -> String {

@@ -11,6 +11,7 @@ mod channel;
 mod error;
 mod id;
 mod permissions;
+pub mod profile_link;
 mod timestamp;
 mod user;
 mod voice;

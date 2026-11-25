@@ -1,3 +1,4 @@
+mod account_link;
 mod admin;
 mod attachments;
 mod audio;
@@ -74,6 +75,8 @@ pub fn run() {
             diagnostics::diagnostics_snapshot,
             testing::test_build_identity,
             testing::export_test_report,
+            account_link::review_profile_account,
+            account_link::link_profile_account,
             profile::create_local_profile,
             profile::get_local_profile,
             commands::connect,

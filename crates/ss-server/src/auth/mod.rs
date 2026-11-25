@@ -4,6 +4,7 @@
 //! The owner code is a `server_settings` row because an `invites` row cannot
 //! exist before the first user (`created_by` is required).
 
+mod account_link;
 mod limiter;
 mod live;
 mod password;

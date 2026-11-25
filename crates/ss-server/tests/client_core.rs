@@ -240,6 +240,91 @@ async fn profile_membership_survives_restart_and_device_revocation_ends_its_sess
 }
 
 #[tokio::test]
+async fn existing_account_link_preserves_identity_roles_and_bans_across_retries() {
+    use ss_client_core::profile::{ProfileCredentials, account_link::LinkState};
+    let mut world = World::new().await;
+    let (port, listener) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let id = own_id(&owner);
+    let keys = |root: u8| {
+        ProfileCredentials::new(
+            &[root; 32],
+            &[2; 32],
+            &world.address.id().unwrap(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap()
+    };
+    let review = owner.review_profile_link(&keys(1)).await.unwrap();
+    assert_eq!(review.id, id);
+    assert_eq!(review.username, "owner");
+    assert_eq!(review.role, "Admin");
+    assert_eq!(review.state, LinkState::Eligible);
+    assert!(
+        owner
+            .link_profile_account(&keys(1), own_id(&guest), "Admin")
+            .await
+            .is_err()
+    );
+    let (a, b) = tokio::join!(
+        async { owner.link_profile_account(&keys(1), id, "Admin").await },
+        async { owner.link_profile_account(&keys(1), id, "Admin").await },
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(
+        owner.review_profile_link(&keys(1)).await.unwrap().state,
+        LinkState::Linked
+    );
+    assert_eq!(
+        owner.review_profile_link(&keys(3)).await.unwrap().state,
+        LinkState::OtherProfile
+    );
+    let other = guest.review_profile_link(&keys(1)).await.unwrap();
+    // One profile cannot take over a second member on the same server.
+    assert!(
+        guest
+            .link_profile_account(&keys(1), other.id, &other.role)
+            .await
+            .is_err()
+    );
+    assert!(
+        auth::list_profile_devices(&world.pool, "guest")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "owner")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    owner.close().await;
+    guest.close().await;
+    let returned = sign_in_profile(&world, 2, "").await.unwrap();
+    assert_eq!(own_id(&returned), id);
+    let general = named(&returned.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        returned.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    ss_server::handlers::ban_account(&world.pool, "owner", Some("test"))
+        .await
+        .unwrap();
+    assert!(returned.review_profile_link(&keys(1)).await.is_err());
+    assert!(
+        matches!(sign_in_profile(&world,2,"").await,Err(Error::Server{code,..}) if code==i32::from(v1::ErrorCode::Banned))
+    );
+    returned.close().await;
+    listener.abort();
+}
+
+#[tokio::test]
 async fn profile_registration_obeys_closed_registration_and_existing_member_bans() {
     let world = World::new().await;
     let owner = world.owner().await;

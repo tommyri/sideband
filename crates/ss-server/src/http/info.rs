@@ -64,7 +64,7 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Response, St
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut metadata = json!({
         "name": name,
-        "capabilities": ["profileSignIn"],
+        "capabilities": ["profileSignIn", "profileAccountLinking"],
         "fingerprint": fingerprint,
         "registrationMode": registration,
     });

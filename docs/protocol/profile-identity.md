@@ -57,3 +57,27 @@ existing server member, bans and revoked-device records. The membership root
 is the recoverable material. The device root belongs to its installation and
 must be excluded from transfers and backups. Linking a password account also
 requires proof of access to that existing account.
+
+## Link an existing server account
+
+After signing in, open **Link existing accounts** in profile settings. The
+desktop checks the signed-in server's `profileAccountLinking` feature and
+shows the username, hostname and highest role before asking for confirmation.
+A server without this feature keeps its usual per-device login.
+
+The authenticated `GET /api/v1/me/profile-link` returns only the caller's
+member ID, username, role, session ID and current profile binding. The native
+client sends its server-specific device public key in the
+`X-Sideband-Profile-Device` header (unpadded base64url) so the server can
+report whether this device is enrolled. The session ID is a non-secret
+identifier distinct from the bearer credential.
+
+On confirmation the native client rechecks the reviewed member and role. It
+signs the [link transcript](../../crates/ss-core/src/profile_link.rs) with
+both the server-specific membership key and the device key. The server
+validates its current human session, member and signatures, then atomically
+binds the keys and the current session to the existing user. Linking preserves
+the account's password login, messages, roles and bans. Each selected account
+commits independently. A retry after a lost reply or failed catalog write can
+complete the same binding. Existing bearer tokens and passwords remain local
+to the installation.

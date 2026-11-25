@@ -126,7 +126,7 @@ fn recognized_capabilities(capabilities: Vec<String>) -> Vec<String> {
         .filter(|s| {
             matches!(
                 s.as_str(),
-                "profileSignIn" | "linkedDeviceSignIn" | "profileSync"
+                "profileSignIn" | "profileAccountLinking" | "linkedDeviceSignIn" | "profileSync"
             )
         })
         .collect()
@@ -432,7 +432,10 @@ mod tests {
             "untrusted"
         );
         assert_eq!(found.registration_mode, "invite");
-        assert_eq!(found.capabilities, ["profileSignIn"]);
+        assert_eq!(
+            found.capabilities,
+            ["profileSignIn", "profileAccountLinking"]
+        );
         assert!(
             pins.get(&id).unwrap().is_none(),
             "discovery must not persist trust"

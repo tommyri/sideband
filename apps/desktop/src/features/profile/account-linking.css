@@ -1,0 +1,52 @@
+.account-link {
+  display: grid;
+  gap: 12px;
+}
+.account-link h3,
+.account-link p {
+  margin: 0;
+}
+.account-link p,
+.account-link li div > span {
+  color: var(--secondary, var(--muted));
+}
+.account-link ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.account-link li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.account-link li div {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: grid;
+  gap: 3px;
+}
+.account-link li div > span {
+  font-size: 0.875em;
+}
+.account-link .account-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--avatar-sage, #afcec4);
+  color: var(--on-coral);
+  font-weight: 700;
+}
+.account-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.account-link > button {
+  justify-self: start;
+}

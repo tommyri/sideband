@@ -494,6 +494,24 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         perms_and(&["VIEW_CHANNEL"], &["caller(", "visible_channels("]),
     ),
     (
+        "http/account_link.rs",
+        "get",
+        "/api/v1/me/profile-link",
+        scoped(
+            &["caller(", "review_account("],
+            "server's own authenticated member only",
+        ),
+    ),
+    (
+        "http/account_link.rs",
+        "put",
+        "/api/v1/me/profile-link",
+        scoped(
+            &["caller(", "link_account("],
+            "both profile proofs are bound to the authenticated member and session",
+        ),
+    ),
+    (
         "http/server_settings.rs",
         "get",
         "/api/v1/server/settings",

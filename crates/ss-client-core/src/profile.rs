@@ -1,5 +1,7 @@
 //! Profile authentication scoped to one server's canonical QUIC address.
 
+pub mod account_link;
+
 use crate::Error;
 use ring::{
     hmac,
