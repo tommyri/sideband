@@ -67,7 +67,11 @@ impl ProfileCredentials {
     }
 }
 
-fn scoped_key(root: &[u8; 32], purpose: &[u8], server: &ServerId) -> Result<Ed25519KeyPair, Error> {
+pub(crate) fn scoped_key(
+    root: &[u8; 32],
+    purpose: &[u8],
+    server: &ServerId,
+) -> Result<Ed25519KeyPair, Error> {
     let key = hmac::Key::new(hmac::HMAC_SHA256, root);
     let mut context = hmac::Context::with_key(&key);
     context.update(purpose);

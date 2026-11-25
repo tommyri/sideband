@@ -619,7 +619,10 @@ async fn load_active(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<d
 
 /// [`load_active`], for a session token: a bot account never has one, and a
 /// row naming one is refused rather than trusted.
-async fn load_person(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<db::User, Error> {
+pub(crate) async fn load_person(
+    conn: &mut sqlx::SqliteConnection,
+    user_id: Id,
+) -> Result<db::User, Error> {
     let user = load_active(conn, user_id).await?;
     if user.kind == UserKind::Bot {
         return Err(Error::Unauthenticated);

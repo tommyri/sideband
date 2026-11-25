@@ -14,6 +14,9 @@ pub struct ServerSettings {
     /// Public invitation logo opt-in. Older servers omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_icon: Option<bool>,
+    /// Member-only encrypted profile relay opt-in. Older servers omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_sync: Option<bool>,
     /// `invite` or `closed`.
     pub registration_mode: String,
     /// Token returned by the last read.

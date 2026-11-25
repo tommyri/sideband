@@ -1,5 +1,5 @@
-//! Only the display name and a random vault item identifier are persisted in
-//! the app directory. The profile and device roots never cross the JS bridge.
+//! Membership metadata lives in the app directory. The long-lived signing
+//! secrets stay in the operating system's credential store.
 
 use crate::{state::AppState, types::ApiError};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,12 +14,16 @@ use std::{
 use tauri::State;
 use zeroize::Zeroizing;
 
+pub(crate) mod catalog;
+pub(crate) mod relay;
 mod vault;
 
 #[derive(Serialize, Deserialize)]
 struct Record {
     name: String,
     key_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    memberships: Vec<catalog::Membership>,
 }
 
 trait Vault {
@@ -84,6 +88,7 @@ fn create(path: &Path, name: &str, vault: &impl Vault) -> Result<String, ApiErro
     let profile = Record {
         name: name.to_owned(),
         key_id: URL_SAFE_NO_PAD.encode(id),
+        memberships: Vec::new(),
     };
     serde_json::to_writer(file.as_file_mut(), &profile).map_err(storage_error)?;
     file.as_file().sync_all().map_err(storage_error)?;
@@ -121,6 +126,16 @@ fn profile_credentials(
     let scoped = ProfileCredentials::new(membership, device, server, username, invite)
         .map_err(crate::commands::api_error)?;
     Ok(Credentials::Profile(Box::new(scoped)))
+}
+
+/// Read only the recoverable half. The device root remains installation-local.
+pub(crate) fn membership_root(path: &Path) -> Result<Zeroizing<[u8; 32]>, ApiError> {
+    let profile = record(path)?.ok_or_else(catalog::missing)?;
+    let roots = vault::System.read(&profile.key_id)?;
+    let roots: &[u8; 64] = roots.as_slice().try_into().map_err(|_| locked())?;
+    Ok(Zeroizing::new(
+        roots[..32].try_into().map_err(|_| locked())?,
+    ))
 }
 
 #[tauri::command]

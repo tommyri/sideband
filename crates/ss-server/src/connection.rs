@@ -224,6 +224,10 @@ impl Server {
                 Arc::clone(&auth),
                 Arc::clone(&perms),
             ))
+            .merge(crate::http::profile_sync::router(
+                Arc::clone(&auth),
+                Arc::clone(&self.pool),
+            ))
             .merge(crate::http::server_settings::router(
                 Arc::clone(&auth),
                 Arc::clone(&perms),

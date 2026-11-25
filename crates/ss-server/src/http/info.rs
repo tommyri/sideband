@@ -59,12 +59,19 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Response, St
     let logo = settings::public_icon(&mut tx)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut capabilities = vec!["profileSignIn"];
+    if settings::offers_profile_sync(&mut tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        capabilities.push("profileSync");
+    }
     tx.commit()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut metadata = json!({
         "name": name,
-        "capabilities": ["profileSignIn"],
+        "capabilities": capabilities,
         "fingerprint": fingerprint,
         "registrationMode": registration,
     });

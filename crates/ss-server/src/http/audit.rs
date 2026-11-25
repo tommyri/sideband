@@ -131,7 +131,7 @@ pub(super) async fn caller(state: &AuditState, headers: &HeaderMap) -> Result<Id
     }
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(super) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?;
     if token.is_empty() { None } else { Some(token) }

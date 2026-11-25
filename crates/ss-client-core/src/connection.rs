@@ -353,6 +353,10 @@ impl Client {
     pub fn address(&self) -> &ServerAddr {
         &self.address
     }
+    /// Trust decision from the authenticated transport for this session.
+    pub fn verified_trust(&self) -> Option<ss_net::pins::TrustPolicy> {
+        self.auth.read().as_ref().map(|auth| auth.trust)
+    }
     /// Close and wait for the owning worker to release its resources.
     pub async fn close(mut self) {
         self.worker.abort();

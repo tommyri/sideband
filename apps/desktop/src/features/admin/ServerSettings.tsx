@@ -259,6 +259,19 @@ function SettingsPanel({ server, connected, permitted, close }: Props) {
               )}
               {snapshot?.iconWarning && <p role="note">{snapshot.iconWarning}</p>}
             </section>
+            {fields.profileSync != null && (
+              <label className="server-public-icon">
+                <input
+                  type="checkbox"
+                  checked={fields.profileSync}
+                  onChange={(e) => setFields({ ...fields, profileSync: e.target.checked })}
+                />
+                Offer profile sync to members
+                <small>
+                  Members can choose this server to keep an encrypted copy of their profile.
+                </small>
+              </label>
+            )}
             <label>
               Registration
               <select

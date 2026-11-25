@@ -46,6 +46,8 @@ struct Profile {
     description: String,
     icon_id: Option<String>,
     public_icon: Option<bool>,
+    #[serde(rename = "profileSync")]
+    offer_sync: Option<bool>,
     registration_mode: String,
     revision: String,
 }
@@ -111,6 +113,11 @@ async fn snapshot(conn: &mut sqlx::SqliteConnection) -> Result<Snapshot, Failure
             name: value(conn, settings::NAME, "Sideband").await?,
             description: value(conn, settings::DESCRIPTION, "").await?,
             icon_id: (!icon.is_empty()).then_some(icon),
+            offer_sync: Some(
+                settings::offers_profile_sync(conn)
+                    .await
+                    .map_err(internal)?,
+            ),
             public_icon: Some(value(conn, settings::PUBLIC_ICON, "false").await? == "true"),
             registration_mode: value(conn, settings::REGISTRATION_MODE, "invite").await?,
             revision: value(conn, REVISION, "0").await?,
@@ -185,6 +192,10 @@ async fn update(
         .public_icon
         .or(current.profile.public_icon)
         .unwrap_or(false);
+    let profile_sync = input
+        .offer_sync
+        .or(current.profile.offer_sync)
+        .unwrap_or(false);
     let revision = Id::generate().to_string();
     for (key, val) in [
         (settings::NAME, input.name.as_str()),
@@ -197,6 +208,10 @@ async fn update(
         (
             settings::REGISTRATION_MODE,
             input.registration_mode.as_str(),
+        ),
+        (
+            settings::PROFILE_SYNC,
+            if profile_sync { "true" } else { "false" },
         ),
         (REVISION, revision.as_str()),
     ] {
@@ -214,6 +229,7 @@ async fn update(
                 "registrationMode": input.registration_mode,
                 "iconChanged": input.icon_id != current.profile.icon_id,
                 "publicIcon": public_icon,
+                "profileSync": profile_sync,
             })
             .to_string(),
         },

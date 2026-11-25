@@ -14,6 +14,7 @@ pub mod internal;
 pub mod invites;
 pub mod messages;
 pub mod moderation_admin;
+pub mod profile_sync;
 pub mod role_admin;
 pub mod search;
 pub mod server_settings;
