@@ -129,8 +129,7 @@ impl DesktopStorage {
         })
     }
 
-    pub fn reorder(&self, ids: &[String]) -> Result<(), Error> {
-        let existing = self.servers();
+    pub fn reorder(&self, ids: &[String], existing: Vec<SavedServer>) -> Result<(), Error> {
         let unique: std::collections::BTreeSet<_> = ids.iter().collect();
         if ids.len() != existing.len()
             || unique.len() != ids.len()
@@ -141,6 +140,11 @@ impl DesktopStorage {
             ));
         }
         self.update(|data| {
+            for saved in existing {
+                if !data.servers.iter().any(|s| s.id == saved.id) {
+                    data.servers.push(saved);
+                }
+            }
             data.servers
                 .sort_by_key(|s| ids.iter().position(|id| id == &s.id));
         })
@@ -313,10 +317,13 @@ mod tests {
         storage.save_last_server(&a).unwrap();
         storage.save_last_server(&b).unwrap();
         storage
-            .reorder(&[
-                b.id().unwrap().as_str().into(),
-                a.id().unwrap().as_str().into(),
-            ])
+            .reorder(
+                &[
+                    b.id().unwrap().as_str().into(),
+                    a.id().unwrap().as_str().into(),
+                ],
+                storage.servers(),
+            )
             .unwrap();
         let reopened = DesktopStorage::open(&path).unwrap();
         assert_eq!(reopened.servers()[0].host, "example.org");
@@ -332,7 +339,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(reopened.reorder(&[]).is_err());
+        assert!(reopened.reorder(&[], reopened.servers()).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

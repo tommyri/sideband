@@ -59,6 +59,9 @@ pub struct ServerSummary {
     pub host: String,
     pub port: u16,
     pub https_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub profile_username: Option<String>,
     pub unread: u32,
     pub status: ConnectionStatus,
 }

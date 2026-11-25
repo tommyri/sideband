@@ -243,6 +243,7 @@ pub async fn connect(
     let credentials = match input.mode.as_str() {
         "saved" => Credentials::Saved,
         "profile" => {
+            crate::profile::catalog::seed_trust(&state.profile_path, &*state.pins, &key)?;
             crate::profile::credentials(
                 state.profile_path.clone(),
                 key,
@@ -270,6 +271,12 @@ pub async fn connect(
     )
     .await
     .map_err(api_error)?;
+    if input.mode == "profile"
+        && let Err(error) = crate::profile::catalog::remember_client(&state, &client).await
+    {
+        client.close().await;
+        return Err(error);
+    }
     let server_id = address.id().map_err(api_error)?.as_str().to_owned();
     let label = client
         .state()
@@ -353,12 +360,12 @@ pub async fn disconnect(state: State<'_, AppState>, server_id: String) -> Result
 
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, ApiError> {
+    let members = crate::profile::catalog::memberships(&state.profile_path)?;
+    let saved = crate::profile::catalog::server_list(state.storage.servers(), members)?;
     let clients = state.clients();
-    let servers = state
-        .storage
-        .servers()
+    let servers = saved
         .into_iter()
-        .map(|saved| {
+        .map(|(saved, profile_username)| {
             let client = ServerId::new(&saved.host, saved.port)
                 .ok()
                 .and_then(|id| clients.get(&id));
@@ -368,6 +375,7 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Api
                 host: saved.host,
                 port: saved.port,
                 https_port: saved.https_port,
+                profile_username,
                 unread: client.map_or(0, |c| {
                     ss_client_core::unread::unread_conversations(&c.state().read())
                         .try_into()

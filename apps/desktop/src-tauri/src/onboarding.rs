@@ -198,6 +198,9 @@ pub async fn probe_server(
     state: State<'_, AppState>,
     input: ProbeInput,
 ) -> Result<ServerProbe, ApiError> {
+    let id = ServerId::new(&input.host, input.port)
+        .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
+    crate::profile::catalog::seed_trust(&state.profile_path, &*state.pins, &id)?;
     tokio::time::timeout(Duration::from_secs(12), probe(input, state.pins.clone()))
         .await
         .map_err(|_| ApiError::new("timeout", "The server did not respond."))?
@@ -277,12 +280,14 @@ pub async fn use_public_certificate(
 pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
     crate::voice::stop(&state, Some(&server_id)).await?;
-    let saved = state
-        .storage
-        .servers()
-        .into_iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| ApiError::new("invalid_server", "Unknown server."))?;
+    let saved = crate::profile::catalog::server_list(
+        state.storage.servers(),
+        crate::profile::catalog::memberships(&state.profile_path)?,
+    )?
+    .into_iter()
+    .map(|(s, _)| s)
+    .find(|s| s.id == server_id)
+    .ok_or_else(|| ApiError::new("invalid_server", "Unknown server."))?;
     let id = ServerId::new(&saved.host, saved.port)
         .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
     let removed = state.clients().remove(&id);
@@ -296,6 +301,7 @@ pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Res
             .map_err(super::commands::api_error)?
     };
     sign_out(removed, address, token, state.pins.clone()).await;
+    crate::profile::catalog::forget(&state.profile_path, &id)?;
     // Keep the certificate pin: removing a server must not erase protection
     // against an unexpected certificate when it is added again.
     state
@@ -348,9 +354,16 @@ pub async fn reorder_servers(
     server_ids: Vec<String>,
 ) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
+    let known = crate::profile::catalog::server_list(
+        state.storage.servers(),
+        crate::profile::catalog::memberships(&state.profile_path)?,
+    )?
+    .into_iter()
+    .map(|(s, _)| s)
+    .collect();
     state
         .storage
-        .write(move |storage| storage.reorder(&server_ids))
+        .write(move |storage| storage.reorder(&server_ids, known))
         .await
         .map_err(super::commands::api_error)
 }
