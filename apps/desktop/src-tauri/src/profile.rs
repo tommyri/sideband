@@ -15,6 +15,7 @@ use tauri::State;
 use zeroize::Zeroizing;
 
 pub(crate) mod catalog;
+pub(crate) mod relay;
 mod vault;
 
 #[derive(Serialize, Deserialize)]

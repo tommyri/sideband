@@ -15,6 +15,16 @@ pub const DESCRIPTION: &str = "description";
 pub const ICON: &str = "icon";
 /// Whether visitors can see the server icon before signing in. Defaults to false.
 pub const PUBLIC_ICON: &str = "public_icon";
+/// Whether this server accepts encrypted profile copies from its members.
+pub const PROFILE_SYNC: &str = "profile_sync";
+
+/// The operator opts in explicitly. Upgrading an existing database keeps sync off.
+pub async fn offers_profile_sync(conn: &mut SqliteConnection) -> Result<bool, Error> {
+    Ok(get(conn, PROFILE_SYNC)
+        .await?
+        .is_some_and(|setting| setting.value == "true"))
+}
+
 /// Seeded registration policy key.
 pub const REGISTRATION_MODE: &str = "registration_mode";
 /// Invite-only registration.

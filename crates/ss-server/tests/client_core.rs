@@ -3070,3 +3070,6 @@ async fn search_https_scopes_permissions_and_private_messages() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     task.abort();
 }
+
+#[path = "client_core/profile_sync.rs"]
+mod profile_sync;

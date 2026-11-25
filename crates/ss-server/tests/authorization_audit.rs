@@ -512,6 +512,45 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         ),
     ),
     (
+        "http/profile_sync.rs",
+        "get",
+        "/api/v1/profile-sync/status",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
+        "http/profile_sync.rs",
+        "get",
+        "/api/v1/profile-sync/copy",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
+        "http/profile_sync.rs",
+        "put",
+        "/api/v1/profile-sync/copy",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
         "http/server_settings.rs",
         "get",
         "/api/v1/server/settings",

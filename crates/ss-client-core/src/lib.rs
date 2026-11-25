@@ -48,6 +48,7 @@ pub use webhooks::{CreatedWebhookUrl, WebhookMetadata};
 pub mod moderation_admin;
 pub mod notifications;
 pub mod profile;
+pub mod profile_sync;
 pub mod ptt;
 pub mod role_admin;
 pub mod search;

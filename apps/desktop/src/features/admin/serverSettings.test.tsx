@@ -12,6 +12,7 @@ const original: ServerSettingsView = {
     description: 'Hello',
     iconId: null,
     publicIcon: false,
+    profileSync: false,
     registrationMode: 'invite',
     revision: 'revision-1',
   },
@@ -91,6 +92,17 @@ it('offers public invitation artwork only on servers that support it', async () 
   await screen.findByDisplayValue('Friends')
   expect(screen.queryByLabelText('Show logo before people join')).not.toBeInTheDocument()
 })
+it('enables encrypted relay hosting independently of the public logo', async () => {
+  mount()
+  const offer = await screen.findByLabelText(/Offer profile sync to members/)
+  expect(offer).not.toBeChecked()
+  fireEvent.click(offer)
+  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+  await screen.findByText('Server settings saved.')
+  expect(current.fields.profileSync).toBe(true)
+  expect(current.fields.publicIcon).toBe(false)
+})
+
 it('preserves denied and conflicting drafts and explicitly discards them on reload', async () => {
   mount()
   await screen.findByDisplayValue('Friends')

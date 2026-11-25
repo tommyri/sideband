@@ -442,7 +442,9 @@ rendition 1 only while `SubscriberStats` reports a subscriber on it.
 |---|---|---|
 | GET | `/api/v1/server` | Public identity, cert fingerprint, registration mode, capabilities, optional iconUrl |
 | GET / PUT | `/api/v1/me/profile-link` | Review the signed-in account and link it to a server-specific profile. Requires a human bearer session and both signed key proofs for PUT. |
-| GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, publicIcon, registrationMode and revision; stale PUT returns 409 |
+| GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, publicIcon, profileSync, registrationMode and revision; stale PUT returns 409 |
+| GET | `/api/v1/profile-sync/status` | 204 for an eligible enrolled device when the operator offers sync |
+| GET / PUT | `/api/v1/profile-sync/copy` | Read or conditionally replace the signed-in member’s encrypted profile copy |
 | GET | `/api/v1/server/icon` | Public raster logo when the operator enables it and a valid icon exists. Otherwise 404 |
 | POST | `/api/v1/server/icon` | MANAGE_SERVER raw raster upload, up to 2 MiB; returns iconId, applied only by settings PUT |
 | GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order. `after=<id>` instead returns the page after the cursor; `before` and `after` together are `400` |
@@ -639,9 +641,35 @@ fetches it after certificate approval using the same HTTPS host, port and trust
 policy as discovery. A missing or unavailable logo displays as initials.
 Build information is available to signed-in managers in Server settings.
 
+### Encrypted profile copies
+
+The operator flag `profileSync` defaults to false. While enabled, discovery
+includes `profileSync` and the relay accepts active profile-device sessions.
+Each request carries the ordinary HTTPS bearer and `X-Sideband-Membership`,
+the unpadded base64url membership public key for this server. The server
+checks the session, enrolled device, account and scoped membership together.
+There is one row per member. Disabling hosting retains the encrypted rows
+and makes them unavailable for reads and writes.
+
+GET copy returns 204 for an empty slot or 200 with ciphertext and a strong
+ETag. For the first PUT send `If-None-Match: *`. To replace a copy send
+`If-Match` with the ETag from GET. A conflicting change returns 412 and an
+identical retry succeeds. SQLite commits the full request atomically. Each
+member can store up to 512 KiB. Both status and copy routes return 404 for
+authenticated requests while hosting is off.
+
+The version-1 envelope consists of byte 1, a random 12-byte nonce and a
+ChaCha20-Poly1305 ciphertext with its 16-byte tag. Derive the 32-byte AEAD
+key using HMAC-SHA-256 keyed by the membership root over the purpose
+`Sideband/v1/encrypted-profile-copy\0` followed by the canonical server ID.
+Use the purpose (including its terminal NUL) as AEAD associated data. The
+plaintext contains the profile name and the portable member records,
+including addresses, usernames, local member IDs and certificate trust.
+Recovery secrets, device keys, passwords and sessions stay on the client.
+
 ### Server settings
 
-Settings GET returns `name`, `description`, nullable `iconId`, `publicIcon`, `registrationMode`,
+Settings GET returns `name`, `description`, nullable `iconId`, `publicIcon`, `profileSync`, `registrationMode`,
 opaque `revision`, nullable `iconFilename` and `iconMime`. PUT sends the editable fields and the revision from the last read.
 The public logo defaults to off. Omitting `publicIcon` preserves the saved choice. Updates are
 atomic and audited. Names are 1–100 visible characters, descriptions at most 2048.

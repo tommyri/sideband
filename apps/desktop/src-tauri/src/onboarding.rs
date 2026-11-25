@@ -13,7 +13,10 @@ use tauri::State;
 
 /// Discover the actual QUIC certificate without sending a Hello or credentials.
 /// Metadata uses domain validation or the observed pin, never trust-all HTTPS.
-async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe, ApiError> {
+pub(crate) async fn probe(
+    input: ProbeInput,
+    pins: Arc<dyn PinStore>,
+) -> Result<ServerProbe, ApiError> {
     probe_with_policy(input, pins, false).await
 }
 
