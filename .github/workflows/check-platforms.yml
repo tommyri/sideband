@@ -56,6 +56,9 @@ jobs:
         run: cargo clippy --locked --keep-going --workspace --all-targets -- -D warnings
       - name: Workspace tests (includes desktop)
         run: cargo test --locked --workspace --no-fail-fast
+      - name: Device pairing with native credentials
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: cargo test --locked -p socialspeak-desktop --lib two_desktop_installations_pair_and_enroll_as_the_same_server_member -- --ignored
       - name: Linux input integration tests
         if: runner.os == 'Linux'
         run: |

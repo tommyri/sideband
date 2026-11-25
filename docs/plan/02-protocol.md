@@ -443,6 +443,8 @@ rendition 1 only while `SubscriberStats` reports a subscriber on it.
 | GET | `/api/v1/server` | Public identity, cert fingerprint, registration mode, capabilities, optional iconUrl |
 | GET / PUT | `/api/v1/me/profile-link` | Review the signed-in account and link it to a server-specific profile. Requires a human bearer session and both signed key proofs for PUT. |
 | GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, publicIcon, profileSync, registrationMode and revision; stale PUT returns 409 |
+| POST | `/api/v1/pairing/owner` | Start, inspect, approve or cancel a five-minute request using the originating profile-device session |
+| POST | `/api/v1/pairing/device` | Claim an invitation, collect its encrypted delivery or finish using the requesting computer’s credential |
 | GET | `/api/v1/profile-sync/status` | 204 for an eligible enrolled device when the operator offers sync |
 | GET / PUT | `/api/v1/profile-sync/copy` | Read or conditionally replace the signed-in member’s encrypted profile copy |
 | GET | `/api/v1/server/icon` | Public raster logo when the operator enables it and a valid icon exists. Otherwise 404 |
@@ -640,6 +642,10 @@ The optional `iconUrl` is the same-origin path `/api/v1/server/icon`. The deskto
 fetches it after certificate approval using the same HTTPS host, port and trust
 policy as discovery. A missing or unavailable logo displays as initials.
 Build information is available to signed-in managers in Server settings.
+
+### Device pairing
+
+An operator offering profile sync on a pairing-capable relay advertises both `profileSync` and `linkedDeviceSignIn`. The two POST routes use the versioned [device pairing exchange](../protocol/device-pairing.md). Device enrollment on each community independently checks the original membership and the trusted device’s authorization.
 
 ### Encrypted profile copies
 

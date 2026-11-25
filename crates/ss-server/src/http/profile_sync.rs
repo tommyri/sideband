@@ -21,28 +21,34 @@ use std::sync::Arc;
 const MAX_COPY: usize = 512 * 1024;
 
 #[derive(Clone)]
-struct Relay {
+pub(super) struct Relay {
     auth: Arc<Auth>,
-    pool: Arc<Pool>,
+    pub(super) pool: Arc<Pool>,
 }
 
 /// Authenticated public-listener routes, enabled by the server manager at runtime.
 pub fn router(auth: Arc<Auth>, pool: Arc<Pool>) -> Router {
+    let relay = Relay { auth, pool };
     Router::new()
         .route("/api/v1/profile-sync/status", get(status))
         .route("/api/v1/profile-sync/copy", get(read))
         .route("/api/v1/profile-sync/copy", put(write))
         .layer(DefaultBodyLimit::max(MAX_COPY))
-        .with_state(Relay { auth, pool })
+        .with_state(relay.clone())
+        .merge(super::pairing::router(relay))
 }
 
-struct Member {
-    user: Id,
-    session: Id,
-    membership_key: [u8; 32],
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct Member {
+    pub(super) user: Id,
+    pub(super) session: Id,
+    pub(super) membership_key: [u8; 32],
 }
 
-async fn authenticated(relay: &Relay, headers: &HeaderMap) -> Result<Member, StatusCode> {
+pub(super) async fn authenticated(
+    relay: &Relay,
+    headers: &HeaderMap,
+) -> Result<Member, StatusCode> {
     let token = bearer(headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth = relay
         .auth
@@ -68,7 +74,10 @@ async fn authenticated(relay: &Relay, headers: &HeaderMap) -> Result<Member, Sta
 
 // Check again inside the transaction that reads/writes the copy. A disabled relay,
 // expired session or revoked device must not finish a transfer authorized earlier.
-async fn authorize(conn: &mut SqliteConnection, member: &Member) -> Result<(), StatusCode> {
+pub(super) async fn authorize(
+    conn: &mut SqliteConnection,
+    member: &Member,
+) -> Result<(), StatusCode> {
     if !settings::offers_profile_sync(conn)
         .await
         .map_err(internal)?

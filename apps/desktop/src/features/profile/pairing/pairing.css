@@ -1,0 +1,43 @@
+.device-pairing h3 {
+  font-size: 1.45rem;
+  margin: 0 0 12px;
+}
+.device-pairing p {
+  color: var(--secondary);
+  line-height: 1.5;
+}
+.device-pairing label {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+}
+.device-pairing input:not([type='checkbox']) {
+  font: inherit;
+  color: var(--text);
+  background: var(--voice-canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  width: 100%;
+  min-width: 0;
+}
+.pairing-phrase {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 18px 0;
+}
+.pairing-phrase strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.25rem;
+  margin-top: 4px;
+}
+.device-pairing .pairing-match {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

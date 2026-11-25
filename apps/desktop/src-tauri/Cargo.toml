@@ -19,6 +19,7 @@ serde_json.workspace = true
 image.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
+data-encoding = "2"
 bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
 ring.workspace = true
 zeroize.workspace = true
@@ -36,7 +37,7 @@ font8x8 = "0.3"
 ss-core.workspace = true
 ss-net.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"
 tokio.workspace = true
@@ -44,8 +45,10 @@ ts-rs = { version = "12.0.1", features = ["serde-compat"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 moq-video = { workspace = true, features = ["openh264"] }
 moq-net.workspace = true
 tempfile.workspace = true

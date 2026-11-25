@@ -101,6 +101,96 @@ test('reach account linking, sync, and recovery backup in compact personal setti
   assert.equal(await input.inputValue(), draft)
 })
 
+test('pairing invitation, matching phrase and approval fit the compact Mac window', async (t) => {
+  const { page, dock } = await startReply(t)
+  await page.evaluate(() => {
+    const bridge = window.__TAURI_INTERNALS__
+    const original = bridge.invoke
+    bridge.invoke = async (command, args) => {
+      if (command === 'get_local_profile') return 'Jules'
+      if (command === 'pair_start')
+        return {
+          kind: 'invite',
+          code: 'ABCDE-FGHIJ-KLMNO-PQRST-UVWXY-Z',
+          target: { host: 'relay.example', port: 443, httpsPort: 8443 },
+        }
+      if (command === 'pair_update' && args.action === 'check')
+        return {
+          kind: 'review',
+          device: 'Gaming PC',
+          memberships: 10,
+          phrase: 'maple · lantern · river',
+        }
+      if (command === 'pair_update' && args.action === 'approve') return { kind: 'allowed' }
+      return original(command, args)
+    }
+  })
+  await dock.getByRole('button', { name: 'Audio settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Profile and devices', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Profile and devices', exact: true })
+  await dialog.getByRole('button', { name: /^Link a device/ }).click()
+  await dialog.getByRole('button', { name: 'Create one-time code' }).click()
+  await assertReachable(dialog.getByRole('button', { name: 'Copy pairing link' }))
+  assert.equal(
+    await dialog.getByLabel('Sync server address').inputValue(),
+    'relay.example:443?https=8443',
+  )
+  await dialog.getByText('maple · lantern · river').waitFor()
+  const allow = dialog.getByRole('button', { name: 'Allow Gaming PC' })
+  assert.ok(await allow.isDisabled())
+  await assertReachable(dialog.getByRole('button', { name: 'Deny request' }))
+  await dialog.getByRole('checkbox').check()
+  await assertReachable(allow)
+  await allow.click()
+  await dialog.getByText('Access approved').waitFor()
+})
+
+test('a pairing link opens on first launch and the compact Windows view waits for consent', async (t) => {
+  const page = await browser.newPage({
+    viewport: { width: 760, height: 600 },
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/142.0 Safari/537.36',
+  })
+  t.after(() => page.close())
+  page.setDefaultTimeout(5000)
+  await page.addInitScript(() => {
+    let linked = false,
+      callback = 0
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: () => ++callback,
+      invoke: async (command, args) => {
+        if (command === 'current_pair_link')
+          return 'sideband://pair?relay=relay.example%3A443%3Fhttps%3D8443#ABCD'
+        if (command === 'get_snapshot') return { servers: [] }
+        if (command === 'get_local_profile') return linked ? 'Jules' : null
+        if (command === 'pair_join')
+          return { kind: 'compare', device: args.name, phrase: 'maple · lantern · river' }
+        if (command === 'pair_update' && args.action === 'check') return { kind: 'ready' }
+        if (command === 'pair_update' && args.action === 'install') {
+          linked = true
+          return { kind: 'linked', name: 'Jules' }
+        }
+        if (command === 'plugin:event|listen') return args.handler
+        return null
+      },
+    }
+  })
+  await page.goto('http://127.0.0.1:' + server.httpServer.address().port)
+  const dialog = page.getByRole('dialog', { name: 'Profile and devices' })
+  assert.equal(await dialog.getByLabel('Name of this computer').inputValue(), 'Windows PC')
+  await assertReachable(dialog.getByRole('button', { name: 'Request access' }))
+  await dialog.getByRole('button', { name: 'Request access' }).click()
+  await dialog.getByText('maple · lantern · river').waitFor()
+  await assertReachable(dialog.getByRole('button', { name: 'Cancel linking' }))
+  const finish = dialog.getByRole('button', { name: 'Finish linking' })
+  await finish.waitFor()
+  await assertReachable(finish)
+  await finish.click()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.waitFor({ state: 'hidden' })
+})
+
 test('restore from first launch offline, then sign in with the restored membership', async (t) => {
   const page = await browser.newPage({ viewport: { width: 760, height: 600 } })
   t.after(() => page.close())

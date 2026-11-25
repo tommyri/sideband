@@ -21,7 +21,7 @@ use ts_rs::TS;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct SyncServer {
-    id: String,
+    pub(super) id: String,
     name: String,
     target: ProbeInput,
     has_public_icon: bool,
@@ -42,7 +42,7 @@ struct Choice {
     server: SyncServer,
 }
 
-fn chosen(path: &Path, key_id: &str) -> Result<Option<SyncServer>, ApiError> {
+pub(super) fn chosen(path: &Path, key_id: &str) -> Result<Option<SyncServer>, ApiError> {
     match fs::File::open(path.with_file_name("profile-relay.json")) {
         Ok(file) => {
             let choice: Choice = serde_json::from_reader(file).map_err(storage_error)?;

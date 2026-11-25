@@ -66,6 +66,7 @@ Open **Personal settings → Profile and devices** to manage your profile.
   profile storage. Confirm the server name and address. Sideband encrypts the
   membership list on your computer before sending the first copy. If no server
   offers sync, you can still make a recovery backup.
+- **Link a device** creates a five-minute invitation on your chosen sync server. Keep the trusted computer connected. Open the pairing link on the other computer, or choose **Link this computer** on its first screen and enter both the sync server address and the one-time code. Give the computer a recognizable name. Compare the three words on both screens. If they match and you recognize the computer, select **Allow** on the trusted device, then **Finish linking** on the new one. If they differ, select **Deny request**. You can create a new code and try again. Open a server and sign in with your profile to use your existing membership. Microphone, push-to-talk and notifications stay local to each computer.
 - **Manage backup** saves a file and shows you 12 words that open it. A private
   iCloud Drive or Google Drive folder is an option for the file. Keep the
   words separately in a password manager or on paper. A USB drive also works.

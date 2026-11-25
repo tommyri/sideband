@@ -18,6 +18,7 @@ import {
   type AccountField,
 } from './validation'
 import { ServerIdentity } from '../../components/ServerIdentity'
+import { usePairingLink } from '../profile/pairing/usePairingLink'
 import { ProfileSettings } from '../profile/ProfileSettings'
 import './onboarding.css'
 import { createLocalProfile, getLocalProfile, suggestedUsername } from './localProfile'
@@ -88,6 +89,20 @@ function JoinField({
 export function ConnectDialog() {
   const open = useAppStore((s) => s.connectOpen)
   const server = useAppStore((s) => s.connectServer)
+  const { link, clear } = usePairingLink()
+  if (link)
+    return (
+      <ProfileSettings
+        key={link}
+        initialSection="join"
+        invitation={link}
+        close={clear}
+        onRestored={() => {
+          clear()
+          useAppStore.getState().setConnectOpen(false)
+        }}
+      />
+    )
   return open ? <Onboarding server={server} /> : null
 }
 
@@ -109,7 +124,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   const [chosenMode, setMode] = useState<JoinMode | null>(null)
   const [localProfile, setLocalProfile] = useState<string | null>()
   const [profileName, setProfileName] = useState('')
-  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [profileEntry, setProfileEntry] = useState<'restore' | 'join' | null>(null)
   const [checking, setChecking] = useState(false)
   const [retryDomain, setRetryDomain] = useState(false)
   const [pending, setPending] = useState(false)
@@ -454,13 +469,13 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         controls[next]?.focus()
       }}
     >
-      {restoreOpen && (
+      {profileEntry && (
         <ProfileSettings
-          initialSection="restore"
-          close={() => setRestoreOpen(false)}
+          initialSection={profileEntry}
+          close={() => setProfileEntry(null)}
           onRestored={(name) => {
             setLocalProfile(name)
-            setRestoreOpen(false)
+            setProfileEntry(null)
             if (useAppStore.getState().servers.length > 0) close(false)
           }}
         />
@@ -697,7 +712,17 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                   type="button"
                   className="join-link"
                   disabled={pending || checking}
-                  onClick={() => setRestoreOpen(true)}
+                  onClick={() => setProfileEntry('join')}
+                >
+                  Link this computer
+                </button>
+              )}
+              {step === 'address' && localProfile === null && (
+                <button
+                  type="button"
+                  className="join-link"
+                  disabled={pending || checking}
+                  onClick={() => setProfileEntry('restore')}
                 >
                   Restore from backup
                 </button>

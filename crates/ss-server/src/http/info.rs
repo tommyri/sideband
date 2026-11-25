@@ -59,7 +59,11 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Response, St
     let logo = settings::public_icon(&mut tx)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut capabilities = vec!["profileSignIn", "profileAccountLinking"];
+    let mut capabilities = vec![
+        "profileSignIn",
+        "profileAccountLinking",
+        "linkedDeviceSignIn",
+    ];
     if settings::offers_profile_sync(&mut tx)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?

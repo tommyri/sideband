@@ -450,7 +450,11 @@ mod tests {
         assert_eq!(found.registration_mode, "invite");
         assert_eq!(
             found.capabilities,
-            ["profileSignIn", "profileAccountLinking"]
+            [
+                "profileSignIn",
+                "profileAccountLinking",
+                "linkedDeviceSignIn"
+            ]
         );
         assert!(
             pins.get(&id).unwrap().is_none(),

@@ -87,7 +87,7 @@ fn file_error(_: impl std::fmt::Display) -> ApiError {
     )
 }
 
-fn export(path: &Path, vault: &impl Vault) -> Result<(Vec<u8>, String), ApiError> {
+fn portable(path: &Path, vault: &impl Vault) -> Result<(Zeroizing<[u8; 32]>, Body), ApiError> {
     let record = record(path)?.ok_or_else(catalog::missing)?;
     let roots = vault.read(&record.key_id)?;
     let (root, device) = roots.split_first_chunk::<32>().ok_or_else(locked)?;
@@ -119,7 +119,19 @@ fn export(path: &Path, vault: &impl Vault) -> Result<(Vec<u8>, String), ApiError
         grants,
     };
     body.validate()?;
-    format::seal(root, &body)
+    Ok((Zeroizing::new(*root), body))
+}
+
+fn export(path: &Path, vault: &impl Vault) -> Result<(Vec<u8>, String), ApiError> {
+    let (root, body) = portable(path, vault)?;
+    format::seal(root.as_ref(), &body)
+}
+
+pub(super) fn transfer(path: &Path, vault: &impl Vault) -> Result<Zeroizing<Vec<u8>>, ApiError> {
+    let (root, body) = portable(path, vault)?;
+    let mut bytes = Zeroizing::new(root.to_vec());
+    serde_json::to_writer(&mut *bytes, &body).map_err(storage_error)?;
+    Ok(bytes)
 }
 
 fn restore(path: &Path, file: &[u8], words: &str, vault: &impl Vault) -> Result<String, ApiError> {
@@ -127,8 +139,28 @@ fn restore(path: &Path, file: &[u8], words: &str, vault: &impl Vault) -> Result<
         return Err(already_exists());
     }
     let (root, body) = format::open(file, words)?;
+    install_portable(path, &root, body, vault)
+}
+
+pub(super) fn install_transfer(
+    path: &Path,
+    bytes: &[u8],
+    vault: &impl Vault,
+) -> Result<String, ApiError> {
+    let (root, json) = bytes.split_first_chunk::<32>().ok_or_else(damaged)?;
+    let body: Body = serde_json::from_slice(json).map_err(|_| damaged())?;
+    body.validate()?;
+    install_portable(path, root, body, vault)
+}
+
+fn install_portable(
+    path: &Path,
+    root: &[u8; 32],
+    body: Body,
+    vault: &impl Vault,
+) -> Result<String, ApiError> {
     let mut roots = Zeroizing::new([0u8; 64]);
-    roots[..32].copy_from_slice(root.as_ref());
+    roots[..32].copy_from_slice(root);
     getrandom::fill(&mut roots[32..]).map_err(storage_error)?;
     install(
         path,

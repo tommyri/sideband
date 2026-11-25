@@ -7,11 +7,17 @@ import { friendlyError } from '../onboarding/validation'
 import { AccountLinking } from './AccountLinking'
 import { SyncServers } from './SyncServers'
 import { ProfileBackup } from './ProfileBackup'
+import { DevicePairing } from './pairing/DevicePairing'
 import './profile-settings.css'
 
-type Section = 'home' | 'accounts' | 'sync' | 'backup' | 'restore'
+type Section = 'home' | 'accounts' | 'sync' | 'backup' | 'restore' | 'pair' | 'join'
 
 const destinations = [
+  {
+    section: 'pair',
+    title: 'Link a device',
+    hint: 'Use your profile and server memberships on another computer.',
+  },
   {
     section: 'accounts',
     title: 'Link existing accounts',
@@ -31,10 +37,12 @@ const destinations = [
 
 export function ProfileSettings({
   initialSection = 'home',
+  invitation,
   close,
   onRestored,
 }: {
-  initialSection?: 'home' | 'restore'
+  initialSection?: 'home' | 'restore' | 'join'
+  invitation?: string
   close: () => void
   onRestored?: (name: string) => void
 }) {
@@ -42,6 +50,7 @@ export function ProfileSettings({
   const [name, setName] = useState<string | null>()
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const [installing, setInstalling] = useState(false)
   const [error, setError] = useState('')
   const dialog = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -101,20 +110,22 @@ export function ProfileSettings({
     else if (dismiss) close()
     else setSection('home')
   }
-  async function dismiss() {
-    if (section === 'restore') {
+  async function dismiss(back = false) {
+    if (installing) return
+    if (section === 'restore' || (section === 'join' && name === null)) {
       // Closing the success screen should also reveal restored memberships.
       try {
         const current = await getLocalProfile()
         if (current) {
-          await restored(current, true)
+          await restored(current, !back)
           return
         }
       } catch (e) {
         setError(friendlyError(e))
       }
     }
-    close()
+    if (back) setSection('home')
+    else close()
   }
   return (
     <dialog
@@ -128,12 +139,13 @@ export function ProfileSettings({
       }}
     >
       <header>
-        {section !== 'home' && initialSection !== 'restore' && (
+        {section !== 'home' && initialSection === 'home' && (
           <button
             type="button"
             className="profile-back"
             aria-label="Back to profile and devices"
-            onClick={() => setSection('home')}
+            disabled={installing}
+            onClick={() => void dismiss(true)}
           >
             <ArrowLeft size={18} />
           </button>
@@ -144,6 +156,7 @@ export function ProfileSettings({
         <button
           type="button"
           className="profile-close"
+          disabled={installing}
           aria-label="Close profile settings"
           onClick={() => void dismiss()}
         >
@@ -182,6 +195,14 @@ export function ProfileSettings({
               <button
                 className="button secondary"
                 type="button"
+                data-destination="join"
+                onClick={() => setSection('join')}
+              >
+                Link this computer
+              </button>
+              <button
+                className="button secondary"
+                type="button"
                 data-destination="restore"
                 onClick={() => setSection('restore')}
               >
@@ -212,6 +233,24 @@ export function ProfileSettings({
               ))}
             </nav>
           </>
+        )}
+        {section === 'join' && name === undefined && !error && (
+          <p role="status">Opening your profile…</p>
+        )}
+        {section === 'join' && name && (
+          <p>
+            This computer already has a profile. Open this invitation on a computer you want to add.
+          </p>
+        )}
+        {(section === 'pair' || (section === 'join' && name === null)) && (
+          <DevicePairing
+            source={section === 'pair'}
+            invitation={invitation}
+            onInstalling={setInstalling}
+            onChooseRelay={() => setSection('sync')}
+            onClose={close}
+            onLinked={(value) => void restored(value)}
+          />
         )}
         {section === 'accounts' && <AccountLinking />}
         {section === 'sync' && <SyncServers onManageBackup={() => setSection('backup')} />}

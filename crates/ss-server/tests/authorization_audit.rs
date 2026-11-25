@@ -512,6 +512,24 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         ),
     ),
     (
+        "http/pairing.rs",
+        "post",
+        "/api/v1/pairing/owner",
+        scoped(
+            &["authenticated(", "authorize(", "s.member == member"],
+            "originating profile-device session only",
+        ),
+    ),
+    (
+        "http/pairing.rs",
+        "post",
+        "/api/v1/pairing/device",
+        scoped(
+            &["authorize(", "Sha256::digest(token)"],
+            "unpredictable invitation slot and claim-specific delivery token",
+        ),
+    ),
+    (
         "http/profile_sync.rs",
         "get",
         "/api/v1/profile-sync/status",

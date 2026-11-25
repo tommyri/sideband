@@ -297,7 +297,11 @@ async fn server_info_is_public() {
     assert!(value.get("iconUrl").is_none());
     assert_eq!(
         value["capabilities"],
-        serde_json::json!(["profileSignIn", "profileAccountLinking"])
+        serde_json::json!([
+            "profileSignIn",
+            "profileAccountLinking",
+            "linkedDeviceSignIn"
+        ])
     );
 }
 

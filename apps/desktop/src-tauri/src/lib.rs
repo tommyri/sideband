@@ -41,23 +41,25 @@ use tauri::{
 
 pub fn run() {
     ss_net::tls::install_default_crypto_provider();
-    let mut builder = tauri::Builder::default();
+    let mut builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
     if updates::enabled() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
     builder
         .manage(updates::Pending::default())
         .manage(profile::backup::PendingBackup::default())
+        .manage(profile::pairing::Pairings::default())
         .manage(viewer::Viewers::default())
         .manage(stream::Sharing::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(ipc_handler())
@@ -84,6 +86,10 @@ fn ipc_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         diagnostics::diagnostics_snapshot,
         testing::test_build_identity,
         testing::export_test_report,
+        profile::pairing::current_pair_link,
+        profile::pairing::pair_start,
+        profile::pairing::pair_join,
+        profile::pairing::pair_update,
         profile::create_local_profile,
         profile::get_local_profile,
         account_link::review_profile_account,

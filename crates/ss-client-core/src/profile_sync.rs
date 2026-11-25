@@ -81,7 +81,7 @@ pub struct RelayCopy {
 }
 
 impl Client {
-    fn relay_request(
+    pub(crate) fn relay_request(
         &self,
         key: &RelayKey,
         method: Method,

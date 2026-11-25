@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 pub(crate) mod backup;
 pub(crate) mod catalog;
+pub(crate) mod pairing;
 pub(crate) mod relay;
 mod vault;
 
