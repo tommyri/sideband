@@ -415,10 +415,7 @@ mod gain {
     }
 }
 
-/// RNNoise and the WebRTC suppressor reuse their buffers. sonora's AEC3 and
-/// AGC2 allocate inside the dependency every frame (a few dozen small
-/// allocations); that is acceptable on the capture worker, never in a
-/// device callback, and is recorded in the T-053 notes.
+/// RNNoise and the WebRTC suppressor reuse their buffers on the capture worker.
 #[cfg(any(feature = "aec", feature = "rnnoise"))]
 #[test]
 fn suppressors_do_not_allocate_after_construction() {

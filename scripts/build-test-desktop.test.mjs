@@ -589,11 +589,10 @@ test('the locked Tauri CLI is read from pnpm-lock.yaml with its integrity', asyn
   assert.deepEqual(packages.map((item) => item.url), [
     `https://registry.npmjs.org/@tauri-apps/cli/-/cli-${version}.tgz`,
     `https://registry.npmjs.org/@tauri-apps/cli-win32-x64-msvc/-/cli-win32-x64-msvc-${version}.tgz`])
-  for (const item of packages) assert(lock.includes(`integrity: ${item.integrity},`), item.name)
+  for (const item of packages) assert(lock.includes(`integrity: ${item.integrity}`), item.name)
   // A resolution with a tarball URL (or anything besides the integrity) is not accepted.
-  const entry = `'@tauri-apps/cli-win32-x64-msvc@${version}':\n    resolution:\n      {\n        integrity: ${packages[1].integrity},\n      }\n`
-  assert(lock.includes(entry))
-  const redirected = lock.replace(entry, `'@tauri-apps/cli-win32-x64-msvc@${version}':\n    resolution:\n      {\n        integrity: ${packages[1].integrity},\n        tarball: https://example.com/x.tgz,\n      }\n`)
+  const integrity = `integrity: ${packages[1].integrity}`
+  const redirected = lock.replace(integrity, `${integrity}, tarball: https://example.com/x.tgz`)
   assert.throws(() => tauriCliPackages(redirected), /plain registry entry/)
 })
 
