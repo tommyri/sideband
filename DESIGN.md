@@ -80,6 +80,8 @@ Use Inter throughout the workspace. **Display** introduces a flow, **Room** name
 
 At **1440 × 900**, the conversation prototype has a 64 px server rail and a 240 px channel sidebar. The conversation takes the remaining width. Search and Members share a header. Personal settings stays available at the bottom of the sidebar.
 
+Keep 12 px between server rail buttons and 16 px between Add server and the app tools. Long server lists scroll independently so Notifications, Updates and Help stay within reach. Channel, direct-message and member rows use a denser 4 px gap.
+
 At **760 × 600**, navigation moves behind a header button. Search, Members and Settings remain reachable. The bottom of the window stacks the reply context, composer and active call dock in normal flow. The dock takes the height of its content and collapses on leaving voice. With a short reply draft and an active call, two short messages, Send and every call control should fit together. These sizes are reference windows for review. [Compact call and reply preview](docs/design/compact-call-preview.png)
 
 ## Shapes

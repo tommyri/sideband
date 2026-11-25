@@ -1,4 +1,7 @@
 .dm-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--sidebar-row-gap);
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
 }

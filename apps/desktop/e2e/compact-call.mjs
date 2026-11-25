@@ -40,6 +40,41 @@ async function assertReachable(control) {
   assert.ok(result.inside && result.clickable, JSON.stringify(result))
 }
 
+test('sidebar tools keep their spacing and position while servers scroll', async (t) => {
+  const page = await browser.newPage({ viewport: { width: 760, height: 600 } })
+  t.after(() => page.close())
+  await page.addInitScript(connectRoom, { roomName, extraServers: 29 })
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
+  await page.getByRole('button', { name: 'Channels', exact: true }).click()
+  const rail = page.getByRole('navigation', { name: 'Servers' })
+  const tools = rail.getByRole('group', { name: 'App tools' })
+  const notifications = tools.getByRole('button', { name: 'Notification settings' })
+  const add = rail.getByRole('button', { name: 'Add server' })
+  for (const viewport of [
+    { width: 760, height: 600 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await rail.getByRole('button', { name: 'Night Shift', exact: true }).focus()
+    const top = (await notifications.boundingBox()).y
+    let bottom
+    for (const tile of await tools.getByRole('button').all()) {
+      await assertReachable(tile)
+      const rect = await tile.boundingBox()
+      if (bottom !== undefined) assert.ok(rect.y - bottom >= 8, 'Separate adjacent app tools')
+      assert.equal(rect.height, 42)
+      bottom = rect.y + rect.height
+    }
+    await add.focus()
+    await assertReachable(add)
+    const bounds = await add.boundingBox()
+    assert.ok(top - bounds.y - bounds.height >= 12, 'Separate servers from app tools')
+    await page.keyboard.press('Tab')
+    assert.ok(await notifications.evaluate((el) => document.activeElement === el))
+    assert.equal((await notifications.boundingBox()).y, top, 'Only the server list scrolls')
+  }
+})
+
 async function startReply(t) {
   const page = await browser.newPage({ viewport: { width: 760, height: 600 } })
   t.after(() => page.close())

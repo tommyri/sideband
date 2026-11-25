@@ -1,5 +1,7 @@
 // Playwright runs this function inside each fresh page, in place of the native bridge.
-export function connectRoom(roomName) {
+export function connectRoom(options) {
+  const { roomName, extraServers = 0 } =
+    typeof options === 'string' ? { roomName: options } : options
   let inVoice = true
   let callbackId = 0
   let ready = true
@@ -85,7 +87,17 @@ export function connectRoom(roomName) {
           listeners.set(args.handler, args.event)
           return args.handler
         case 'get_snapshot':
-          return { servers: [server] }
+          return {
+            servers: [
+              server,
+              ...Array.from({ length: extraServers }, (_, i) => ({
+                ...server,
+                id: `server-${i}`,
+                label: `Server ${i}`,
+                status: { kind: 'disconnected' },
+              })),
+            ],
+          }
         case 'get_server_view':
           return {
             ownUserId: 'jules',
