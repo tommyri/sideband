@@ -441,6 +441,7 @@ rendition 1 only while `SubscriberStats` reports a subscriber on it.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/v1/server` | Public identity, cert fingerprint, registration mode, capabilities, optional iconUrl |
+| GET / PUT | `/api/v1/me/profile-link` | Review the signed-in account and link it to a server-specific profile. Requires a human bearer session and both signed key proofs for PUT. |
 | GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, publicIcon, registrationMode and revision; stale PUT returns 409 |
 | GET | `/api/v1/server/icon` | Public raster logo when the operator enables it and a valid icon exists. Otherwise 404 |
 | POST | `/api/v1/server/icon` | MANAGE_SERVER raw raster upload, up to 2 MiB; returns iconId, applied only by settings PUT |
@@ -628,6 +629,7 @@ Clients ignore unknown names. Each capability describes a separate available fea
 
 | Capability | Meaning |
 | --- | --- |
+| `profileAccountLinking` | A signed-in member can link an existing account to a local profile after reviewing the username and role. |
 | `profileSignIn` | A person can use a local Sideband profile to join or sign in on this device. |
 | `linkedDeviceSignIn` | A linked device can sign in to an existing profile membership. |
 | `profileSync` | The operator offers encrypted profile storage and relay for members. |

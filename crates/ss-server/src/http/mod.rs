@@ -5,6 +5,7 @@
 //! description is [`info`]. Health and metrics are [`internal`]. `run` binds
 //! the listeners; tests call routers directly.
 
+pub mod account_link;
 pub mod attachments;
 pub mod audit;
 pub mod bots;

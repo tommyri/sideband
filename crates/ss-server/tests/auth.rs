@@ -107,6 +107,106 @@ fn resume_token(token: &str) -> v1::Hello {
 }
 
 #[tokio::test]
+async fn linking_needs_the_current_human_session_and_both_scoped_keys() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use ss_core::profile_link::{LinkAccount, transcript};
+    use tower::ServiceExt as _;
+
+    let accounts = Accounts::new().await;
+    let member = accounts.register(&accounts.code, "friday").await;
+    let other_session = accounts
+        .auth
+        .hello(&login("friday", PASSWORD), peer(1))
+        .await
+        .unwrap();
+    let router = ss_server::http::account_link::router(Arc::new(Auth::new(accounts.pool.clone())));
+    let member_keys = Ed25519KeyPair::from_seed_unchecked(&[3; 32]).unwrap();
+    let device_keys = Ed25519KeyPair::from_seed_unchecked(&[4; 32]).unwrap();
+    let membership_key = member_keys.public_key().as_ref().try_into().unwrap();
+    let device_key = device_keys.public_key().as_ref().try_into().unwrap();
+    let bytes = transcript(
+        member.user.id,
+        member.session_id,
+        &membership_key,
+        &device_key,
+    );
+    let mut proof = LinkAccount {
+        membership_key,
+        device_key,
+        membership_signature: member_keys.sign(&bytes).as_ref().to_vec(),
+        device_signature: device_keys.sign(&bytes).as_ref().to_vec(),
+    };
+    let request = |token: &str, proof: &LinkAccount| {
+        Request::put("/api/v1/me/profile-link")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_vec(proof).unwrap()))
+            .unwrap()
+    };
+    let send = |request: Request<Body>| {
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap().status() }
+    };
+    assert_eq!(
+        send(request("invalid", &proof)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(request(&other_session.resume_token, &proof)).await,
+        StatusCode::CONFLICT
+    );
+    proof.membership_signature[0] ^= 1;
+    assert_eq!(
+        send(request(&member.resume_token, &proof)).await,
+        StatusCode::CONFLICT
+    );
+    proof.membership_signature[0] ^= 1;
+    proof.device_signature[0] ^= 1;
+    assert_eq!(
+        send(request(&member.resume_token, &proof)).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        auth::list_profile_devices(&accounts.pool, "friday")
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    proof.device_signature[0] ^= 1;
+    assert_eq!(
+        send(request(&member.resume_token, &proof)).await,
+        StatusCode::NO_CONTENT
+    );
+    let devices = auth::list_profile_devices(&accounts.pool, "friday")
+        .await
+        .unwrap();
+    auth::revoke_profile_device(&accounts.pool, "friday", devices[0].id)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(request(&member.resume_token, &proof)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let bytes = transcript(
+        member.user.id,
+        other_session.session_id,
+        &membership_key,
+        &device_key,
+    );
+    proof.membership_signature = member_keys.sign(&bytes).as_ref().to_vec();
+    proof.device_signature = device_keys.sign(&bytes).as_ref().to_vec();
+    assert_eq!(
+        send(request(&other_session.resume_token, &proof)).await,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
 async fn register_accepts_the_owner_code_and_rejects_bad_invites() {
     let accounts = Accounts::new().await;
     let again = auth::ensure_owner_invite(&accounts.pool)

@@ -212,6 +212,7 @@ impl Server {
                 Arc::clone(&auth),
                 Arc::clone(&perms),
             ))
+            .merge(crate::http::account_link::router(Arc::clone(&auth)))
             .merge(crate::http::search::router(
                 Arc::clone(&auth),
                 Arc::clone(&perms),
@@ -773,6 +774,7 @@ fn welcome_envelope(
                     "previews".into(),
                     "attachments".into(),
                     "sessions".into(),
+                    "profileAccountLinking".into(),
                     "bots".into(),
                 ],
             }),
