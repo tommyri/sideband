@@ -507,6 +507,15 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
     ),
     (
         "http/server_settings.rs",
+        "get",
+        "/api/v1/server/icon",
+        scoped(
+            &["settings::public_icon("],
+            "current operator-published server icon only",
+        ),
+    ),
+    (
+        "http/server_settings.rs",
         "post",
         "/api/v1/server/icon",
         perms_and(&["MANAGE_SERVER"], &["caller("]),

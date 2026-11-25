@@ -2327,6 +2327,96 @@ fn settings_icon() -> Vec<u8> {
     bytes.into_inner()
 }
 #[tokio::test]
+async fn public_logo_is_scoped_to_the_current_opted_in_icon() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let app = world
+        .server
+        .public_routes()
+        .merge(ss_server::http::info::router(
+            world.pool.clone(),
+            Arc::new(arc_swap::ArcSwap::new(Arc::new(
+                world.pins.get(&world.address.id().unwrap()).unwrap(),
+            ))),
+        ));
+    let visit = |path: &str| {
+        app.clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+    };
+    let metadata = || async {
+        let res = visit("/api/v1/server").await.unwrap();
+        serde_json::from_slice::<serde_json::Value>(
+            &to_bytes(res.into_body(), 16384).await.unwrap(),
+        )
+        .unwrap()
+    };
+    let route = "/api/v1/server/icon";
+    let bytes = settings_icon();
+    let icon = owner.upload_server_icon(bytes.clone()).await.unwrap();
+    let mut settings = owner.server_settings().await.unwrap().settings;
+    assert_eq!(settings.public_icon, Some(false));
+    settings.icon_id = Some(icon.clone());
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    settings.public_icon = Some(true);
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    let public = metadata().await;
+    assert_eq!(public["registrationMode"], "invite");
+    assert_eq!(public["iconUrl"], route);
+    let response = visit(route).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        &to_bytes(response.into_body(), 8192).await.unwrap()[..],
+        &bytes
+    );
+    let private = format!("/api/v1/attachments/{icon}/server-icon");
+    assert!(!visit(&private).await.unwrap().status().is_success());
+
+    // An older client editing another field omits the opt-in.
+    settings.public_icon = None;
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert_eq!(settings.public_icon, Some(true));
+    settings.public_icon = Some(false);
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+    settings.public_icon = Some(true);
+    settings.icon_id = None;
+    owner.save_server_settings(&settings).await.unwrap();
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+    owner.close().await;
+    task.abort();
+}
+
+#[tokio::test]
 async fn server_settings_are_authorized_atomic_audited_and_pin_checked() {
     let mut world = World::new().await;
     let (port, task) = https(&world, false).await;

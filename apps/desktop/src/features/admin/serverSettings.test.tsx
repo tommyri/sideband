@@ -11,6 +11,7 @@ const original: ServerSettingsView = {
     name: 'Friends',
     description: 'Hello',
     iconId: null,
+    publicIcon: false,
     registrationMode: 'invite',
     revision: 'revision-1',
   },
@@ -75,6 +76,20 @@ it('loads identity, saves all fields with the revision and explains closed regis
     fields: { ...original.fields, name: 'New name', description: '', registrationMode: 'closed' },
   })
   expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled()
+})
+it('offers public invitation artwork only on servers that support it', async () => {
+  const view = mount()
+  const checkbox = await screen.findByLabelText('Show logo before people join')
+  expect(checkbox).not.toBeChecked()
+  fireEvent.click(checkbox)
+  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+  await screen.findByText('Server settings saved.')
+  expect(current.fields.publicIcon).toBe(true)
+  view.unmount()
+  current.fields.publicIcon = null
+  mount()
+  await screen.findByDisplayValue('Friends')
+  expect(screen.queryByLabelText('Show logo before people join')).not.toBeInTheDocument()
 })
 it('preserves denied and conflicting drafts and explicitly discards them on reload', async () => {
   mount()

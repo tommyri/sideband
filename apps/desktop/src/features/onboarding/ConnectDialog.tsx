@@ -17,6 +17,7 @@ import {
   parseAddress,
   type AccountField,
 } from './validation'
+import { ServerIdentity } from '../../components/ServerIdentity'
 import './onboarding.css'
 
 type Field = AccountField | 'address' | 'httpsPort' | 'compared'
@@ -256,15 +257,9 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       const failure = e as Partial<ApiError>
       setPassword('')
       if (failure.fingerprint) {
-        setProbe({
-          ...probe,
-          trusted: false,
-          publicCertificate: false,
-          previousFingerprint: probe.fingerprint,
-          fingerprint: failure.fingerprint,
-        })
-        setCompared(false)
-        setStep('trust')
+        // Rediscover the replacement certificate's name, logo and capabilities.
+        changeServer()
+        await findServer()
       } else if (
         !saved &&
         needsInvite &&
@@ -319,8 +314,8 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
     auth: {
       title: mode === 'register' ? 'Create your account' : `Log in to ${probe?.name}`,
       description: canRegister
-        ? `Your account belongs to ${probe?.name} · ${address.trim()}`
-        : `Registration is closed. Use your existing account on ${probe?.name} (${address.trim()}).`,
+        ? 'Your account belongs to this server.'
+        : 'Registration is closed. Use your existing account on this server.',
       action: mode === 'register' ? 'Create account and join' : 'Log in and join',
     },
   }[step]
@@ -391,6 +386,13 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       >
         <div className="join-scroll" key={step}>
           <div className="join-content">
+            {step === 'auth' && target && probe && (
+              <ServerIdentity
+                name={probe.name}
+                target={target}
+                hasPublicIcon={probe.hasPublicIcon}
+              />
+            )}
             {step === 'auth' && (
               <p className="join-certificate">
                 {probe?.publicCertificate

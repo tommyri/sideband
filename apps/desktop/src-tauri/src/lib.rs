@@ -108,6 +108,7 @@ pub fn run() {
             dm::dm_action,
             dm::load_dms,
             onboarding::probe_server,
+            onboarding::get_public_server_icon,
             onboarding::use_public_certificate,
             onboarding::remove_server,
             onboarding::reorder_servers,

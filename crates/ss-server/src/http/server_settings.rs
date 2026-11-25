@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
@@ -31,6 +31,7 @@ pub fn router(auth: Arc<Auth>, perms: Arc<PermissionService>, files: Store) -> R
     Router::new()
         .route("/api/v1/server/settings", get(read))
         .route("/api/v1/server/settings", put(update))
+        .route("/api/v1/server/icon", get(public_icon))
         .route("/api/v1/server/icon", post(upload_icon))
         .layer(DefaultBodyLimit::max(MAX_ICON))
         .with_state(SettingsState {
@@ -44,6 +45,7 @@ struct Profile {
     name: String,
     description: String,
     icon_id: Option<String>,
+    public_icon: Option<bool>,
     registration_mode: String,
     revision: String,
 }
@@ -109,6 +111,7 @@ async fn snapshot(conn: &mut sqlx::SqliteConnection) -> Result<Snapshot, Failure
             name: value(conn, settings::NAME, "Sideband").await?,
             description: value(conn, settings::DESCRIPTION, "").await?,
             icon_id: (!icon.is_empty()).then_some(icon),
+            public_icon: Some(value(conn, settings::PUBLIC_ICON, "false").await? == "true"),
             registration_mode: value(conn, settings::REGISTRATION_MODE, "invite").await?,
             revision: value(conn, REVISION, "0").await?,
         },
@@ -174,23 +177,23 @@ async fn update(
                 "Upload your own server icon",
             ));
         }
-        if file.message_id.is_some()
-            || !matches!(
-                file.mime.as_str(),
-                "image/png" | "image/jpeg" | "image/webp"
-            )
-            || file.size > 2 * 1024 * 1024
-            || file.width.is_none_or(|n| !(1..=4096).contains(&n))
-            || file.height.is_none_or(|n| !(1..=4096).contains(&n))
-        {
+        if !settings::valid_icon(&file) {
             return Err(invalid("Choose a PNG, JPEG or WebP icon up to 2 MiB"));
         }
     }
+    let public_icon = input
+        .public_icon
+        .or(current.profile.public_icon)
+        .unwrap_or(false);
     let revision = Id::generate().to_string();
     for (key, val) in [
         (settings::NAME, input.name.as_str()),
         (settings::DESCRIPTION, input.description.as_str()),
         (settings::ICON, input.icon_id.as_deref().unwrap_or("")),
+        (
+            settings::PUBLIC_ICON,
+            if public_icon { "true" } else { "false" },
+        ),
         (
             settings::REGISTRATION_MODE,
             input.registration_mode.as_str(),
@@ -199,11 +202,66 @@ async fn update(
     ] {
         settings::set(&mut tx, key, val).await.map_err(internal)?;
     }
-    db::audit_log::insert(&mut tx,db::NewAuditEntry {id:Id::generate(),actor_id:Some(user),action:"server.update".into(),target_kind:"server".into(),target_id:None,details:json!({"registrationMode":input.registration_mode,"iconChanged":input.icon_id!=current.profile.icon_id}).to_string()}).await.map_err(internal)?;
+    db::audit_log::insert(
+        &mut tx,
+        db::NewAuditEntry {
+            id: Id::generate(),
+            actor_id: Some(user),
+            action: "server.update".into(),
+            target_kind: "server".into(),
+            target_id: None,
+            details: json!({
+                "registrationMode": input.registration_mode,
+                "iconChanged": input.icon_id != current.profile.icon_id,
+                "publicIcon": public_icon,
+            })
+            .to_string(),
+        },
+    )
+    .await
+    .map_err(internal)?;
     let result = snapshot(&mut tx).await?;
     tx.commit().await.map_err(internal)?;
     Ok(Json(result))
 }
+async fn public_icon(State(state): State<SettingsState>) -> Result<Response, Failure> {
+    use tokio::io::AsyncReadExt;
+    let file = {
+        let mut conn = state.access.perms.pool().read().await.map_err(internal)?;
+        let mut tx = conn.begin().await.map_err(internal)?;
+        let file = settings::public_icon(&mut tx).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        file
+    };
+    let missing = || Failure(StatusCode::NOT_FOUND, "No public server icon");
+    let file = file.ok_or_else(missing)?;
+    let (blob, len) = state
+        .files
+        .open_blob(&file.storage_path)
+        .await
+        .map_err(|_| missing())?;
+    if Some(len) != u64::try_from(file.size).ok() {
+        return Err(missing());
+    }
+    let mut bytes = Vec::new();
+    blob.take(len)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(internal)?;
+    if bytes.len() as u64 != len {
+        return Err(missing());
+    }
+    Ok((
+        [
+            (header::CONTENT_TYPE, file.mime.as_str()),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn upload_icon(
     State(state): State<SettingsState>,
     headers: HeaderMap,

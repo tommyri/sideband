@@ -77,6 +77,8 @@ pub struct ProbeInput {
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct ServerProbe {
     pub name: String,
+    pub capabilities: Vec<String>,
+    pub has_public_icon: bool,
     pub registration_mode: String,
     pub fingerprint: String,
     pub previous_fingerprint: Option<String>,

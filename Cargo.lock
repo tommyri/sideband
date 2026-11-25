@@ -6950,6 +6950,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "font8x8",
+ "image",
  "moq-net",
  "moq-video",
  "reqwest",
