@@ -28,6 +28,8 @@ pub struct InviteView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct CreatedInvite {
+    #[ts(type = "number | null")]
+    expires_at: Option<i64>,
     id: String,
     code: String,
 }
@@ -111,6 +113,7 @@ pub async fn create_server_invite(
     Ok(CreatedInvite {
         id: display(&invite.id)?,
         code: invite.code,
+        expires_at: invite.expires_at,
     })
 }
 #[tauri::command]

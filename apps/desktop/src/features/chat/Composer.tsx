@@ -13,6 +13,7 @@ export function Composer({
   server,
   channel,
   disabled,
+  offline = false,
   target,
   cancel,
   sent,
@@ -27,6 +28,7 @@ export function Composer({
   server: string
   channel: string
   disabled: boolean
+  offline?: boolean
   target: { kind: 'reply' | 'edit'; message: BridgeMessage } | null
   cancel: () => void
   sent: () => void
@@ -80,7 +82,8 @@ export function Composer({
     setDismissed(false)
     setActiveOption(0)
     if (target?.kind !== 'edit') saveDraft?.(value)
-    if (value.trim() && !disabled && target?.kind !== 'edit') notifyTyping(server, channel)
+    if (value.trim() && !offline && !disabled && target?.kind !== 'edit')
+      notifyTyping(server, channel)
   }
   const insertTrigger = (trigger: string) => {
     const start = input.current?.selectionStart ?? cursor
@@ -126,6 +129,7 @@ export function Composer({
     if (
       busy ||
       disabled ||
+      offline ||
       (!draft.trim() && !uploads.items.length) ||
       (target?.kind !== 'edit' && (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
     )
@@ -169,7 +173,7 @@ export function Composer({
     }
   }
   const addFiles = (files: File[]) => {
-    if (!canAttach || disabled || busy || target?.kind === 'edit') return
+    if (!canAttach || offline || disabled || busy || target?.kind === 'edit') return
     try {
       uploads.add(files)
       setError('')
@@ -244,7 +248,7 @@ export function Composer({
               {item.status === 'error' && (
                 <button
                   type="button"
-                  disabled={busy || disabled || !canAttach}
+                  disabled={busy || offline || disabled || !canAttach}
                   onClick={() => uploads.retry(item.key)}
                 >
                   Retry upload
@@ -275,7 +279,7 @@ export function Composer({
           type="button"
           className="compose-tool"
           aria-label="Attach"
-          disabled={disabled || busy || !canAttach || target?.kind === 'edit'}
+          disabled={offline || disabled || busy || !canAttach || target?.kind === 'edit'}
           title="Attach files (up to 25 MiB each)"
           onClick={() => fileInput.current?.click()}
         >
@@ -383,6 +387,7 @@ export function Composer({
         disabled={
           busy ||
           disabled ||
+          offline ||
           (!draft.trim() && !uploads.items.length) ||
           (target?.kind !== 'edit' && (!uploads.ready || (uploads.items.length > 0 && !canAttach)))
         }

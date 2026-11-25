@@ -53,6 +53,10 @@ impl ActiveVoice {
         self.store.read().connection == ConnectionState::Connected
     }
     pub fn set_local_ptt(&mut self, pressed: bool) {
+        if pressed && !self.connected() {
+            self.release_ptt();
+            return;
+        }
         self.ptt.local = pressed;
         self.session.set_ptt(self.ptt.local || self.ptt.global);
     }
@@ -73,6 +77,7 @@ impl ActiveVoice {
         ActiveVoiceView {
             server_id: self.server.as_str().into(),
             channel_id: self.session.channel().to_string(),
+            ready: self.session.reconcile() == Membership::Seated,
             muted: self.muted,
             deafened: self.deafened,
         }
@@ -103,41 +108,35 @@ pub async fn stop(state: &AppState, only_server: Option<&str>) -> Result<(), Api
         };
         active
     };
-    active.session.set_ptt(false);
+    active.session.release_ptt();
+    // Mute applies synchronously, including an open mic. Leave supersedes the
+    // network acknowledgement while other owners finish using the old session.
+    drop(active.session.set_self_mute(true));
+    let client = state.client(&active.server);
+    let connected = client
+        .as_ref()
+        .is_some_and(|c| c.state().read().connection == ConnectionState::Connected);
+    if !connected && let Some(client) = &client {
+        client.defer_voice_leave();
+    }
     active.session.play_cue(ss_client_core::voice::Cue::Leave);
     tokio::time::sleep(Duration::from_millis(70)).await;
-    let client = state
-        .client(&active.server)
-        .filter(|c| c.state().read().connection == ConnectionState::Connected);
-    let connected = client.is_some();
-    if !connected {
-        // Closing the client cancels desired membership during retry, so an
-        // explicit leave cannot silently rejoin on the next reconnect.
-        let removed = state.clients().remove(&active.server);
-        if let Some(removed) = removed {
-            crate::state::close(removed).await;
-        }
-    }
     let result = match Arc::try_unwrap(active.session) {
         Ok(session) => session.leave().await,
         Err(session) => {
             drop(session);
             match &client {
-                Some(client) => client.leave_voice(v1::LeaveVoice {}).await,
-                None => Ok(()),
+                Some(client) if connected => client.leave_voice(v1::LeaveVoice {}).await,
+                _ => Ok(()),
             }
         }
     };
-    drop(client);
+    if let Some(client) = &client
+        && result.is_err()
+    {
+        client.defer_voice_leave();
+    }
     if connected {
-        if result.is_err() {
-            // A failed leave has an uncertain server outcome. Cancel the core
-            // reconnect worker as well as local audio instead of rejoining.
-            let removed = state.clients().remove(&active.server);
-            if let Some(removed) = removed {
-                crate::state::close(removed).await;
-            }
-        }
         result.map_err(api_error)
     } else {
         Ok(())
@@ -166,14 +165,13 @@ pub async fn join_voice(
     state: State<'_, AppState>,
     server_id: String,
     channel_id: String,
+    start_muted: Option<bool>,
+    start_deafened: Option<bool>,
 ) -> Result<(), ApiError> {
-    join_with_config(
-        &state,
-        server_id,
-        channel_id,
-        crate::audio::load(&app)?.config()?,
-    )
-    .await
+    let mut config = crate::audio::load(&app)?.config()?;
+    config.start_muted |= start_muted.unwrap_or(false);
+    config.start_deafened |= start_deafened.unwrap_or(false);
+    join_with_config(&state, server_id, channel_id, config).await
 }
 
 async fn join_with_config(
@@ -789,8 +787,8 @@ mod tests {
         stop(&state, None).await.unwrap();
         assert!(state.voice.lock().await.is_none());
         assert!(
-            state.clients().get(&key).is_none(),
-            "leaving during retry must cancel desired membership"
+            state.clients().get(&key).is_some(),
+            "leaving voice during retry must keep the chat client"
         );
         let reopened =
             crate::persistence::DesktopStorage::open(dir.path().join("desktop/sessions.json"))

@@ -23,6 +23,9 @@ pub enum ConnectionState {
         /// Delay before trying again.
         delay: Duration,
     },
+    /// Resume authenticated and installed a fresh snapshot. Message sends are accepted
+    /// with their nonce while voice membership and pending acknowledgements settle.
+    Restoring,
     /// Authentication, certificate approval, or a protocol failure needs the host.
     Failed(String),
 }

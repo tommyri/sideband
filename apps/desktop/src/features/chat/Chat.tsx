@@ -21,11 +21,13 @@ export function Chat({
   channel,
   name,
   connected,
+  acceptingSends = connected,
 }: {
   server: string
   channel: string
   name: string
   connected: boolean
+  acceptingSends?: boolean
 }) {
   const { view, error, setError, loading, hasOlder, load, loadNewer, show, refresh } = useChat(
     server,
@@ -503,7 +505,7 @@ export function Chat({
       )}
       <Composer
         key={`${draftId}:${target?.kind === 'edit' ? target.message.id : 'new'}`}
-        canAttach={view?.canAttach ?? false}
+        canAttach={connected && (view?.canAttach ?? false)}
         initialDraft={getDraft(draftId)}
         draftIdentity={draftId}
         saveDraft={(value) => saveDraft(draftId, value)}
@@ -515,7 +517,8 @@ export function Chat({
         onBusy={setSending}
         server={server}
         channel={channel}
-        disabled={sending || !connected || !view?.canSend}
+        disabled={sending || (view ? !view.canSend : acceptingSends)}
+        offline={!view?.canSend || (target?.kind === 'edit' ? !connected : !acceptingSends)}
         target={target}
         cancel={() => {
           setTarget(null)

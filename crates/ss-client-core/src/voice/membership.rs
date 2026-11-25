@@ -33,7 +33,9 @@ pub enum Membership {
 pub(super) fn membership(state: &State, tracked: &mut Id, channel: Id) -> Membership {
     match state.connection {
         ConnectionState::Connected => {}
-        ConnectionState::Reconnecting { .. } => return Membership::Retrying,
+        ConnectionState::Reconnecting { .. } | ConnectionState::Restoring => {
+            return Membership::Retrying;
+        }
         ConnectionState::Disconnected
         | ConnectionState::Connecting
         | ConnectionState::Failed(_) => {

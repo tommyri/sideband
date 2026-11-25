@@ -28,8 +28,13 @@ jobs:
       - name: Frontend dependencies
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: Frontend checks and production build
+      - name: Frontend checks
         working-directory: apps/desktop
-        run: pnpm check && pnpm build
+        run: pnpm check
+      - name: Production build and compact call browser tests
+        working-directory: apps/desktop
+        run: |
+          pnpm exec playwright install --with-deps --only-shell chromium
+          pnpm run test:compact
       - name: Packaging script tests
         run: node --test scripts/build-test-desktop.test.mjs scripts/release-desktop.test.mjs scripts/check-desktop-toolchain.test.mjs

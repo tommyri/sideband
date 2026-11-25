@@ -65,6 +65,7 @@ pub struct ParticipantView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/generated/")]
 pub struct ActiveVoiceView {
+    pub ready: bool,
     pub server_id: String,
     pub channel_id: String,
     pub muted: bool,

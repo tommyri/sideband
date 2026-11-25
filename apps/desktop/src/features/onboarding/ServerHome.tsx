@@ -89,7 +89,7 @@ export function ServerHome() {
             </p>
           )}
           <ServerNotices server={server.id} />
-          {server.status.kind !== 'connected' && server.status.kind !== 'reconnecting' && (
+          {!['connected', 'restoring', 'reconnecting'].includes(server.status.kind) && (
             <button
               className="button primary"
               onClick={(event) => {

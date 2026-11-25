@@ -7,9 +7,17 @@ import { getSnapshot, loadDmPage } from '../../lib/api'
 import { hasDestination, lastConversation, workspaceDestination } from '../channels/destination'
 import type { ApiError } from '../../lib/bindings'
 import { getServerView } from './api'
+import type { ConnectionStatus } from '../../lib/generated/ConnectionStatus'
+
+interface InterruptedCall extends ActiveVoiceView {
+  name: string
+  user: string
+  phase: 'waiting' | 'rejoin'
+}
 
 interface VoiceStore {
   views: Record<string, ServerView>
+  recovery: InterruptedCall | null
   active: ActiveVoiceView | null
   speaking: Record<string, string[]>
   stats: Record<string, VoiceStatsPayload>
@@ -28,6 +36,7 @@ const requested = new Map<string, { id: string; user: string }>()
 export const useVoiceStore = create<VoiceStore>((set) => ({
   views: {},
   active: null,
+  recovery: null,
   speaking: {},
   stats: {},
   selected: {},
@@ -77,6 +86,52 @@ export function forgetServerView(server: string) {
   discardServerView(server)
 }
 
+function interruptedCall(active: ActiveVoiceView, view: ServerView): InterruptedCall {
+  return {
+    ...active,
+    user: view.ownUserId,
+    name: view.channels.find((room) => room.id === active.channelId)?.name ?? 'voice room',
+    phase: 'waiting',
+  }
+}
+
+export function voiceConnectionChanged(server: string, status: ConnectionStatus['kind']) {
+  revisions[server] = (revisions[server] ?? 0) + 1
+  const { active, views, recovery } = useVoiceStore.getState()
+  if (status === 'reconnecting' || status === 'restoring') {
+    const view = views[server]
+    if (!recovery && active?.serverId === server && view) {
+      useVoiceStore.setState({
+        recovery: interruptedCall(active, view),
+        speaking: { ...useVoiceStore.getState().speaking, [server]: [] },
+      })
+    }
+  } else if (status !== 'connected') {
+    forgetServerView(server)
+    if (recovery?.serverId === server) useVoiceStore.setState({ recovery: null })
+  }
+}
+
+function reconcileRecovery(recovery: InterruptedCall | null, server: string, view: ServerView) {
+  const status = useAppStore.getState().servers.find((s) => s.id === server)?.status.kind
+  if (!recovery) {
+    if (
+      (status === 'restoring' || status === 'reconnecting') &&
+      view.activeVoice?.serverId === server
+    )
+      return interruptedCall(view.activeVoice, view)
+    return null
+  }
+  if (view.activeVoice && view.activeVoice.serverId !== recovery.serverId) return null
+  if (server !== recovery.serverId) return recovery
+  if (view.ownUserId !== recovery.user) return null
+  if (status !== 'connected') return recovery
+  if (view.activeVoice?.ready) return null
+  if (!view.activeVoice && recovery.phase !== 'rejoin')
+    return { ...recovery, phase: 'rejoin' as const }
+  return recovery
+}
+
 export async function refreshVoice(server: string) {
   const revision = (revisions[server] ?? 0) + 1
   revisions[server] = revision
@@ -115,6 +170,7 @@ export async function refreshVoice(server: string) {
     )
     useVoiceStore.setState((s) => ({
       active: view.activeVoice,
+      recovery: reconcileRecovery(s.recovery, server, view),
       selected:
         s.selected[server] === selection ? s.selected : { ...s.selected, [server]: selection },
       views: {
@@ -131,6 +187,8 @@ export async function refreshVoice(server: string) {
     // The shell ends a voice session before it drops the server's client, so
     // only `disconnected` means the session is gone. Any other failure keeps
     // the dock (mute, leave, stop sharing) while the native session runs.
+    const status = useAppStore.getState().servers.find((s) => s.id === server)?.status.kind
+    if (status === 'reconnecting' || status === 'restoring') return
     const gone = (error as Partial<ApiError> | null)?.code === 'disconnected'
     forgetServerView(server)
     if (gone && useVoiceStore.getState().active?.serverId === server)

@@ -18,6 +18,9 @@ On **Workspace prototypes**, choose **Present** and select a starting flow.
 | Desktop · from chat to voice | Select Green Room, check who is inside, choose Join voice, then open #general with the call still active. |
 | Compact · reply in a call | At 760 × 600, open Audio and return to the draft. Send the reply or leave voice and keep editing. |
 | First visit · voice-only server | Preview an occupied or empty room and choose whether to join. |
+| Host · invite a friend | Create a one-use invite and copy the complete invitation. |
+| Dropped call · automatic return | Keep replying as chat reconnects and voice resumes in push-to-talk mode. |
+| Dropped call · rejoin voice | Wait for chat, choose **Rejoin voice**, and finish the reply. |
 
 The workspace boards cover the [compact call dock](https://github.com/tommyri/sideband/issues/35), [intentional voice entry](https://github.com/tommyri/sideband/issues/36), [server landing](https://github.com/tommyri/sideband/issues/37), [chat layout](https://github.com/tommyri/sideband/issues/38) and [personal audio settings](https://github.com/tommyri/sideband/issues/39).
 
@@ -25,11 +28,21 @@ For first-time setup, open **New user onboarding** and present **New user · joi
 
 The flow picker also includes a large-window walkthrough, self-signed certificate verification, an unreachable server, open registration, login-only servers and rejected-invite recovery. The **New member entry and recovery** board on **Interaction plan** describes validation, focus and server-specific behavior.
 
+### Usability scenarios
+
+The desktop app implements both flows. The reference designs are on **Workspace prototypes**. The **Invitations and interrupted calls** board on **Interaction plan** records the expected behavior and prompts for an observer.
+
+**Invite a friend and see if they can send you a message.** Start the host at **Desktop · from chat to voice** to test whether they find **Invites** in the server menu. For a shorter session, start at **Host · invite a friend**. Try the default expiry and **Never**. **Copy invitation** simulates clipboard success. **Host · clipboard unavailable** shows the manual fallback. After the host chooses Copy, give the guest the displayed invitation and start them at **New user · join a server**. Its sample fields accept the same address and code. Watch whether the guest reaches their first message without asking the host for missing information. [Invitation preview](invitation-preview.png)
+
+**Can anyone hear you? Has your reply been sent?** Ask at the moment the connection drops, when chat returns, and when the dock changes. Both dropped-call flows start with the same two-line reply to Mina. Wait about eight seconds for each simulated network change. Send becomes available as soon as chat returns. On the manual path, voice waits for **Rejoin voice**. Try **Leave voice** during recovery to cancel the return. The prototype models a previously active push-to-talk call. These timings are for the walkthrough. [Call recovery preview](call-recovery-preview.png)
+
+For the implemented compact layout, the desktop browser test exercises Send, Leave voice and keyboard focus with a long room name and a two-line reply. [Run the compact browser test](../../apps/desktop/README.md#compact-call-browser-test)
+
 ### Updating the design
 
 Edit shared variables, text styles and main components on **Design system**, then review their instances in the affected flows. Record changed values or usage in [DESIGN.md](../../DESIGN.md) and interaction changes on **Interaction plan**. Update the corresponding preview when its frame changes so reviewers can see the result in Git.
 
-From the repository root, these commands inspect the saved file and reproduce the three previews with FigCraft CLI 0.18.1.
+From the repository root, these commands inspect the saved file and reproduce the previews with FigCraft CLI 0.18.1.
 
 ```sh
 workspace="docs/design/Sideband workspace.figcraft"
@@ -37,6 +50,8 @@ figcraft-cli info "$workspace"
 figcraft-cli export "$workspace" --node 'Foundations' -o docs/design/foundations.png
 figcraft-cli export "$workspace" --node 'Reply during a call · 760 × 600' -o docs/design/compact-call-preview.png
 figcraft-cli export "$workspace" --node 'Join your first server' -o docs/design/onboarding-preview.png
+figcraft-cli export "$workspace" --node 'Invitation ready to share' -o docs/design/invitation-preview.png
+figcraft-cli export "$workspace" --node 'Chat restored · voice reconnecting' -o docs/design/call-recovery-preview.png
 ```
 
 ### Connect FigCraft to Codex over MCP

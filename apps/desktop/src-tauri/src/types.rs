@@ -8,6 +8,7 @@ pub enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
+    Restoring,
     Reconnecting {
         attempt: u32,
         #[ts(rename = "delayMs", type = "number")]

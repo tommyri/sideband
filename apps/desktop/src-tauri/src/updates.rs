@@ -14,7 +14,7 @@ pub struct UpdateStatus {
     version: Option<String>,
     notes: Option<String>,
 }
-fn enabled() -> bool {
+pub(super) fn enabled() -> bool {
     !env!("SS_UPDATE_PUBLIC_KEY").is_empty()
         && env!("SS_UPDATE_ENDPOINT").starts_with("https://")
         && (!cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some())

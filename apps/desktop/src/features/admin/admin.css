@@ -23,16 +23,14 @@
 .admin-dialog h3 {
   margin: 0;
 }
-.invite-create,
-.invite-code {
+.invite-create {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
   align-items: end;
   margin: 20px 0;
 }
-.invite-create label,
-.invite-code label {
+.invite-create label {
   display: grid;
   gap: 6px;
   flex: 1;
@@ -51,13 +49,83 @@
   padding: 9px;
   min-width: 0;
 }
-.invite-code {
-  border: 1px solid #9cb6cb;
-  padding: 12px;
-  border-radius: 8px;
+.invites-dialog:has(.invitation-result) {
+  background: var(--voice-canvas);
 }
-.invite-code input {
-  font-family: monospace;
+.invitation-result {
+  max-width: 640px;
+  margin: 16px auto;
+}
+.invitation-result h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+.invitation-result p,
+.invitation-preview dt {
+  color: var(--muted);
+}
+.invitation-preview {
+  margin-top: 16px;
+  background: var(--panel);
+  padding: 18px 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  user-select: text;
+}
+.invitation-preview h3 {
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+.invitation-preview p {
+  margin-top: 4px;
+}
+.invitation-preview dl {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-bottom: 0;
+}
+.invitation-preview dl div {
+  display: grid;
+  grid-template-columns: minmax(96px, 27%) 1fr;
+  gap: 12px;
+  padding: 4px 0;
+}
+.invitation-preview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.invitation-result details,
+.invitation-actions {
+  margin-top: 16px;
+}
+.invitation-result summary {
+  cursor: pointer;
+}
+.invitation-result label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.invitation-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.invitation-actions .button {
+  min-height: 42px;
+  min-width: 142px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.invitation-actions .primary {
+  min-width: 180px;
+}
+.invitation-result textarea {
+  width: 100%;
+  color: inherit;
+  background: var(--bg);
 }
 .invite-table-wrap {
   overflow: auto;

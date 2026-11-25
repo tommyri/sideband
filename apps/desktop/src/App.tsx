@@ -46,7 +46,7 @@ export default function App() {
       <div className="app-workspace">
         <ServerRail />
         {isTauri() ? (
-          server && ['connected', 'reconnecting'].includes(server.status.kind) ? (
+          server && ['connected', 'reconnecting', 'restoring'].includes(server.status.kind) ? (
             <ChannelWorkspace key={server.id} server={server.id} />
           ) : (
             <ServerHome />

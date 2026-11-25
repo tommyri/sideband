@@ -15,7 +15,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 use tokio::{
@@ -229,6 +232,7 @@ pub struct Client {
     pub(crate) media: MediaLink,
     #[cfg(test)]
     pub(crate) clock: Clock,
+    release_voice: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 
@@ -290,7 +294,9 @@ impl Client {
         let (commands, command_rx) = mpsc::channel(64);
         let media = MediaLink::new();
         let clock = Clock::default();
+        let release_voice = Arc::new(AtomicBool::new(false));
         let runner = Runner {
+            release_voice: release_voice.clone(),
             address: address.clone(),
             pins: pins.clone(),
             storage: storage.clone(),
@@ -314,9 +320,16 @@ impl Client {
             media,
             #[cfg(test)]
             clock,
+            release_voice,
             worker,
         })
     }
+    /// Cancel automatic voice return and release this connection’s seat as soon as the
+    /// control stream is available. Chat and its pending messages keep reconnecting.
+    pub fn defer_voice_leave(&self) {
+        self.release_voice.store(true, Ordering::Release);
+    }
+
     /// Subscribe, then read `state()` to establish a race-free UI baseline.
     pub fn subscribe(&self) -> broadcast::Receiver<ClientEvent> {
         self.events.subscribe()
@@ -353,7 +366,10 @@ impl Client {
             let state = self.store.read();
             if state.connection != ConnectionState::Connected
                 && !(replayable
-                    && matches!(&state.connection, ConnectionState::Reconnecting { .. }))
+                    && matches!(
+                        &state.connection,
+                        ConnectionState::Reconnecting { .. } | ConnectionState::Restoring
+                    ))
             {
                 return Err(Error::Disconnected);
             }
@@ -523,6 +539,7 @@ struct Runner {
     events: broadcast::Sender<ClientEvent>,
     auth: Arc<RwLock<Option<AuthSession>>>,
     desired_voice: Option<v1::JoinVoice>,
+    release_voice: Arc<AtomicBool>,
     typing: HashMap<Vec<u8>, Instant>,
     pending: VecDeque<Pending>,
     media: MediaLink,
@@ -663,14 +680,15 @@ impl Runner {
                 Ok((mut next, welcome)) => {
                     let floors = self.store.resync_floors();
                     match self
-                        .resume(&mut next, &welcome, reconnecting, &mut token)
+                        .resume(&mut next, &welcome, reconnecting, &mut token, commands)
                         .await
                     {
                         Ok(trust) => {
-                            let resync = self.reopened(&next, &welcome, trust, floors);
+                            let resync = self.reopened(&welcome, trust, floors);
                             return Some((next, resync));
                         }
                         Err(error) => {
+                            self.media.connected(None);
                             drop(next);
                             error
                         }
@@ -700,6 +718,7 @@ impl Runner {
         welcome: &v1::Welcome,
         reconnecting: ConnectionState,
         token: &mut String,
+        commands: &mut mpsc::Receiver<Command>,
     ) -> Result<ss_net::pins::TrustPolicy, Error> {
         self.store.install(welcome, reconnecting)?;
         let bot = self.bot();
@@ -721,26 +740,34 @@ impl Runner {
             trust,
             bot,
         });
-        self.restore_voice(next).await?;
-        // The seat is back: audio flows from here on, also while queued sends
-        // replay.
+        self.status(ConnectionState::Restoring);
+        if !self.release_voice.load(Ordering::Acquire) {
+            self.restore_voice(next, commands).await?;
+        }
+        // Leave can arrive while the server is answering the automatic join.
+        if self.release_voice.load(Ordering::Acquire) {
+            self.release_voice_seat(
+                next.control.as_ref().ok_or(Error::Disconnected)?,
+                &mut next.incoming,
+            )
+            .await?;
+        }
+        // Publish the live state as media starts, even if an older send still awaits its Ack.
+        self.typing.clear();
+        self.media.connected(Some(&next.connection));
         next.start_media(&self.media);
+        let _ = self.events.send(ClientEvent::Resynced);
+        self.status(ConnectionState::Connected);
         self.flush_pending(next).await?;
         Ok(trust)
     }
-    /// Report `Connected` for a resumed session and start fetching the
-    /// messages missed while offline, alongside live events and audio.
+    /// Start fetching messages missed while offline, alongside live events and audio.
     fn reopened(
-        &mut self,
-        next: &Live,
+        &self,
         welcome: &v1::Welcome,
         trust: ss_net::pins::TrustPolicy,
         floors: Vec<(ss_core::Id, ss_core::Id)>,
     ) -> Option<Resync> {
-        self.typing.clear();
-        let _ = self.events.send(ClientEvent::Resynced);
-        self.status(ConnectionState::Connected);
-        self.media.connected(Some(&next.connection));
         // History pages take a session bearer; a bot keeps its cache.
         if self.bot() {
             return None;
@@ -807,6 +834,10 @@ impl Runner {
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_tick = self.clock.sample();
         loop {
+            // Covers a leave requested while the resume handshake was already in flight.
+            if inflight.is_none() && self.release_voice.load(Ordering::Acquire) {
+                self.release_voice_seat(control, incoming).await?;
+            }
             tokio::select! {
                 _ = heartbeat.tick() => {
                     let now = self.clock.sample();
@@ -998,11 +1029,37 @@ impl Runner {
         }
         Ok(())
     }
+    async fn release_voice_seat(
+        &mut self,
+        control: &ClientControl,
+        incoming: &mut mpsc::Receiver<v1::ServerEnvelope>,
+    ) -> Result<(), Error> {
+        self.desired_voice = None;
+        // LeaveVoice is idempotent and applies only to this connection's seat.
+        match self
+            .draining(incoming, call(control, Msg::LeaveVoice(v1::LeaveVoice {})))
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::Server { message, .. }) => {
+                let _ = self.events.send(ClientEvent::Notice(format!(
+                    "Voice stopped locally. The server refused to release the seat: {message}"
+                )));
+            }
+            Err(error) => return Err(error),
+        }
+        self.release_voice.store(false, Ordering::Release);
+        Ok(())
+    }
     /// Rejoin voice after a reconnect, unless the server kept this
     /// connection's seat (a resumed lease) or the account's seat is now on
     /// another device. The server gives a user one seat, so joining again
     /// would take it back from that device.
-    async fn restore_voice(&mut self, live: &mut Live) -> Result<(), Error> {
+    async fn restore_voice(
+        &mut self,
+        live: &mut Live,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> Result<(), Error> {
         let Some(join) = self.desired_voice.clone() else {
             return Ok(());
         };
@@ -1020,7 +1077,7 @@ impl Runner {
             }
             ResumedSeat::Gone => {}
         }
-        match self.execute(live, Msg::JoinVoice(join)).await {
+        match self.rejoin_with_chat(live, join, commands).await {
             Ok(_) => Ok(()),
             Err(Error::Server { message, .. }) => {
                 self.desired_voice = None;
@@ -1030,6 +1087,40 @@ impl Runner {
                 Ok(())
             }
             Err(error) => Err(error),
+        }
+    }
+    /// An authenticated chat can send during a slow voice rejoin. Preserve message
+    /// order when a send from the previous connection still needs nonce replay.
+    async fn rejoin_with_chat(
+        &mut self,
+        live: &mut Live,
+        join: v1::JoinVoice,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> Result<v1::Ack, Error> {
+        let control = live.control.as_ref().ok_or(Error::Disconnected)?;
+        let joining = call(control, Msg::JoinVoice(join));
+        tokio::pin!(joining);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut joining => return result,
+                frame = live.incoming.recv() => {
+                    if self.event(frame.ok_or(Error::Disconnected)?)? {
+                        return Err(Error::Protocol("session removed by server"));
+                    }
+                }
+                command = commands.recv(), if self.pending.is_empty() => {
+                    let command = command.ok_or(Error::Disconnected)?;
+                    if !command.replayable {
+                        let _ = command.reply.send(Err(Error::Disconnected));
+                        continue;
+                    }
+                    if command.reply.is_closed() { continue; }
+                    let sent = self.clock.sample();
+                    let result = self.draining(&mut live.incoming, call(control, command.message.clone())).await;
+                    self.finish(command, sent, result)?;
+                }
+            }
         }
     }
     /// Where the account's voice seat is in a freshly installed snapshot.
@@ -1083,7 +1174,10 @@ impl Runner {
     }
     fn accepted(&mut self, message: &Msg) {
         match message {
-            Msg::JoinVoice(join) => self.desired_voice = Some(join.clone()),
+            Msg::JoinVoice(join) => {
+                self.release_voice.store(false, Ordering::Release);
+                self.desired_voice = Some(join.clone());
+            }
             Msg::LeaveVoice(_) => self.desired_voice = None,
             Msg::SetVoiceState(state) => {
                 if let Some(join) = &mut self.desired_voice {

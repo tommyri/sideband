@@ -76,8 +76,10 @@ export function ChannelWorkspace({ server }: { server: string }) {
     if (user && conversationId)
       rememberConversation(server, user, { id: conversationId, kind: conversationKind })
   }, [server, user, conversationId, conversationKind])
-  const status = useAppStore((s) => s.servers.find((item) => item.id === server)?.status)
-  const label = useAppStore((s) => s.servers.find((item) => item.id === server)?.label)
+  const summary = useAppStore((s) => s.servers.find((item) => item.id === server))
+  const status = summary?.status
+  const label = summary?.label
+  const recoveringVoice = useVoiceStore((s) => s.recovery?.serverId === server)
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [menu, setMenu] = useState<string | null>(null)
   const [audioSettings, setAudioSettings] = useState(false)
@@ -336,10 +338,10 @@ export function ChannelWorkspace({ server }: { server: string }) {
           }}
         />
       )}
-      {invitesOpen && (view.canCreateInvites || view.canManageInvites) && (
+      {invitesOpen && summary && (view.canCreateInvites || view.canManageInvites) && (
         <InviteManager
           key={`${server}:${view.ownUserId}`}
-          server={server}
+          server={summary}
           view={view}
           connected={connected}
           close={() => setInvitesOpen(false)}
@@ -619,11 +621,12 @@ export function ChannelWorkspace({ server }: { server: string }) {
           </button>
         </header>
         {dmWarning && <p role="alert">{dmWarning}</p>}
-        {status?.kind === 'reconnecting' && (
-          <p role="status" className="connection-banner">
-            Reconnecting to {label} (attempt {status.attempt})…
-          </p>
-        )}
+        <ConnectionBanner
+          reconnecting={status?.kind === 'reconnecting'}
+          chat={!!chatChannel}
+          serverName={label}
+          recoveringVoice={recoveringVoice}
+        />
         <ServerNotices server={server} />
         {voiceRoom ? (
           <VoiceRoomPreview
@@ -640,6 +643,7 @@ export function ChannelWorkspace({ server }: { server: string }) {
           />
         ) : chatChannel ? (
           <Chat
+            acceptingSends={connected || status?.kind === 'restoring'}
             key={`${server}:${view.ownUserId}:${chatChannel.id}`}
             server={server}
             channel={chatChannel.id}
@@ -693,5 +697,43 @@ export function ChannelWorkspace({ server }: { server: string }) {
         />
       )}
     </section>
+  )
+}
+
+function ConnectionBanner({
+  reconnecting,
+  chat,
+  serverName,
+  recoveringVoice,
+}: {
+  reconnecting: boolean
+  chat: boolean
+  serverName?: string
+  recoveringVoice: boolean
+}) {
+  const [sawLoss, setSawLoss] = useState(reconnecting)
+  if (reconnecting && !sawLoss) setSawLoss(true)
+  useEffect(() => {
+    if (!sawLoss || reconnecting) return
+    const timer = window.setTimeout(() => setSawLoss(false), 5000)
+    return () => window.clearTimeout(timer)
+  }, [sawLoss, reconnecting])
+  if (!sawLoss && !recoveringVoice) return null
+  return (
+    <p
+      role="status"
+      className={`connection-banner recovery-banner ${reconnecting ? 'lost' : 'restored'}`}
+    >
+      <strong>
+        {reconnecting ? 'Connection lost' : chat ? 'Chat reconnected' : 'Server reconnected'}
+      </strong>
+      <span>
+        {reconnecting
+          ? `Reconnecting to ${serverName ?? 'the server'}. ${chat ? 'Your draft stays here.' : ''}`
+          : recoveringVoice && chat
+            ? 'Chat is available while voice recovers.'
+            : `Connected to ${serverName ?? 'the server'}.`}
+      </span>
+    </p>
   )
 }

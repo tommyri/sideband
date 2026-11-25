@@ -37,7 +37,7 @@ beforeEach(() => {
     },
   })
   useVoiceStore.setState({
-    active: { serverId: 'server', channelId: 'room', muted: false, deafened: false },
+    active: { serverId: 'server', channelId: 'room', muted: false, deafened: false, ready: true },
     views: {},
   })
 })

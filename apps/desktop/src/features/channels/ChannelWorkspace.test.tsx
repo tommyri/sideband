@@ -66,7 +66,13 @@ const channel = {
   unread: false,
   mentions: 0,
 }
-const active = { serverId: 'server', channelId: 'voice', muted: false, deafened: false }
+const active = {
+  serverId: 'server',
+  channelId: 'voice',
+  muted: false,
+  deafened: false,
+  ready: true,
+}
 const fixture = (): ServerView => ({
   ownUserId: 'own',
   canModerateMembers: false,

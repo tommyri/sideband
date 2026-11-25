@@ -50,6 +50,7 @@ fn status(state: &ConnectionState) -> ConnectionStatus {
     match state {
         ConnectionState::Disconnected => ConnectionStatus::Disconnected,
         ConnectionState::Connecting => ConnectionStatus::Connecting,
+        ConnectionState::Restoring => ConnectionStatus::Restoring,
         ConnectionState::Connected => ConnectionStatus::Connected,
         ConnectionState::Reconnecting { attempt, delay } => ConnectionStatus::Reconnecting {
             attempt: *attempt,

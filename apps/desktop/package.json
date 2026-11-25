@@ -9,6 +9,7 @@
     "check": "tsc -b --pretty false && eslint . && prettier --check . && vitest run",
     "format": "prettier --write .",
     "test": "vitest",
+    "test:compact": "pnpm run build && node --test e2e/compact-call.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -39,6 +40,7 @@
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.14.0",
     "jsdom": "^31.0.0",
+    "playwright": "^1.65.1",
     "prettier": "^3.9.10",
     "tailwindcss": "^4.3.4",
     "typescript": "npm:@typescript/typescript6@^6.0.2",

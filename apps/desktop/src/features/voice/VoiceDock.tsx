@@ -14,7 +14,7 @@ import { AudioSettings } from '../settings/audio/AudioSettings'
 import { environment, useAudioStore } from '../settings/audio/store'
 import { isTauri } from '../../lib/tauri'
 import { useAppStore } from '../../store/app-store'
-import { leaveVoice, voiceControl } from './api'
+import { joinVoice, leaveVoice, voiceControl } from './api'
 import { runVoice, useVoiceStore } from './store'
 import { useMicrophoneGuidance } from './microphone'
 import { voiceShortcut } from './shortcuts'
@@ -33,16 +33,19 @@ export function VoiceDock() {
     if (isTauri()) void environment().catch(() => {})
   }, [])
   const active = useVoiceStore((s) => s.active)
+  const recovery = useVoiceStore((s) => s.recovery)
+  const joining = useVoiceStore((s) => s.joining)
   const busy = useVoiceStore((s) => s.busy)
   const error = useVoiceStore((s) => s.error)
   const notice = useVoiceStore((s) => s.deviceNotice)
   const route = useVoiceStore((s) => s.deviceRoute)
   const stats = useVoiceStore((s) => (active ? s.stats[active.serverId] : undefined))
-  const view = useVoiceStore((s) => (active ? s.views[active.serverId] : undefined))
+  const call = recovery ?? active
+  const view = useVoiceStore((s) => (call ? s.views[call.serverId] : undefined))
   const servers = useAppStore((s) => s.servers)
   const [settings, setSettings] = useState(false)
-  const server = servers.find((s) => s.id === active?.serverId)
-  const channel = view?.channels.find((c) => c.id === active?.channelId)
+  const server = servers.find((s) => s.id === call?.serverId)
+  const channel = view?.channels.find((c) => c.id === call?.channelId)
   const own = view?.members.find((m) => m.id === view.ownUserId)
   const mic = useMicrophoneGuidance({
     server: active?.serverId,
@@ -50,7 +53,7 @@ export function VoiceDock() {
     channel,
     connection: server?.status.kind,
   })
-  const canTalk = mic.canPress && !busy
+  const canTalk = mic.canPress && !busy && !recovery
   useEffect(() => {
     const release = () => {
       ptt(false)
@@ -155,7 +158,7 @@ export function VoiceDock() {
   function gate(open: boolean) {
     ptt(open && canTalk)
   }
-  if (!active && !error && !notice && !settings) return null
+  if (!call && !error && !notice && !settings) return null
   return (
     <div className="voice-dock-container">
       {(error || notice) && (
@@ -169,7 +172,71 @@ export function VoiceDock() {
           </button>
         </div>
       )}
-      {active && (
+      {recovery && (
+        <section className="voice-dock recovery-dock" aria-label="Voice controls">
+          <MicOff size={20} aria-hidden="true" />
+          <div className="recovery-room" role="status">
+            <strong title={recovery.name}>
+              {server?.status.kind === 'reconnecting'
+                ? 'Voice paused'
+                : recovery.phase === 'waiting'
+                  ? 'Rejoining voice'
+                  : joining?.serverId === recovery.serverId &&
+                      joining.channelId === recovery.channelId
+                    ? 'Joining voice'
+                    : !channel?.canJoin
+                      ? 'Room unavailable'
+                      : 'Couldn’t rejoin voice'}{' '}
+              · {channel?.name ?? recovery.name}
+            </strong>
+            <span>
+              {server?.status.kind === 'connected' && recovery.phase === 'waiting'
+                ? 'Checking microphone status…'
+                : 'Your microphone is off.'}
+            </span>
+          </div>
+          {recovery.phase === 'rejoin' && channel?.canJoin && (
+            <button
+              className="button primary"
+              disabled={busy || server?.status.kind !== 'connected'}
+              onClick={() =>
+                void runVoice(
+                  () => joinVoice(recovery.serverId, recovery.channelId, recovery),
+                  recovery,
+                )
+              }
+            >
+              Rejoin voice
+            </button>
+          )}
+          {recovery.phase === 'rejoin' ? (
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => useVoiceStore.setState({ recovery: null, error: '' })}
+            >
+              Dismiss
+            </button>
+          ) : (
+            <button
+              className="button call-leave"
+              disabled={busy}
+              onClick={() =>
+                void runVoice(async () => {
+                  try {
+                    await leaveVoice()
+                  } finally {
+                    useVoiceStore.setState({ recovery: null })
+                  }
+                })
+              }
+            >
+              <PhoneOff size={16} /> Leave voice
+            </button>
+          )}
+        </section>
+      )}
+      {!recovery && active && (
         <section className="voice-dock" aria-label="Voice controls">
           <details className="call-identity">
             <summary title="Call details">
@@ -179,7 +246,9 @@ export function VoiceDock() {
                   aria-hidden="true"
                 />
                 {server?.status.kind === 'connected'
-                  ? 'In voice'
+                  ? active.ready
+                    ? 'In voice'
+                    : 'Rejoining voice'
                   : server?.status.kind === 'reconnecting'
                     ? 'Reconnecting'
                     : 'Offline'}

@@ -6,8 +6,16 @@ import type { DeviceRoutePayload } from '../../lib/generated/DeviceRoutePayload'
 
 export const getServerView = (serverId: string) =>
   invokeBridge<ServerView>('get_server_view', { serverId })
-export const joinVoice = (serverId: string, channelId: string) =>
-  invokeBridge<void>('join_voice', { serverId, channelId })
+export const joinVoice = (
+  serverId: string,
+  channelId: string,
+  state?: { muted: boolean; deafened: boolean },
+) =>
+  invokeBridge<void>('join_voice', {
+    serverId,
+    channelId,
+    ...(state && { startMuted: state.muted, startDeafened: state.deafened }),
+  })
 export const leaveVoice = () => invokeBridge<void>('leave_voice')
 // Each invoke runs as its own native task, so a fast tap could apply release
 // before press and leave the gate open. Send each PTT change only after the

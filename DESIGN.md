@@ -98,3 +98,8 @@ Use the control radius on buttons, fields and selected rows. Use the panel radiu
 | Menus and sheets | Keep keyboard order aligned with reading order. Escape dismisses the surface and returns focus to its opener. Opening members or audio settings preserves the current channel and draft. |
 
 For an implementation review, exercise an empty composer, a draft and an active reply at both reference sizes, with and without a call. For onboarding, follow the address-to-first-message flow and the trust or recovery path affected by the change. The **Interaction plan** page records the acceptance checks. [Design walkthroughs](docs/design/README.md)
+
+### Invitations and call recovery
+
+- **Host invitation.** Put the primary **Copy invitation** action beside a selectable preview. Include the server name, address, invite code and any expiry with its time zone. Keep the one-time code available until the host dismisses the result.
+- **Interrupted call.** Use the chat status to explain when sending is available. Use the dock to explain whether the microphone can transmit and whether the user needs to rejoin. Keep an unsent reply attached to its original message through both transitions. [FigCraft scenarios](docs/design/README.md#usability-scenarios)

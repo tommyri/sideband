@@ -7,6 +7,16 @@ import { invokeBridge } from '../../lib/tauri'
 import type { InviteView } from '../../lib/generated/InviteView'
 import type { ServerView } from '../../lib/generated/ServerView'
 vi.mock('../../lib/tauri', () => ({ invokeBridge: vi.fn() }))
+const server = {
+  id: 'server',
+  label: 'Night Shift',
+  host: '2001:db8::1',
+  port: 5781,
+  httpsPort: 8443,
+  unread: 0,
+  status: { kind: 'connected' as const },
+}
+const expiresAt = Date.UTC(2026, 10, 26, 18)
 const row: InviteView = {
   id: '00000000000000000000000001',
   createdBy: 'own',
@@ -49,7 +59,7 @@ beforeEach(() => {
       command === 'invite_page'
         ? [row]
         : command === 'create_server_invite'
-          ? { id: row.id, code: 'new-secret-code' }
+          ? { id: row.id, code: 'new-secret-code', expiresAt }
           : undefined,
     )
 })
@@ -69,29 +79,40 @@ it('resolves status and revoke permissions exactly like the server', () => {
     expect(() => parseUses(value)).toThrow()
 })
 it('creates with limits, copies the one-time code and discards it when the panel closes', async () => {
-  const first = render(<InviteManager server="server" view={view} connected close={() => {}} />)
+  const first = render(<InviteManager server={server} view={view} connected close={() => {}} />)
   await screen.findByText('00000001')
   fireEvent.change(screen.getByLabelText('Maximum uses'), { target: { value: '5' } })
   fireEvent.change(screen.getByLabelText('Expires after'), { target: { value: '168' } })
   fireEvent.click(screen.getByRole('button', { name: 'Create invite' }))
-  await screen.findByDisplayValue('new-secret-code')
+  await screen.findByText('new-secret-code')
   expect(invokeBridge).toHaveBeenCalledWith('create_server_invite', {
     input: { serverId: 'server', maxUses: 5, expiresInHours: 168 },
   })
-  expect(screen.getByRole('button', { name: 'Create invite' })).toBeDisabled()
-  fireEvent.click(screen.getByRole('button', { name: 'Copy code' }))
-  await screen.findByText('Invite code copied.')
-  expect(copy).toHaveBeenCalledWith('new-secret-code')
+  expect(screen.queryByRole('button', { name: 'Create invite' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Copy invitation' }))
+  await screen.findByText('Invitation copied.')
+  expect(copy).toHaveBeenCalledWith(
+    [
+      'Join Night Shift on Sideband',
+      'Open Sideband, add this server and create an account with the code below.',
+      '',
+      'Server: [2001:db8::1]:5781',
+      'Advanced HTTPS port: 8443',
+      'Invite code: new-secret-code',
+      'Expires: ' +
+        new Date(expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' }),
+    ].join('\n'),
+  )
   first.unmount()
-  render(<InviteManager server="server" view={view} connected close={() => {}} />)
-  expect(screen.queryByDisplayValue('new-secret-code')).not.toBeInTheDocument()
+  render(<InviteManager server={server} view={view} connected close={() => {}} />)
+  expect(screen.queryByText('new-secret-code')).not.toBeInTheDocument()
 })
 it('requires confirmation and reports server denial without removing the row', async () => {
   vi.mocked(invokeBridge).mockImplementation(async (command) => {
     if (command === 'revoke_server_invite') throw { message: 'Permission denied' }
     return [row]
   })
-  render(<InviteManager server="server" view={view} connected close={() => {}} />)
+  render(<InviteManager server={server} view={view} connected close={() => {}} />)
   await screen.findByText('00000001')
   fireEvent.click(screen.getByRole('button', { name: 'Revoke' }))
   expect(invokeBridge).not.toHaveBeenCalledWith('revoke_server_invite', expect.anything())
@@ -104,7 +125,7 @@ it('requires confirmation and reports server denial without removing the row', a
 })
 it('disables actions while disconnected and hides creation for managers without create permission', async () => {
   const first = render(
-    <InviteManager server="server" view={view} connected={false} close={() => {}} />,
+    <InviteManager server={server} view={view} connected={false} close={() => {}} />,
   )
   expect(screen.getByRole('button', { name: 'Create invite' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
@@ -112,7 +133,7 @@ it('disables actions while disconnected and hides creation for managers without 
   first.unmount()
   render(
     <InviteManager
-      server="server"
+      server={server}
       view={{ ...view, ownUserId: 'manager', canCreateInvites: false, canManageInvites: true }}
       connected
       close={() => {}}
@@ -131,7 +152,7 @@ it('paginates from the oldest id and clears metadata when access is lost', async
     .mockResolvedValueOnce(page)
     .mockResolvedValueOnce([row])
     .mockRejectedValueOnce({ message: 'Access removed' })
-  render(<InviteManager server="server" view={view} connected close={() => {}} />)
+  render(<InviteManager server={server} view={view} connected close={() => {}} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Load older invites' }))
   await screen.findByText('00000001')
   expect(invokeBridge).toHaveBeenCalledWith('invite_page', {
@@ -145,13 +166,43 @@ it('paginates from the oldest id and clears metadata when access is lost', async
 })
 it('keeps the code available when clipboard access fails', async () => {
   copy.mockRejectedValue(new Error('denied'))
-  render(<InviteManager server="server" view={view} connected close={() => {}} />)
+  render(<InviteManager server={server} view={view} connected close={() => {}} />)
   await screen.findByText('00000001')
   fireEvent.click(screen.getByRole('button', { name: 'Create invite' }))
-  fireEvent.click(await screen.findByRole('button', { name: 'Copy code' }))
-  await screen.findByText(/Clipboard access failed/)
-  expect(screen.getByDisplayValue('new-secret-code')).toBeInTheDocument()
-  await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'I saved the code' })).toBeEnabled(),
+  fireEvent.click(await screen.findByRole('button', { name: 'Copy invitation' }))
+  const fallback = await screen.findByRole('textbox', { name: /Clipboard unavailable/ })
+  expect(fallback).toHaveFocus()
+  expect(fallback).toHaveValue(copy.mock.calls[0]![0])
+  expect(screen.getByText('new-secret-code')).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Back to invites' })).toBeEnabled())
+})
+
+it('asks for a reachable address for a local server and omits expiry for a permanent invite', async () => {
+  vi.mocked(invokeBridge).mockImplementation(async (command) =>
+    command === 'create_server_invite'
+      ? { id: row.id, code: 'permanent-code', expiresAt: null }
+      : [row],
   )
+  render(
+    <InviteManager
+      server={{ ...server, host: '127.0.0.1', httpsPort: 5781 }}
+      view={view}
+      connected
+      close={() => {}}
+    />,
+  )
+  fireEvent.change(screen.getByLabelText('Expires after'), { target: { value: '' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create invite' }))
+  const button = await screen.findByRole('button', { name: 'Copy invitation' })
+  expect(button).toBeDisabled()
+  fireEvent.change(screen.getByLabelText('Address your guest can reach'), {
+    target: { value: 'friends.example' },
+  })
+  fireEvent.click(button)
+  await screen.findByText('Invitation copied.')
+  const message = copy.mock.calls[0]![0]
+  expect(message).toContain('Server: friends.example:5781')
+  expect(message).not.toMatch(/Expires:|Advanced HTTPS|127\.0\.0\.1/)
+  fireEvent.click(screen.getByRole('button', { name: 'Back to invites' }))
+  expect(screen.queryByText('permanent-code')).not.toBeInTheDocument()
 })

@@ -8,7 +8,11 @@ import type { AppEvent } from './bindings'
 import { useAppStore } from '../store/app-store'
 import { isTauri } from './tauri'
 import { getSnapshot } from './api'
-import { forgetServerView, scheduleVoiceRefresh, useVoiceStore } from '../features/voice/store'
+import {
+  voiceConnectionChanged,
+  scheduleVoiceRefresh,
+  useVoiceStore,
+} from '../features/voice/store'
 import { deviceRouteText } from '../features/voice/api'
 import type { SpeakingView } from './generated/SpeakingView'
 
@@ -29,11 +33,8 @@ export function subscribeToClientEvents(): Promise<UnlistenFn> {
             },
           ),
           listen<AppEvent>('ss://event', ({ payload }) => {
-            if (
-              payload.event.kind === 'connection' &&
-              ['connecting', 'disconnected', 'failed'].includes(payload.event.status.kind)
-            )
-              forgetServerView(payload.serverId)
+            if (payload.event.kind === 'connection')
+              voiceConnectionChanged(payload.serverId, payload.event.status.kind)
             receiveChatEvent(payload)
             receiveNotice(payload)
             observe(payload, useVoiceStore.getState().active?.serverId)

@@ -43,12 +43,16 @@ export function useMicrophoneGuidance(room?: {
   )
   const joined = !!active && active.serverId === server && active.channelId === channel?.id
   if (room) {
+    if (connection === 'restoring' && joined)
+      return blocked('Rejoining voice', 'Your microphone is off while voice reconnects.')
     if (connection === 'reconnecting' && joined)
       return blocked('Reconnecting', 'Voice transmission is paused while this call reconnects.')
     if (connection !== 'connected')
       return blocked('Offline', 'Connect to the server to use voice in this channel.')
     if (!channel || !view) return blocked('Status unavailable', 'Microphone status is unavailable.')
     if (joined) {
+      if (!active.ready)
+        return blocked('Rejoining voice', 'Your microphone is off while voice reconnects.')
       if (active.deafened) return blocked('Deafened', 'You are deafened. Others cannot hear you.')
       if (active.muted) return blocked('Muted', 'You are muted. Others cannot hear you.')
       if (

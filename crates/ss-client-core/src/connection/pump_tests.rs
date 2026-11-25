@@ -921,3 +921,92 @@ async fn unsolicited_errors_and_unknown_events_keep_the_connection() {
     );
     assert!(peer.sessions.try_recv().is_err(), "client reconnected");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leave_during_retry_resumes_chat_and_releases_the_seat() {
+    let mut peer = Peer::new(Duration::ZERO, 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let mut events = client.subscribe();
+    client
+        .join_voice(v1::JoinVoice {
+            channel_id: ss_core::Id::generate().as_bytes().to_vec().into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    first.connection.close(0, b"test outage");
+    next_reconnecting(&mut events).await;
+    client.defer_voice_leave();
+    let mut next = peer.session().await;
+    until_connected(&client, &mut events).await;
+    assert!(matches!(
+        timeout(WAIT, next.commands.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .msg,
+        Some(Msg::LeaveVoice(_))
+    ));
+    client
+        .command(Msg::Typing(v1::Typing {
+            channel_id: peer.channels[0].as_bytes().to_vec().into(),
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        timeout(WAIT, next.commands.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .msg,
+        Some(Msg::Typing(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authenticated_resume_accepts_a_reply_before_voice_is_ready() {
+    let mut peer = Peer::new(Duration::from_secs(1), 1).await;
+    let client = peer.client().await;
+    let first = peer.session().await;
+    let mut events = client.subscribe();
+    client
+        .join_voice(v1::JoinVoice {
+            channel_id: ss_core::Id::generate().as_bytes().to_vec().into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    first.connection.close(0, b"resume");
+    next_reconnecting(&mut events).await;
+    let mut next = peer.session().await;
+    until_state(&client, &mut events, |s| *s == ConnectionState::Restoring).await;
+    let reply = v1::SendMessage {
+        channel_id: peer.channels[0].as_bytes().to_vec().into(),
+        reply_to: Some(ss_core::Id::generate().as_bytes().to_vec().into()),
+        content: "Still here".into(),
+        ..Default::default()
+    };
+    let send_reply = client.command(Msg::SendMessage(reply.clone()));
+    let acknowledge_chat = async {
+        assert!(matches!(
+            next.commands.recv().await.unwrap().msg,
+            Some(Msg::JoinVoice(_))
+        ));
+        let envelope = timeout(WAIT, next.commands.recv()).await.unwrap().unwrap();
+        assert!(
+            matches!(envelope.msg, Some(Msg::SendMessage(sent)) if sent.content == reply.content && sent.reply_to == reply.reply_to && sent.nonce.is_some())
+        );
+        assert_eq!(client.state().read().connection, ConnectionState::Restoring);
+        next.events
+            .send(v1::ServerEnvelope::ack(
+                envelope.request_id,
+                v1::ack::Result::Empty(v1::Empty {}),
+            ))
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(send_reply, acknowledge_chat);
+    result.unwrap();
+    assert_eq!(client.state().read().connection, ConnectionState::Restoring);
+    until_connected(&client, &mut events).await;
+}

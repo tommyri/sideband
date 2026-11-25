@@ -136,8 +136,12 @@ only on `ss-core`; `ss-video` is transport-independent and optionally feeds
 - The heartbeat compares `Instant` with the wall clock once a second. On
   macOS `Instant` stops while the machine sleeps, so a wall-clock jump of more
   than 3 s reconnects with the resume token.
-- On resume the client installs the snapshot, rejoins voice and replays
-  queued sends, then reports `Connected`. The cached history is then re-read
+- On resume the client installs the authenticated snapshot and reports
+  `Restoring`. It accepts nonce-bearing chat sends while it restores the voice
+  seat or releases it if the user left during the outage. A new reply can be
+  acknowledged during a pending rejoin. An older send awaiting replay keeps
+  its place in message order. It reports `Connected`
+  when the media transport starts and replays pending sends. The cached history is then re-read
   over HTTPS, newest page first (one pinned client for the whole run), on a
   separate task, so messages, edits and deletes from while it was offline all
   show (`02-protocol.md` §1.2). The connection loop merges each page between
