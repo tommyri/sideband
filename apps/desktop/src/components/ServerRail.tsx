@@ -7,14 +7,7 @@ import { Bell, Bug, Plus } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { useVoiceStore } from '../features/voice/store'
 
-function initials(label: string) {
-  return label
-    .split(/\s+/)
-    .map((word) => word[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
-}
+import { initials } from '../lib/initials'
 
 export function ServerRail() {
   const [notifications, setNotifications] = useState(false)

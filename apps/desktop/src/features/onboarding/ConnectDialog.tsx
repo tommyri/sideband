@@ -17,6 +17,7 @@ import {
   parseAddress,
   type AccountField,
 } from './validation'
+import { ServerIdentity } from '../../components/ServerIdentity'
 import './onboarding.css'
 import { createLocalProfile, getLocalProfile, suggestedUsername } from './localProfile'
 
@@ -321,15 +322,9 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       const failure = e as Partial<ApiError>
       setPassword('')
       if (failure.fingerprint) {
-        setProbe({
-          ...probe,
-          trusted: false,
-          publicCertificate: false,
-          previousFingerprint: probe.fingerprint,
-          fingerprint: failure.fingerprint,
-        })
-        setCompared(false)
-        setStep('trust')
+        // Rediscover the replacement certificate's name, logo and capabilities.
+        changeServer()
+        await findServer()
       } else if (
         !saved &&
         needsInvite &&
@@ -399,15 +394,15 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
             ? `Join ${probe?.name} with your profile`
             : 'Join with a local profile',
           description: localProfile
-            ? `Use ${localProfile} on ${address.trim()}. Your membership belongs to this server.`
+            ? `Use ${localProfile} to sign in. Your membership belongs to this server.`
             : 'Choose a name once and use your profile to sign in to compatible servers.',
           action: localProfile ? 'Join with profile' : 'Create a local profile',
         }
       : {
           title: mode === 'register' ? 'Create your account' : `Log in to ${probe?.name}`,
           description: canRegister
-            ? `Your account belongs to ${probe?.name} · ${address.trim()}`
-            : `Registration is closed. Use your existing account on ${probe?.name} (${address.trim()}).`,
+            ? 'Your account belongs to this server.'
+            : 'Registration is closed. Use your existing account on this server.',
           action: mode === 'register' ? 'Create account and join' : 'Log in and join',
         },
   }[step]
@@ -481,6 +476,13 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       >
         <div className="join-scroll" key={step}>
           <div className="join-content">
+            {step === 'auth' && target && probe && (
+              <ServerIdentity
+                name={probe.name}
+                target={target}
+                hasPublicIcon={probe.hasPublicIcon}
+              />
+            )}
             {step === 'auth' && (
               <p className="join-certificate">
                 {probe?.publicCertificate

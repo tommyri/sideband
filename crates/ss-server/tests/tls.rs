@@ -293,7 +293,9 @@ async fn server_info_is_public() {
     assert_eq!(value["name"], "SocialSpeak");
     assert_eq!(value["registrationMode"], "invite");
     assert_eq!(value["fingerprint"], "ab".repeat(32));
-    assert!(value["version"].as_str().unwrap().contains('.'));
+    assert!(value.get("version").is_none());
+    assert!(value.get("iconUrl").is_none());
+    assert_eq!(value["capabilities"], serde_json::json!(["profileSignIn"]));
 }
 
 fn hex(tls: &ss_net::tls::TlsConfig) -> String {

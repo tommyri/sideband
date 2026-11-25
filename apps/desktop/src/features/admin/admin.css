@@ -369,6 +369,12 @@
   max-width: 100%;
   width: 100%;
 }
+.server-public-icon {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
 .server-icon-preview,
 .server-icon-placeholder {
   width: 80px;

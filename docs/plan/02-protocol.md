@@ -5,7 +5,7 @@ port 443 (`ss_net::DEFAULT_PORT`): QUIC on UDP and REST over HTTPS on TCP.
 Both are configurable. A client uses one port number for both: 443 when the
 address has none, otherwise the port given, unless it is told a separate
 HTTPS port. The server does not announce its HTTPS port, because a client
-reads `GET /api/v1/server` before it opens QUIC.
+probes the QUIC certificate and reads `GET /api/v1/server` before sending credentials.
 
 ## 1. Connection lifecycle
 
@@ -440,8 +440,9 @@ rendition 1 only while `SubscriberStats` reports a subscriber on it.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/server` | Public: name, version, cert fingerprint, registration mode |
-| GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, registrationMode and revision; stale PUT returns 409 |
+| GET | `/api/v1/server` | Public identity, cert fingerprint, registration mode, capabilities, optional iconUrl |
+| GET / PUT | `/api/v1/server/settings` | MANAGE_SERVER profile: name, description, iconId, publicIcon, registrationMode and revision; stale PUT returns 409 |
+| GET | `/api/v1/server/icon` | Public raster logo when the operator enables it and a valid icon exists. Otherwise 404 |
 | POST | `/api/v1/server/icon` | MANAGE_SERVER raw raster upload, up to 2 MiB; returns iconId, applied only by settings PUT |
 | GET | `/api/v1/channels/{id}/messages?before=<id>&limit=50` | History page before cursor, ascending ULID order. `after=<id>` instead returns the page after the cursor; `before` and `after` together are `400` |
 | GET | `/api/v1/channels/{id}/messages/around/{message_id}?limit=` | Jump to message |
@@ -619,11 +620,28 @@ between two streams are not replayed. Each bot spends a budget of 50
 requests, then 5 a second, across both transports, and holds at most two
 streams.
 
+### Public server identity
+
+The discovery document includes `name`, `fingerprint`, `registrationMode` and a
+`capabilities` array of strings. A missing array means no advertised capabilities.
+Clients ignore unknown names. Each capability describes a separate available feature.
+
+| Capability | Meaning |
+| --- | --- |
+| `profileSignIn` | A person can use a local Sideband profile to join or sign in on this device. |
+| `linkedDeviceSignIn` | A linked device can sign in to an existing profile membership. |
+| `profileSync` | The operator offers encrypted profile storage and relay for members. |
+
+The optional `iconUrl` is the same-origin path `/api/v1/server/icon`. The desktop
+fetches it after certificate approval using the same HTTPS host, port and trust
+policy as discovery. A missing or unavailable logo displays as initials.
+Build information is available to signed-in managers in Server settings.
+
 ### Server settings
 
-Settings GET returns `name`, `description`, nullable `iconId`, `registrationMode`,
-opaque `revision`, nullable `iconFilename` and `iconMime`. PUT sends only the five
-editable/profile fields, including the revision from the last read. Updates are
+Settings GET returns `name`, `description`, nullable `iconId`, `publicIcon`, `registrationMode`,
+opaque `revision`, nullable `iconFilename` and `iconMime`. PUT sends the editable fields and the revision from the last read.
+The public logo defaults to off. Omitting `publicIcon` preserves the saved choice. Updates are
 atomic and audited. Names are 1–100 visible characters, descriptions at most 2048.
 Icons are PNG/JPEG/WebP, at most 2 MiB and 4096×4096 pixels. A new icon must be an
 unattached upload owned by the caller. A null iconId clears the icon.

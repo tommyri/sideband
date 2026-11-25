@@ -7,6 +7,7 @@ import {
   approveFingerprint,
   connect,
   getSnapshot,
+  getPublicServerIcon,
   probeServer,
   enablePublicCertificate,
 } from '../../lib/api'
@@ -25,9 +26,11 @@ vi.mock('../../lib/api', () => ({
   enablePublicCertificate: vi.fn(),
   connect: vi.fn(),
   getSnapshot: vi.fn(),
+  getPublicServerIcon: vi.fn(),
 }))
 const metadata = {
   name: 'Friends',
+  hasPublicIcon: false,
   registrationMode: 'invite',
   capabilities: [] as string[],
   fingerprint: 'ab'.repeat(32),
@@ -100,6 +103,30 @@ describe('onboarding', () => {
       expect.objectContaining({ mode: 'register', inviteCode: 'invite', username: 'friend' }),
     )
   })
+  it('shows the invitation identity and fetches its logo only after certificate approval', async () => {
+    vi.mocked(probeServer).mockResolvedValue({ ...metadata, hasPublicIcon: true })
+    vi.mocked(getPublicServerIcon).mockResolvedValue('data:image/png;base64,AA==')
+    await discover()
+    expect(getPublicServerIcon).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
+    expect(await screen.findByText('friends.example:5781')).toBeVisible()
+    expect(screen.getByText('Friends')).toBeVisible()
+    expect(screen.getByLabelText('Invite code')).toBeVisible()
+    await waitFor(() =>
+      expect(document.querySelector('.server-preview img')).toHaveAttribute(
+        'src',
+        'data:image/png;base64,AA==',
+      ),
+    )
+    fireEvent.error(document.querySelector('.server-preview img')!)
+    expect(screen.getByText('F')).toBeVisible()
+  })
+  it('shows initials when the server has no public icon', async () => {
+    await trust()
+    expect(screen.getByText('F')).toBeVisible()
+    expect(getPublicServerIcon).not.toHaveBeenCalled()
+  })
   it('shows both fingerprints and requires explicit replacement on certificate change', async () => {
     vi.mocked(probeServer).mockResolvedValue({ ...metadata, previousFingerprint: 'cd'.repeat(32) })
     await discover()
@@ -125,6 +152,41 @@ describe('onboarding', () => {
     expect(screen.getByLabelText('Password')).toHaveValue('')
     expect(useAppStore.getState().servers).toHaveLength(0)
   })
+  it.each(['password', 'profile'])(
+    'rediscovers identity and capabilities when the certificate changes during %s sign-in',
+    async (method) => {
+      const profile = method === 'profile'
+      if (profile) {
+        vi.mocked(getLocalProfile).mockResolvedValue('Tommy')
+        vi.mocked(probeServer).mockResolvedValue({ ...metadata, capabilities: ['profileSignIn'] })
+      }
+      await trust()
+      if (!profile) {
+        fireEvent.click(screen.getByRole('button', { name: 'Log in instead' }))
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'friend' } })
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a password' } })
+      }
+      const fingerprint = 'cd'.repeat(32)
+      vi.mocked(connect).mockRejectedValue({ fingerprint })
+      vi.mocked(probeServer).mockResolvedValue({
+        ...metadata,
+        name: 'New community',
+        previousFingerprint: metadata.fingerprint,
+        fingerprint,
+      })
+      fireEvent.click(
+        screen.getByRole('button', { name: profile ? 'Join with profile' : 'Log in and join' }),
+      )
+      await screen.findByRole('heading', { name: 'Server certificate changed' })
+      expect(screen.queryByText('Friends')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Replace trusted certificate' }))
+      expect(await screen.findByText('New community')).toBeVisible()
+      expect(screen.getByLabelText('Password')).toHaveValue('')
+      expect(screen.queryByRole('button', { name: 'Join with profile' })).toBeNull()
+      expect(connect).toHaveBeenCalledTimes(1)
+    },
+  )
   it('rejects invalid registration without invoking the bridge', async () => {
     await trust()
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'UPPER' } })

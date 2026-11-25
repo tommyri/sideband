@@ -25,7 +25,8 @@ To report a problem with evidence, see
 3. A verified domain or previously trusted fingerprint takes you to the account
    form. For a new self-signed certificate, compare the full SHA-256 fingerprint
    with your host through a conversation you already trust. Confirm that it
-   matches and choose **Trust this server** to continue.
+   matches and choose **Trust this server** to continue. The join screen shows
+   the server name and hostname with its public logo or initials.
 4. On a server that offers profile sign-in, choose **Create a local profile**
    or **Join with profile**. If you already have a username and password on
    this server, choose **Use a server account** and log in to keep your
@@ -306,7 +307,7 @@ determine which administrative actions appear.
 | **Members & moderation** | Kick members or Ban members | Search members, kick, ban for a time or permanently, unban |
 | **Roles and permissions** | Manage roles or Manage channels | Create, edit, reorder and delete roles; assign roles to members; set per-channel overrides |
 | **Manage channels** | Manage channels | Create, edit, move and delete channels and categories |
-| **Server settings** | Manage server | Name, description, icon, and registration (invite only or closed) |
+| **Server settings** | Manage server | Name, description, icon, **Show logo before people join**, and registration (invite only or closed) |
 | **Webhooks** | Manage server | Incoming webhooks that let another service post into a channel |
 | **Audit log** | View audit log | Filtered history of administrative actions |
 

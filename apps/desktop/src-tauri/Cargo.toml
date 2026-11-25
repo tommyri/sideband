@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
+image.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true

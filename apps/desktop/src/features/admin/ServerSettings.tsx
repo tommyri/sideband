@@ -247,6 +247,16 @@ function SettingsPanel({ server, connected, permitted, close }: Props) {
                   Remove icon
                 </button>
               </div>
+              {fields.publicIcon != null && (
+                <label className="server-public-icon">
+                  <input
+                    type="checkbox"
+                    checked={fields.publicIcon}
+                    onChange={(e) => setFields({ ...fields, publicIcon: e.target.checked })}
+                  />
+                  Show logo before people join
+                </label>
+              )}
               {snapshot?.iconWarning && <p role="note">{snapshot.iconWarning}</p>}
             </section>
             <label>
