@@ -46,5 +46,18 @@ fn main() {
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo provides OUT_DIR"));
     std::fs::write(output.join("build-identity.json"), identity.to_string())
         .expect("write build identity");
-    tauri_build::build();
+    if target.ends_with("-windows-msvc") {
+        // Tauri embeds Common Controls v6 only in the app binary. The paired
+        // desktop tests also link the GUI runtime and need it at process startup.
+        let manifest =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-app.manifest");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+        let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+        tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+            .expect("build Windows resources");
+    } else {
+        tauri_build::build();
+    }
 }

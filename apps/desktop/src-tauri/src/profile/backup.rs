@@ -218,11 +218,11 @@ async fn pick(window: &tauri::Window, save: bool) -> Result<Option<PathBuf>, Api
     Ok(file.map(|f| f.path().to_owned()))
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-async fn pick(_: &tauri::Window, _: bool) -> Result<Option<PathBuf>, ApiError> {
-    Err(ApiError::new(
+fn pick(_: &tauri::Window, _: bool) -> std::future::Ready<Result<Option<PathBuf>, ApiError>> {
+    std::future::ready(Err(ApiError::new(
         "profile_unavailable",
         "Profile backups are available on Mac and Windows.",
-    ))
+    )))
 }
 
 #[tauri::command]
