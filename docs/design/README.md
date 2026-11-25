@@ -9,6 +9,7 @@ Start with the [desktop design system](../../DESIGN.md) for tokens, component st
 | Design system | **Foundations** for variables and text styles, **Component library** for workspace controls, and **Onboarding forms** for fields and actions. [Foundations preview](foundations.png) |
 | Workspace prototypes | Desktop conversation, compact replies, voice rooms, settings and menus. [Compact call preview](compact-call-preview.png) |
 | New user onboarding | Server discovery, account creation, login, certificate trust, recovery and the first message. [First server preview](onboarding-preview.png) |
+| Profile and devices | Pair devices, choose sync servers, try an outage, link existing accounts, and recover a lost device. [Relay outage preview](profile-relay-outage-preview.png) |
 | Interaction plan | Expected transitions, keyboard and microphone states, and acceptance checks for workspace and onboarding changes. |
 
 On **Workspace prototypes**, choose **Present** and select a starting flow.
@@ -27,6 +28,29 @@ The workspace boards cover the [compact call dock](https://github.com/tommyri/si
 For first-time setup, open **New user onboarding** and present **New user · join a server**. Select each field to fill it with sample data, create a server account, then send a first message in **#general**. **View room** opens a voice preview, and **Check audio first** offers an optional microphone check. The prototype simulates accounts, messages and audio.
 
 The flow picker also includes a large-window walkthrough, self-signed certificate verification, an unreachable server, open registration, login-only servers and rejected-invite recovery. The **New member entry and recovery** board on **Interaction plan** describes validation, focus and server-specific behavior.
+
+### Profile and devices concept
+
+Open **Profile and devices → Present**. Use the flow menu at the top left to choose **My usual sync server is down**. Each paired desktop view shows two 760 × 600 app windows. Click the controls in the window labeled for the device you are using. Pairing links, credentials, account proofs, sync updates and outages are simulated. Clicking an empty field fills it with example data.
+
+| Starting flow | What to try |
+|---|---|
+| My usual sync server is down | Join Tape Loop on Windows while Friday Games is down. At **Synced to 1 of 2 servers**, close Sideband on Windows. Open it on the Mac, enter Tape Loop and check sync activity. **Check again** simulates Friday Games coming back. [Outage preview](profile-relay-outage-preview.png) |
+| Choose and manage sync servers | Choose Friday Games, add North Studio as a second server, then replace an offline host with Soundcheck. The replacement receives a current copy. **Manage backup** opens the separate recovery flow. |
+| No joined server offers sync | Check availability again, open a host’s invitation, and choose the newly joined community for sync. |
+| Both sync servers are offline | Join Tape Loop on Windows. The status shows that the change is saved on this device. **Check again** brings North Studio online and delivers the queued update. |
+| Offer sync and preview the server logo | Toggle member sync and public logo visibility independently. Preview an invitation and the member’s picker with each setting on or off. Both identify the community by name and hostname. The public logo falls back to initials. Public server information omits the software build. |
+| Link existing server accounts | Choose Friday Games, confirm the signed-in account, then check its Admin membership on Windows. **Review 8 other accounts** lets the user approve those memberships together. Night Shift keeps its per-device server login. [Account linking preview](profile-account-link-preview.png) |
+| Link a Windows PC from a Mac | Choose **Link a device** on the trusted Mac. Open its pairing link on Windows or enter the sync server address and one-time code. Compare the phrases and allow or deny on the Mac. [Linking preview](profile-link-preview.png) |
+| Sync an eleventh server | Join Tape Loop on Windows while the Mac sleeps. Open Sideband on the Mac and select Tape Loop to enter the same channel. North Studio stays listed while offline. [Server sync preview](profile-sync-preview.png) |
+| Save a backup and its key | The walkthrough suggests a private iCloud Drive or Google Drive folder for the encrypted file and a password manager or paper for the recovery words. Someone who keeps the file as a password manager attachment can keep the words on paper. Choose **I saved my key** to see how to restore on a new computer. [Backup setup preview](profile-backup-preview.png) |
+| Recover after losing the Mac | Choose the saved backup file, then enter the words that open that file. The help screen gives separate steps for a missing file and a missing key. After restoring, review devices and remove MacBook. North Studio reports pending removal until it reconnects. [Recovery preview](profile-recovery-preview.png) |
+| Retry a recovery key | Select the invalid field to supply the corrected sample key, or open the help for a missing file or key. |
+| Explore phone linking | Choose **Scan QR code** to simulate a scan, or enter the server address and code shown on the Mac. Compare the phrase and approve on MacBook. [Phone preview](profile-phone-preview.png) |
+
+The **Profile portability and device access** and **Sync servers and existing memberships** boards on **Interaction plan** record the assumptions and acceptance checks. During the outage walkthrough, ask which server delivered the change, whether the PC still needs to be on, and what the user would need if they lost both computers.
+
+**Could someone recover tomorrow?** Have a first-time user try **Save a backup and its key** with the example data. Then hide the screen and ask, “Your Mac is gone. What would you look for, where would you look, and what would you do on your new computer?” Listen for both the file and the words, kept in separate places they can still reach. Use **Recover after losing the Mac** to see whether they can follow through without coaching.
 
 ### Usability scenarios
 
@@ -52,6 +76,13 @@ figcraft-cli export "$workspace" --node 'Reply during a call · 760 × 600' -o d
 figcraft-cli export "$workspace" --node 'Join your first server' -o docs/design/onboarding-preview.png
 figcraft-cli export "$workspace" --node 'Invitation ready to share' -o docs/design/invitation-preview.png
 figcraft-cli export "$workspace" --node 'Chat restored · voice reconnecting' -o docs/design/call-recovery-preview.png
+figcraft-cli export "$workspace" --node 'Link a computer · compare the phrase' -o docs/design/profile-link-preview.png
+figcraft-cli export "$workspace" --node 'Sync servers · eleventh membership' -o docs/design/profile-sync-preview.png
+figcraft-cli export "$workspace" --node 'Recovery · unlock backup' -o docs/design/profile-recovery-preview.png
+figcraft-cli export "$workspace" --node 'MacBook · profile backup' -o docs/design/profile-backup-preview.png
+figcraft-cli export "$workspace" --node 'Phone concept · scan or enter code' -o docs/design/profile-phone-preview.png
+figcraft-cli export "$workspace" --node 'Relay outage · one copy delivered' -o docs/design/profile-relay-outage-preview.png
+figcraft-cli export "$workspace" --node 'Existing accounts · confirm membership' -o docs/design/profile-account-link-preview.png
 ```
 
 ### Connect FigCraft to Codex over MCP
@@ -71,7 +102,7 @@ Use this request in a new Codex chat for the checkout.
 
 > Use the sideband-design MCP server to open `docs/design/Sideband workspace.figcraft` by absolute path with `open_file`. Call `inspect_document` with `{"depth":0,"fields":["name","type"]}` and report the document name and pages.
 
-The result should be **Sideband — workspace design**, with **Workspace prototypes**, **Design system**, **Interaction plan**, and **New user onboarding**. A new headless session starts with an untitled file, so open the repository file at the start of each session. After editing, call `save_file` on the opened workspace and regenerate the affected preview with the CLI commands above.
+The result should be **Sideband — workspace design**, with **Workspace prototypes**, **Design system**, **Interaction plan**, **New user onboarding**, and **Profile and devices**. A new headless session starts with an untitled file, so open the repository file at the start of each session. After editing, call `save_file` on the opened workspace and regenerate the affected preview with the CLI commands above.
 
 ## Technical design notes
 
