@@ -37,6 +37,33 @@ on:
         type: boolean
         default: true
 
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      notes:
+        required: true
+        type: string
+      alpha:
+        type: boolean
+        default: false
+      updates:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: true
+      macos:
+        type: boolean
+        default: true
+      macos_intel:
+        type: boolean
+        default: false
+      linux:
+        type: boolean
+        default: false
+
 permissions:
   contents: read
 
@@ -75,6 +102,7 @@ jobs:
       - name: Validate version and selected platforms
         id: selection
         env:
+          RELEASE_ALPHA: ${{ inputs.alpha || false }}
           RELEASE_UPDATES: ${{ inputs.updates }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
           # Only whether the key is set; the key itself goes to the signing step.
@@ -110,9 +138,66 @@ jobs:
       # macos-signing and windows-signing jobs only. No updater key.
       environment: ${{ inputs.updates && 'desktop-signing' || '' }}
 
+  server-build:
+    if: inputs.alpha
+    needs: preflight
+    uses: ./.github/workflows/package-server.yml
+    with:
+      version: ${{ inputs.version }}
+
+  publish-alpha-image:
+    if: inputs.alpha
+    needs: [ci, build, server-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: desktop-release
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Require main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-gate.mjs environment desktop-release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ss-server-*
+          path: dist
+          merge-multiple: true
+      - name: Publish versioned alpha image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository }}-server
+          VERSION: ${{ inputs.version }}
+          MOVE_LATEST: 'false'
+        run: bash scripts/publish-server-image.sh
+      - name: Attest image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}-server
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Remove the registry login
+        if: always()
+        run: docker logout ghcr.io
+
   publish:
     timeout-minutes: 20
-    needs: [prepare, ci, build]
+    needs: [prepare, ci, build, publish-alpha-image]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' && needs.ci.result == 'success' &&
+          needs.build.result == 'success' && (inputs.alpha && needs.publish-alpha-image.result == 'success' ||
+          !inputs.alpha && needs.publish-alpha-image.result == 'skipped') }}
     runs-on: ubuntu-24.04
     # Approving this job signs the update payloads and publishes.
     environment: desktop-release

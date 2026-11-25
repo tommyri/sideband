@@ -17,7 +17,7 @@ refused, and the run waits for approval before building and before publishing; s
 
 Results appear under [GitHub Releases](https://github.com/tommyri/sideband/releases)
 as a **prerelease** tagged `vVERSION`. The version must be three integers, e.g.
-`0.0.1`; major/minor must be at most 255 and patch at most 65535 for MSI compatibility. This
+`0.0.1`; major/minor must be at most 255 and patch at most 654 to reserve MSI build numbers for alphas. This
 version is embedded in the installer and About/build metadata using a Tauri
 configuration override, so later releases do not require editing Cargo versions.
 The release build uses the existing testing channel and guided test mechanisms.
@@ -28,6 +28,8 @@ For example, to publish only Windows from the CLI:
 gh workflow run release-desktop.yml --ref main \
   -f version=0.0.1 -f updates=false -f windows=true -f macos=false -f linux=false
 ```
+
+Matched Mac, Windows and server alphas use the [Publish alpha workflow](release.md#publish-a-matched-alpha) and a dedicated signed updater feed.
 
 ## Reusing a version during development
 

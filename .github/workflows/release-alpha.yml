@@ -1,0 +1,30 @@
+name: Publish alpha
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Alpha version matching ss-server (X.Y.Z-alpha.N)
+        type: string
+        required: true
+      notes:
+        description: Changes shown in App updates
+        type: string
+        default: Sideband cross-device testing build
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/release-desktop.yml
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
+    with:
+      alpha: true
+      version: ${{ inputs.version }}
+      notes: ${{ inputs.notes }}

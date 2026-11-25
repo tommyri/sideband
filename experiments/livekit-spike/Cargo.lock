@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "ss-server"
-version = "0.1.3"
+version = "0.1.4-alpha.1"
 dependencies = [
  "anyhow",
  "arc-swap",

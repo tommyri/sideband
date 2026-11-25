@@ -179,3 +179,58 @@ test('platform feeds never regress and other platforms are not overwritten', asy
   await publishFeeds({ repo: 'owner/repo', commit, feeds: [file], run })
   assert.deepEqual(calls.at(-1), ['release', 'upload', 'desktop-updates', file, '--repo', 'owner/repo', '--clobber'])
 })
+
+test('alpha version, signed updater endpoint and Windows product version advance together', async () => {
+  const { nativeVersion, feedTag } = await import('./desktop-version.mjs')
+  const { makeIdentity, updateConfiguration } = await import('./build-test-desktop.mjs')
+  const env = { GITHUB_REPOSITORY: 'owner/repo', TAURI_UPDATER_PUBLIC_KEY: cli.publicKey }
+  const versions = ['0.1.4-alpha.1', '0.1.4-alpha.2', '0.1.4-alpha.10', '0.1.4', '0.1.5-alpha.1']
+  assert.deepEqual(versions.map(nativeVersion), ['0.1.400', '0.1.401', '0.1.409', '0.1.499', '0.1.500'])
+  assert.equal(nativeVersion('0.1.1'), '0.1.1')
+  assert.equal(feedTag('0.1.4'), 'desktop-updates')
+  const target = 'x86_64-pc-windows-msvc', version = versions[0]
+  assert.equal(makeIdentity({ version, commit, target, status: '' }).channel, 'alpha')
+  assert.deepEqual(updateConfiguration(env, target, version).plugins.updater.endpoints,
+    ['https://github.com/owner/repo/releases/download/desktop-alpha-updates/x86_64-pc-windows-msvc.json'])
+  assert.throws(() => selectRelease({ RELEASE_VERSION: version, RELEASE_WINDOWS: 'true' }), /Publish alpha/)
+  for (const invalid of ['0.1.4-alpha.01', '0.1.4-alpha.100', '0.1.4-alpha.0', '0.1.4-beta.1']) assert.throws(() => validateVersion(invalid))
+})
+
+test('alpha feeds reject cross-channel updates and compare alpha numbers numerically', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'sideband-alpha-feed-'))
+  const file = path.join(dir, 'aarch64-apple-darwin.json')
+  const calls = []
+  const run = args => {
+    calls.push(args)
+    if (args[0] === 'api') return JSON.stringify({ assets: [{ name: path.basename(file) }] })
+    if (args[1] === 'download') return JSON.stringify({ version: '0.1.4-alpha.10' })
+    return ''
+  }
+  const input = { repo: 'owner/repo', commit, feeds: [file], run }
+  await writeFile(file, JSON.stringify({ version: '0.1.4-alpha.2' }))
+  await assert.rejects(publishFeeds(input), /different feed/)
+  await publishFeeds({ ...input, tag: 'desktop-alpha-updates' })
+  assert(!calls.some(args => args[1] === 'upload'))
+  await writeFile(file, JSON.stringify({ version: '0.1.4-alpha.11' }))
+  await publishFeeds({ ...input, tag: 'desktop-alpha-updates' })
+  assert.deepEqual(calls.at(-1).slice(0, 3), ['release', 'upload', 'desktop-alpha-updates'])
+})
+
+test('a published alpha retry restores its original manifests and refuses a moved tag', async () => {
+  const { publishAlpha } = await import('./release-desktop.mjs')
+  const dir = await mkdtemp(path.join(tmpdir(), 'sideband-alpha-retry-'))
+  const manifests = ['aarch64-apple-darwin.json', 'x86_64-pc-windows-msvc.json'].map(name => path.join(dir, name))
+  const version = '0.1.4-alpha.1', original = JSON.stringify({ version, notes: 'original' })
+  const calls = []
+  const run = args => {
+    calls.push(args)
+    if (args[1].includes('/git/ref/')) return JSON.stringify({ object: { sha: commit } })
+    if (args[0] === 'api') return JSON.stringify({ draft: false })
+    if (args[1] === 'download') return original
+    throw new Error('Unexpected mutation')
+  }
+  const input = { version, commit, repo: 'owner/repo', manifests, files: [], notes: '', run }
+  await publishAlpha(input)
+  for (const file of manifests) assert.equal(await readFile(file, 'utf8'), original)
+  await assert.rejects(publishAlpha({ ...input, commit: 'b'.repeat(40) }), /another commit/)
+})

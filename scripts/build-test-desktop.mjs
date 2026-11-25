@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { feedTag, nativeVersion, validateVersion } from './desktop-version.mjs'
+export { validateVersion } from './desktop-version.mjs'
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const desktop = path.join(root, 'apps', 'desktop')
 const platforms = {
@@ -51,18 +54,10 @@ export function parseOptions(args, host, os) {
   return { target, bundles: [...new Set(bundles)], debug, ...(version ? { version } : {}), ...(updates ? { updates } : {}) }
 }
 
-export function validateVersion(version) {
-  if (typeof version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) ||
-      version.split('.').some((part, index) => Number(part) > (index < 2 ? 255 : 65535))) {
-    throw new Error('Version must be X.Y.Z; major/minor must be 0–255 and patch 0–65535 for MSI')
-  }
-  return version
-}
-
 export function makeIdentity({ version, commit, status, target, debug, ci }) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('A full git commit is required')
   return {
-    schemaVersion: 1, channel: 'test', version, commit,
+    schemaVersion: 1, channel: version.includes('-alpha.') ? 'alpha' : 'test', version, commit,
     dirty: status.length > 0, target,
     origin: ci ? 'github-actions' : 'local',
     profile: debug ? 'debug' : 'release',
@@ -110,7 +105,7 @@ export function buildEnvironment(env, options, identity, targetDir, updaterConfi
   return result
 }
 
-export function updateConfiguration(env, target) {
+export function updateConfiguration(env, target, version) {
   if (!env.TAURI_UPDATER_PUBLIC_KEY) throw new Error('Signed updates require TAURI_UPDATER_PUBLIC_KEY')
   parseUpdaterPublicKey(env.TAURI_UPDATER_PUBLIC_KEY)
   const repo = env.GITHUB_REPOSITORY
@@ -123,7 +118,7 @@ export function updateConfiguration(env, target) {
     // Windows code signing is added by windowsSigningConfig, only in `tauri bundle`.
     bundle: { createUpdaterArtifacts: false, macOS: { signingIdentity: '-' } },
     plugins: { updater: { requireSignedVersion: true, pubkey: env.TAURI_UPDATER_PUBLIC_KEY.trim(),
-      endpoints: [`https://github.com/${repo}/releases/download/desktop-updates/${target}.json`],
+      endpoints: [`https://github.com/${repo}/releases/download/${feedTag(version)}/${target}.json`],
       windows: { installMode: 'passive' } } },
   }
 }
@@ -620,7 +615,7 @@ export async function checkUnbundledWindows(directory, binary, expected) {
   const sums = await readFile(path.join(directory, 'SHA256SUMS'), 'utf8')
   const lines = await Promise.all(wanted.filter((name) => name !== 'SHA256SUMS').map(async (name) => await checksum(path.join(directory, name)) + '  ' + name))
   if (sums !== lines.join('\n') + '\n') throw new Error('SHA256SUMS does not match the Windows build output')
-  const want = { schemaVersion: 1, channel: 'test', target: windowsTarget, dirty: false, profile: 'release', ...expected }
+  const want = { schemaVersion: 1, channel: expected.version.includes('-alpha.') ? 'alpha' : 'test', target: windowsTarget, dirty: false, profile: 'release', ...expected }
   for (const [key, value] of Object.entries(want)) {
     if (identity[key] !== value) throw new Error(`build-info.json ${key} is ${JSON.stringify(identity[key])}, expected ${JSON.stringify(value)}`)
   }
@@ -843,9 +838,9 @@ export async function bundleWindows(state, env, { output, lockText, run, host = 
   if (sha256 !== state.sha256 || await checksum(path.join(release, state.binary)) !== sha256) throw new Error('The staged executable changed since it was checked')
   if ((await readdir(release)).join() !== state.binary) throw new Error('The bundle directory must hold only the staged executable')
   const cli = await verifyTauriCli(lockText, state.cli, { binding })
-  const config = mergeConfig(updateConfiguration(env, windowsTarget), windowsSigningConfig(env.WINDOWS_CERTIFICATE_THUMBPRINT))
+  const config = mergeConfig(updateConfiguration(env, windowsTarget, identity.version), windowsSigningConfig(env.WINDOWS_CERTIFICATE_THUMBPRINT))
   const args = ['bundle', '--ci', '--bundles', 'nsis,msi', '--config', 'src-tauri/tauri.test.conf.json',
-    '--config', JSON.stringify({ version: identity.version }), '--config', JSON.stringify(config)]
+    '--config', JSON.stringify({ version: identity.version, bundle: { windows: { wix: { version: nativeVersion(identity.version) } } } }), '--config', JSON.stringify(config)]
   if (host !== windowsTarget) args.push('--target', windowsTarget)
   const bundleEnv = { ...env, CI: 'true', CARGO_TARGET_DIR: state.targetDir }
   for (const key of ['CARGO_BUILD_TARGET', 'WINDOWS_CERTIFICATE_THUMBPRINT', 'NAPI_RS_NATIVE_LIBRARY_PATH']) delete bundleEnv[key]
@@ -906,9 +901,13 @@ async function main() {
     ...(options.noBundle ? ['--no-bundle'] : ['--bundles', options.bundles.join(',')])]
   // Native builds reuse Cargo's normal cache; cross-architecture builds have a target subdirectory.
   if (options.target !== host) args.push('--target', options.target)
-  if (options.version) args.push('--config', JSON.stringify({ version: options.version }))
+  if (options.version) {
+    const numeric = nativeVersion(options.version)
+    const bundle = { windows: { wix: { version: numeric } }, macOS: { bundleVersion: numeric } }
+    args.push('--config', JSON.stringify({ version: options.version, bundle }))
+  }
   if (options.debug) args.push('--debug')
-  const updaterConfig = options.updates ? updateConfiguration(process.env, options.target) : undefined
+  const updaterConfig = options.updates ? updateConfiguration(process.env, options.target, identity.version) : undefined
   if (updaterConfig) args.push('--config', JSON.stringify(updaterConfig))
   args.push('--', '--locked')
   const env = buildEnvironment(process.env, options, identity, targetDir, updaterConfig)

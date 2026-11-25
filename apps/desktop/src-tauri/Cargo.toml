@@ -52,7 +52,7 @@ tauri = { version = "2", features = ["test"] }
 moq-video = { workspace = true, features = ["openh264"] }
 moq-net.workspace = true
 tempfile.workspace = true
-ss-server = { path = "../../../crates/ss-server", version = "0.1.0" }
+ss-server = { path = "../../../crates/ss-server", version = "0.1.4-alpha.1" }
 
 # Sets `com.apple.quarantine` on saved downloads (T-104). Already in the graph
 # through `tar`.

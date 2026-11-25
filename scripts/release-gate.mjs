@@ -39,8 +39,13 @@ export function checkEnvironment(name, environment, policies) {
 }
 
 export function compareVersions(a, b) {
-  const left = a.split('.').map(Number), right = b.split('.').map(Number)
-  const index = left.findIndex((part, i) => part !== right[i])
+  // A final release sorts after every alpha with the same major/minor/patch.
+  const parts = v => {
+    const [base, alpha] = v.split('-alpha.')
+    return [...base.split('.').map(Number), alpha === undefined ? Infinity : Number(alpha)]
+  }
+  const left = parts(a), right = parts(b)
+  const index = left.findIndex((value, i) => value !== right[i])
   return index === -1 ? 0 : Math.sign(left[index] - right[index])
 }
 
@@ -90,11 +95,35 @@ async function ok(response, what) {
 }
 
 // image is OWNER/NAME on ghcr.io. auth is base64 "user:token" for private packages.
-export async function registryState(image, version, { fetch = globalThis.fetch, auth } = {}) {
+async function registryRequest(image, { fetch = globalThis.fetch, auth } = {}) {
   const { token } = await ok(await fetch(`https://ghcr.io/token?scope=repository:${image}:pull&service=ghcr.io`,
     { headers: auth ? { authorization: `Basic ${auth}` } : {} }), 'GHCR token request')
-  const request = (resource, method = 'GET') => fetch(`https://ghcr.io/v2/${image}/${resource}`,
+  return (resource, method = 'GET') => fetch(`https://ghcr.io/v2/${image}/${resource}`,
     { method, headers: { authorization: `Bearer ${token}`, accept: manifestTypes } })
+}
+
+export async function existingAlphaImage(image, version, commit, options) {
+  const request = await registryRequest(image, options)
+  const response = await request(`manifests/${version}`)
+  if (response.status === 404) return null
+  const index = await ok(response, 'Reading alpha image index')
+  const digest = response.headers.get('docker-content-digest')
+  if (!/^sha256:[0-9a-f]{64}$/.test(digest ?? '')) throw new Error('Invalid alpha image digest')
+  for (const arch of ['amd64', 'arm64']) {
+    const entry = index.manifests?.find(item => item.platform?.architecture === arch && item.platform.os === 'linux')
+    if (!entry) throw new Error(`Existing alpha image is missing linux/${arch}`)
+    const manifest = await ok(await request(`manifests/${entry.digest}`), 'Reading alpha manifest')
+    const config = await ok(await request(`blobs/${manifest.config.digest}`), 'Reading alpha image config')
+    const labels = config.config?.Labels ?? {}
+    if (labels['org.opencontainers.image.revision'] !== commit || labels['org.opencontainers.image.version'] !== version) {
+      throw new Error(`Image ${image}:${version} already belongs to another build`)
+    }
+  }
+  return digest
+}
+
+export async function registryState(image, version, options = {}) {
+  const request = await registryRequest(image, options)
   const head = await request(`manifests/${version}`, 'HEAD')
   if (head.status !== 200 && head.status !== 404) throw new Error(`Checking image tag ${version} failed with HTTP ${head.status}`)
   const latest = await request('manifests/latest')
@@ -134,6 +163,11 @@ async function main() {
     const policies = environment && await github(`environments/${encodeURIComponent(name)}/deployment-branch-policies`)
     checkEnvironment(name, environment, policies)
     console.log(`Environment ${name} is protected`)
+  } else if (command === 'existing-alpha-image') {
+    const image = `${process.env.GITHUB_REPOSITORY.toLowerCase()}-server`
+    const auth = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64')
+    const existing = await existingAlphaImage(image, process.env.VERSION, process.env.GITHUB_SHA, { auth })
+    if (existing) console.log(existing)
   } else if (command === 'server-plan') {
     const version = serverVersionFromRef(process.env.GITHUB_REF)
     const repo = process.env.GITHUB_REPOSITORY

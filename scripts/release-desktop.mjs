@@ -10,6 +10,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { artifactDirectories, parseUpdaterPublicKey, validateVersion, updateConfiguration } from './build-test-desktop.mjs'
 
+import { feedTag } from './desktop-version.mjs'
+import { compareVersions, crateVersion } from './release-gate.mjs'
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const feedPattern = /^(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu)\.json$/
 
@@ -30,10 +33,15 @@ export function selectPlatforms(selection) {
 export function selectRelease(env) {
   validateVersion(env.RELEASE_VERSION)
   const matrix = selectPlatforms(Object.fromEntries(Object.keys(platforms).map((key) => [key, env[`RELEASE_${key.toUpperCase()}`] === 'true'])))
+  const alpha = env.RELEASE_VERSION.includes('-alpha.')
+  if (alpha !== (env.RELEASE_ALPHA === 'true')) throw new Error('Use Publish alpha for X.Y.Z-alpha.N versions only')
+  if (alpha && (env.RELEASE_UPDATES !== 'true' || env.RELEASE_MACOS !== 'true' || env.RELEASE_WINDOWS !== 'true')) {
+    throw new Error('An alpha requires signed updates on both Mac and Windows')
+  }
   if (env.RELEASE_UPDATES === 'true') {
     // Fail before spending runner time; the key itself is given only to the signing step.
     if (env.TAURI_SIGNING_KEY_CONFIGURED !== 'true') throw new Error('Signed updates need the updater signing key (secret TAURI_SIGNING_PRIVATE_KEY in the desktop-release environment)')
-    for (const entry of matrix.include) updateConfiguration(env, entry.target)
+    for (const entry of matrix.include) updateConfiguration(env, entry.target, env.RELEASE_VERSION)
   }
   return matrix
 }
@@ -110,6 +118,9 @@ export async function prepareAssets(input, output, version, commit, repo, notes 
         identity.dirty || identity.profile !== 'release' || identity.origin !== 'github-actions') {
       throw new Error('Artifact identity does not match this release run')
     }
+    if (version.includes('-alpha.') && (identity.channel !== 'alpha' || !identity.updater)) {
+      throw new Error('Alpha artifacts must have the alpha identity and signed updater payloads')
+    }
     seen.add(identity.target)
     const prefix = `Sideband-${version}-${platform.label}`
     const artifacts = [], suffixes = new Set()
@@ -181,6 +192,7 @@ function lookup(endpoint, run) {
 export function publishRelease({ repo, commit, version, files, notes, run = gh }) {
   validateVersion(version)
   if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo) || !/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release repository or commit')
+  if (version.includes('-alpha.')) throw new Error('Alpha releases use immutable publication')
   const tag = `v${version}`, base = `repos/${repo}`
   const ref = lookup(`${base}/git/ref/tags/${tag}`, run)
   if (ref) {
@@ -194,28 +206,59 @@ export function publishRelease({ repo, commit, version, files, notes, run = gh }
   run(['release', 'upload', tag, ...files, '--repo', repo, '--clobber'])
 }
 
-export async function publishFeeds({ repo, commit, feeds, run = gh }) {
+// A retry may finish a draft or repair a feed. Published installers and the
+// original feed snapshots belong permanently to the commit named by the tag.
+export async function publishAlpha({ repo, commit, version, files, notes, manifests, run = gh }) {
+  validateVersion(version)
+  if (!version.includes('-alpha.')) throw new Error('Expected an alpha release')
+  const tag = `v${version}`
+  const required = ['aarch64-apple-darwin.json', 'x86_64-pc-windows-msvc.json']
+  if (manifests.map(file => path.basename(file)).sort().join() !== required.join()) throw new Error('Both alpha feeds are required')
+  const ref = lookup(`repos/${repo}/git/ref/tags/${tag}`, run)
+  if (ref && ref.object.sha !== commit) throw new Error(`${tag} already belongs to another commit`)
+  if (!ref) run(['api', '--method', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${tag}`, '-f', `sha=${commit}`])
+  let release = lookup(`repos/${repo}/releases/tags/${tag}`, run)
+  if (!release) {
+    // The REST lookup by tag may hide a draft left by an interrupted upload.
+    const draft = run(['api', '--paginate', `repos/${repo}/releases?per_page=100`, '--jq',
+      `.[] | select(.draft and .tag_name == "${tag}") | .id`])
+    if (draft) release = { draft: true }
+  }
+  if (!release) run(['release', 'create', tag, '--repo', repo, '--draft', '--verify-tag', '--prerelease', '--latest=false',
+    '--title', `Sideband ${version}`, '--notes-file', notes])
+  if (!release || release.draft) {
+    run(['release', 'upload', tag, ...files, ...manifests, '--repo', repo, '--clobber'])
+    run(['release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease', '--latest=false'])
+  } else {
+    for (const file of manifests) {
+      const original = run(['release', 'download', tag, '--repo', repo, '--pattern', path.basename(file), '--output', '-'])
+      if (JSON.parse(original).version !== version) throw new Error('Published alpha manifest version mismatch')
+      await writeFile(file, original)
+    }
+  }
+}
+
+export async function publishFeeds({ repo, commit, feeds, tag = 'desktop-updates', run = gh }) {
   if (!feeds.length) return
-  const release = lookup(`repos/${repo}/releases/tags/desktop-updates`, run)
+  const release = lookup(`repos/${repo}/releases/tags/${tag}`, run)
   const accepted = []
   for (const file of feeds) {
     const next = JSON.parse(await readFile(file, 'utf8'))
     validateVersion(next.version)
+    if (feedTag(next.version) !== tag) throw new Error('Update manifest belongs to a different feed')
     if (release?.assets?.some(asset => asset.name === path.basename(file))) {
-      const previous = JSON.parse(run(['release', 'download', 'desktop-updates', '--repo', repo, '--pattern', path.basename(file), '--output', '-']))
+      const previous = JSON.parse(run(['release', 'download', tag, '--repo', repo, '--pattern', path.basename(file), '--output', '-']))
       validateVersion(previous.version)
-      const before = previous.version.split('.').map(Number), after = next.version.split('.').map(Number)
-      const first = after.findIndex((n, i) => n !== before[i])
-      // Publishing an old installer must not roll the update channel backwards.
-      if (first !== -1 && after[first] < before[first]) continue
+      if (feedTag(previous.version) !== tag) throw new Error('Published manifest belongs to a different feed')
+      if (compareVersions(next.version, previous.version) < 0) continue
     }
     accepted.push(file)
   }
   if (!accepted.length) return
-  if (!release) run(['release', 'create', 'desktop-updates', '--repo', repo, '--target', commit,
+  if (!release) run(['release', 'create', tag, '--repo', repo, '--target', commit,
     '--prerelease', '--latest=false', '--title', 'Desktop update feeds', '--notes', 'Signed development update manifests.'])
   // Only selected feeds change, after every referenced payload has uploaded.
-  run(['release', 'upload', 'desktop-updates', ...accepted, '--repo', repo, '--clobber'])
+  run(['release', 'upload', tag, ...accepted, '--repo', repo, '--clobber'])
 }
 
 function releaseNotes(repo, commit) {
@@ -236,6 +279,11 @@ gh attestation verify FILE --repo ${repo} --signer-workflow ${repo}/.github/work
 async function main() {
   const [command, input, output] = process.argv.slice(2)
   if (command === 'select') {
+    if (process.env.RELEASE_ALPHA === 'true') {
+      const server = crateVersion(await readFile(path.join(root, 'Cargo.toml'), 'utf8'),
+        await readFile(path.join(root, 'crates/ss-server/Cargo.toml'), 'utf8'))
+      if (server !== process.env.RELEASE_VERSION) throw new Error(`ss-server is ${server}; expected ${process.env.RELEASE_VERSION}`)
+    }
     await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selectRelease(process.env))}\n`)
     return
   }
@@ -249,12 +297,25 @@ async function main() {
     await mkdir(feeds, { recursive: true })
     await prepareAssets(input, assets, version, commit, repo, process.env.RELEASE_NOTES || undefined, process.env.TAURI_UPDATER_PUBLIC_KEY || undefined)
     for (const name of await readdir(assets)) if (feedPattern.test(name)) await rename(path.join(assets, name), path.join(feeds, name))
-    await writeFile(path.join(output, 'release-notes.md'), releaseNotes(repo, commit))
+    const notes = version.includes('-alpha.')
+      ? `Sideband ${version} for Windows x64 and Apple Silicon Macs. Install this build once to receive subsequent signed alphas in App updates.
+
+${process.env.RELEASE_NOTES || ''}
+
+VPS Docker image (linux/amd64 and linux/arm64): \`ghcr.io/${repo.toLowerCase()}-server:${version}\`. Pin it with \`SIDEBAND_IMAGE\` in your Compose environment.
+
+Source commit: ${commit}.
+`
+      : releaseNotes(repo, commit)
+    await writeFile(path.join(output, 'release-notes.md'), notes)
   } else if (command === 'publish' && input) {
     const assets = path.join(input, 'assets'), feeds = path.join(input, 'feeds')
     const files = (await readdir(assets)).sort().map((name) => path.join(assets, name))
-    publishRelease({ repo, commit, version, files, notes: path.join(input, 'release-notes.md') })
-    await publishFeeds({ repo, commit, feeds: (await readdir(feeds)).sort().map((name) => path.join(feeds, name)) })
+    const manifests = (await readdir(feeds)).sort().map((name) => path.join(feeds, name))
+    const notes = path.join(input, 'release-notes.md')
+    if (version.includes('-alpha.')) await publishAlpha({ repo, commit, version, files, notes, manifests })
+    else publishRelease({ repo, commit, version, files, notes })
+    await publishFeeds({ repo, commit, feeds: manifests, tag: feedTag(version) })
     console.log(`https://github.com/${repo}/releases/tag/v${version}`)
   } else throw new Error('Usage: node scripts/release-desktop.mjs select | sign INPUT | stage INPUT OUTPUT | publish OUTPUT')
 }

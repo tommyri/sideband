@@ -209,9 +209,40 @@ installer names remain replaceable. Feeds upload last, after all referenced
 payloads succeed; publication is not transactional, so rerun a failed publication.
 Source identity/checksums remain attached to each platform download.
 
+## Publish a matched alpha
+
+Choose **Publish alpha** on `main`. Enter the version from
+`crates/ss-server/Cargo.toml`, for example `0.1.4-alpha.1`. When changing the
+server version, update the Cargo locks and any incompatible workspace dependency
+requirements before dispatching. The CLI equivalent is:
+
+```sh
+gh workflow run release-alpha.yml --ref main -f version=0.1.4-alpha.1
+```
+
+The workflow runs preflight and platform CI once, packages Windows x64 and
+Apple Silicon installers, and smoke-tests the Linux amd64 and arm64 images.
+The protected `desktop-release` environment approves publication from main.
+The image uses only the exact alpha tag. The GitHub prerelease and both signed
+update manifests reference the same commit. Reruns can finish a draft and
+repair a feed. Use a fresh alpha number for changes to published binaries.
+
+Install the first alpha from its GitHub release. **App updates** then checks
+`desktop-alpha-updates` for that platform, with separate NSIS and MSI payloads
+on Windows. The version signed by the updater includes the alpha suffix.
+From the 0.1.4 series, native MSI and macOS build numbers allocate 100 slots per
+patch (alpha 1 through 99, followed by the final). The patch range is 0–654.
+To test an in-app upgrade, install alpha 1, publish alpha 2, and choose
+**Install and restart** on each machine.
+
+On the VPS, put the exact tag in the existing Compose environment, for example
+`SIDEBAND_IMAGE=ghcr.io/tommyri/sideband-server:0.1.4-alpha.1`. Use your usual
+Compose files and port overrides with `docker compose pull socialspeak` and
+`docker compose up -d socialspeak`. The service reuses its existing data volume.
+
 ## Release the server
 
-1. Set `[workspace.package] version` in `Cargo.toml` to the new version and
+1. Set `[package] version` in `crates/ss-server/Cargo.toml` to the new version and
    merge that to `main`. The binary reports this version; the tag must match it.
 2. Tag the merged commit and push only the tag:
 

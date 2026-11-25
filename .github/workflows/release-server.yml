@@ -70,75 +70,9 @@ jobs:
 
   build:
     needs: [gate, preflight]
-    timeout-minutes: 60
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-            arch: amd64
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-            arch: arm64
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
-          targets: ${{ matrix.target }}
-      - name: musl toolchain
-        timeout-minutes: 10
-        run: bash scripts/install-linux-deps.sh musl
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: server-${{ matrix.target }}
-          cache-on-failure: true
-      - name: Static binary
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: |
-          cargo build -p ss-server --locked --release --target "${{ matrix.target }}"
-          strip --strip-unneeded "target/${{ matrix.target }}/release/ss-server"
-          if readelf -l "target/${{ matrix.target }}/release/ss-server" | grep -q 'INTERP'; then
-            echo "ss-server is dynamically linked" >&2
-            exit 1
-          fi
-          install -m 0755 "target/${{ matrix.target }}/release/ss-server" \
-            "$RUNNER_TEMP/ss-server-${{ matrix.target }}"
-      # The image is built here only to smoke-test it; nothing is pushed until publish.
-      - name: Smoke-test the image
-        env:
-          ARCH: ${{ matrix.arch }}
-          VERSION: ${{ needs.gate.outputs.version }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/image/data"
-          install -m 0755 "$RUNNER_TEMP/ss-server-${{ matrix.target }}" "$RUNNER_TEMP/image/ss-server-$ARCH"
-          docker build --platform "linux/$ARCH" -f deploy/Dockerfile.release \
-            --label "org.opencontainers.image.version=$VERSION" \
-            -t sideband-server:smoke "$RUNNER_TEMP/image"
-          docker run -d --name server-smoke --cap-add NET_BIND_SERVICE \
-            -p 127.0.0.1:19101:9101 -p 127.0.0.1:19443:443 \
-            -e SS_BIND_QUIC=0.0.0.0:443 -e SS_BIND_HTTP=0.0.0.0:443 \
-            -e SS_INTERNAL_BIND=0.0.0.0:9101 sideband-server:smoke
-          trap 'docker rm -fv server-smoke' EXIT
-          curl --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 --fail \
-            http://127.0.0.1:19101/healthz
-          curl --insecure --fail https://127.0.0.1:19443/api/v1/server
-          docker run --rm --entrypoint /ss-server sideband-server:smoke --version | tee "$RUNNER_TEMP/version.txt"
-          grep -qw "$VERSION" "$RUNNER_TEMP/version.txt"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ss-server-${{ matrix.target }}
-          path: ${{ runner.temp }}/ss-server-${{ matrix.target }}
-          if-no-files-found: error
+    uses: ./.github/workflows/package-server.yml
+    with:
+      version: ${{ needs.gate.outputs.version }}
 
   publish:
     name: Publish image and release
@@ -196,39 +130,7 @@ jobs:
           VERSION: ${{ steps.plan.outputs.version }}
           MOVE_LATEST: ${{ steps.plan.outputs.move_latest }}
         run: |
-          context="$RUNNER_TEMP/image"
-          mkdir -p "$context/data"
-          install -m 0755 dist/ss-server-x86_64-unknown-linux-musl "$context/ss-server-amd64"
-          install -m 0755 dist/ss-server-aarch64-unknown-linux-musl "$context/ss-server-arm64"
-          tags=(--tag "$IMAGE:$VERSION" --tag "$IMAGE:sha-$GITHUB_SHA")
-          if [ "$MOVE_LATEST" = true ]; then tags+=(--tag "$IMAGE:latest"); fi
-          # Dockerfile.release only copies files, so both platforms build without emulation
-          # and are pushed as one index: no per-architecture tags are ever created.
-          # Pinned by tag and digest in .github/buildkit/Dockerfile, which Dependabot updates.
-          buildkit=$(sed -n 's/^FROM //p' .github/buildkit/Dockerfile)
-          if [[ ! "$buildkit" =~ ^moby/buildkit:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::.github/buildkit/Dockerfile must have one FROM moby/buildkit:vX.Y.Z@sha256:<digest> line"
-            exit 1
-          fi
-          docker buildx create --name sideband-release --driver docker-container \
-            --driver-opt "image=$buildkit"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          # The login stays for Attest image; the last step of this job logs out.
-          trap 'docker buildx rm sideband-release' EXIT
-          docker buildx build --builder sideband-release --platform linux/amd64,linux/arm64 \
-            -f deploy/Dockerfile.release --provenance=false --sbom=false \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.version=$VERSION" \
-            "${tags[@]}" --metadata-file "$RUNNER_TEMP/image.json" --push "$context"
-          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image.json")
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          docker buildx imagetools inspect "$IMAGE@$digest"
-          {
-            echo "Published \`$IMAGE:$VERSION\` (linux/amd64 and linux/arm64), digest \`$digest\`."
-            if [ "$MOVE_LATEST" = true ]; then echo "\`latest\` moved to $VERSION."; else echo "\`latest\` left on a newer version."; fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/publish-server-image.sh
       - name: Attest image
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

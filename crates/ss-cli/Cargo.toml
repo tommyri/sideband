@@ -25,7 +25,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-ss-server = { path = "../ss-server", version = "0.1.0" }
+ss-server = { path = "../ss-server", version = "0.1.4-alpha.1" }
 tempfile.workspace = true
 
 [lints]

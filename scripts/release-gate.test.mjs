@@ -105,3 +105,18 @@ test('release lookup distinguishes missing from failed', async () => {
   assert.equal(await releaseExists('owner/repo', 'server-v0.2.0', { fetch: api(404) }), false)
   await assert.rejects(releaseExists('owner/repo', 'server-v0.2.0', { fetch: api(401) }), /401/)
 })
+
+test('an alpha image can be reused only when both Linux architectures match the source', async () => {
+  const { existingAlphaImage } = await import('./release-gate.mjs')
+  const digest = 'sha256:' + 'a'.repeat(64), version = '0.1.4-alpha.1', sha = 'a'.repeat(40)
+  const fetch = async url => {
+    if (url.includes('/token?')) return Response.json({ token: 'fixture' })
+    if (url.endsWith('/' + version)) return Response.json({ manifests: ['amd64', 'arm64'].map(architecture => ({
+      platform: { os: 'linux', architecture }, digest: 'manifest-' + architecture,
+    })) }, { headers: { 'docker-content-digest': digest } })
+    if (url.includes('/manifests/')) return Response.json({ config: { digest: 'config' } })
+    return Response.json({ config: { Labels: { 'org.opencontainers.image.version': version, 'org.opencontainers.image.revision': sha } } })
+  }
+  assert.equal(await existingAlphaImage('owner/server', version, sha, { fetch }), digest)
+  await assert.rejects(existingAlphaImage('owner/server', version, 'b'.repeat(40), { fetch }), /another build/)
+})

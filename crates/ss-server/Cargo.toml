@@ -1,7 +1,7 @@
 [package]
 name = "ss-server"
 description = "Sideband server. One process, one SQLite database."
-version.workspace = true
+version = "0.1.4-alpha.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
