@@ -38,6 +38,11 @@ on:
         default: true
 
   workflow_call:
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
     inputs:
       version:
         required: true
