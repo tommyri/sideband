@@ -1,0 +1,424 @@
+name: Package desktop installers
+
+on:
+  workflow_call:
+    inputs:
+      workspace_test_targets:
+        description: JSON array of targets covered by the caller's workspace tests
+        type: string
+        default: '[]'
+      updates:
+        type: boolean
+        default: false
+      matrix:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      # Set by the release workflow to the environment holding OS signing credentials.
+      # Standalone test builds use none and see no secrets.
+      environment:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    timeout-minutes: 75
+    name: test package (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    # No environment: this job runs dependency code (pnpm install scripts, build
+    # scripts, proc macros, the frontend build), so it gets no signing secret. The
+    # signing jobs below have the environment.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix || '{"include":[{"os":"windows-2025","target":"x86_64-pc-windows-msvc"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]}') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: desktop-${{ matrix.target }}
+          cache-on-failure: true
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: bash scripts/install-linux-deps.sh desktop
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 12.18.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Frontend dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Desktop tests
+        if: ${{ !contains(fromJSON(inputs.workspace_test_targets), matrix.target) }}
+        run: cargo test --locked -p socialspeak-desktop
+      # No signing secret here: build scripts and proc macros run in this step, and
+      # the script refuses to start if one is present. macOS is built ad-hoc and
+      # signed by the macos-signing job below. For a signing build, Windows is built
+      # with `--no-bundle` and bundled and signed by the windows-signing job.
+      - name: Create labelled test packages
+        id: packages
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.0.1' }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          BUILD_UPDATES: ${{ inputs.updates }}
+          UNBUNDLED: ${{ matrix.target == 'x86_64-pc-windows-msvc' && inputs.environment != '' && inputs.updates }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          args=()
+          if [ "$BUILD_UPDATES" = "true" ]; then args+=(--updates); fi
+          if [ "$UNBUNDLED" = "true" ]; then args+=(--no-bundle); fi
+          node scripts/build-test-desktop.mjs --target ${{ matrix.target }} --version "$BUILD_VERSION" "${args[@]}"
+      - name: Validate macOS bundle
+        if: runner.os == 'macOS'
+        run: |
+          bundle_root=target
+          if ! rustc -vV | grep -qx 'host: ${{ matrix.target }}'; then
+            bundle_root="target/${{ matrix.target }}"
+          fi
+          app_bundle="$bundle_root/release/bundle/macos/Sideband.app"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app_bundle/Contents/Info.plist"
+          codesign -d --entitlements :- "$app_bundle"
+      # The unbundled Windows executable is not a release asset: publish downloads only
+      # sideband-test-*, which windows-signing uploads for Windows.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.packages.outputs.unbundled == 'true' && 'sideband-unbundled' || 'sideband-test' }}-${{ matrix.target }}-${{ github.sha }}
+          path: ${{ steps.packages.outputs.artifact_directory }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # Developer ID signing and notarization on a fresh runner: nothing from the build
+  # job runs here, its packages are only data. They are downloaded, checked, unpacked
+  # and compared with the archive listing before any secret is on the runner; the
+  # checkout and node are recorded then and rechecked after the keychain import.
+  # Nothing is mounted. System tools run by absolute path, the notarization key is a
+  # 0600 file, and no secret is on a command line except the .p12 password for
+  # `security import`; no build output ever runs here. This job signs whatever the
+  # build produced: the trust boundary is the build's inputs.
+  macos-signing:
+    name: macOS signing and notarization
+    needs: package
+    if: inputs.environment != '' && inputs.updates && contains(inputs.matrix, 'apple-darwin')
+    timeout-minutes: 60
+    runs-on: macos-15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Refuse refs other than main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Signing runs only from refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+        run: node scripts/release-gate.mjs environment "$RELEASE_ENVIRONMENT"
+      # Everything from here to the keychain import handles the build output with no
+      # secret on this runner. No step before the import may reference a secret
+      # (scripts/build-test-desktop.test.mjs checks this).
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sideband-test-*-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input
+      - name: Check and unpack the build output
+        run: node scripts/build-test-desktop.mjs unpack-macos "$RUNNER_TEMP/macos-input" "$RUNNER_TEMP/macos-unpacked.json"
+      - name: Record the checkout and node
+        id: baseline
+        run: |
+          changes=$(git status --porcelain --ignored --untracked-files=all)
+          if [ -n "$changes" ]; then
+            echo "::error::The checkout changed while handling the build output:"
+            echo "$changes"
+            exit 1
+          fi
+          node_bin=$(node -p 'process.execPath')
+          echo "node=$node_bin" >> "$GITHUB_OUTPUT"
+          echo "node_sha256=$(/usr/bin/shasum -a 256 "$node_bin" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Import signing certificate
+        id: keychain
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          NOTARIZATION_SET: ${{ secrets.APPLE_API_PRIVATE_KEY != '' }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            if [ "$NOTARIZATION_SET" = true ]; then
+              echo "::error::APPLE_API_* is set without APPLE_CERTIFICATE; an ad-hoc app cannot be notarized"
+              exit 1
+            fi
+            echo "No APPLE_CERTIFICATE; the macOS packages stay ad-hoc signed."
+            exit 0
+          fi
+          test -n "$APPLE_SIGNING_IDENTITY"
+          # Its own private directory, apart from the downloaded and unpacked packages.
+          umask 077
+          keychain_dir=$(mktemp -d "$RUNNER_TEMP/keychain.XXXXXX")
+          keychain="$keychain_dir/sideband.keychain-db"
+          echo "path=$keychain" >> "$GITHUB_OUTPUT"
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$keychain_dir/signing.p12"
+          trap 'rm -f "$keychain_dir/signing.p12"' EXIT
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$keychain_dir/signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\""
+      - name: Recheck, then sign, notarize and staple
+        if: steps.keychain.outputs.path != ''
+        env:
+          NODE_BIN: ${{ steps.baseline.outputs.node }}
+          NODE_SHA256: ${{ steps.baseline.outputs.node_sha256 }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_KEYCHAIN: ${{ steps.keychain.outputs.path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          changes=$(git status --porcelain --ignored --untracked-files=all)
+          if [ -n "$changes" ]; then
+            echo "::error::The checkout changed since it was recorded:"
+            echo "$changes"
+            exit 1
+          fi
+          if [ "$(/usr/bin/shasum -a 256 "$NODE_BIN" | cut -d' ' -f1)" != "$NODE_SHA256" ]; then
+            echo "::error::$NODE_BIN changed since it was recorded"
+            exit 1
+          fi
+          "$NODE_BIN" scripts/build-test-desktop.mjs sign-macos "$RUNNER_TEMP/macos-unpacked.json"
+      - name: Remove signing keychain and unpacked packages
+        if: always()
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.path }}
+        run: |
+          if [ -n "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+            rm -rf "$(dirname "$KEYCHAIN")"
+          fi
+          rm -rf "$RUNNER_TEMP"/sideband-unpack-* "$RUNNER_TEMP/macos-unpacked.json"
+      # Replace the ad-hoc packages, so the release uploads, checksums and attests the
+      # signed and stapled ones.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.keychain.outputs.path != '' && contains(inputs.matrix, 'aarch64-apple-darwin')
+        with:
+          name: sideband-test-aarch64-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input/sideband-test-aarch64-apple-darwin-${{ github.sha }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.keychain.outputs.path != '' && contains(inputs.matrix, 'x86_64-apple-darwin')
+        with:
+          name: sideband-test-x86_64-apple-darwin-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-input/sideband-test-x86_64-apple-darwin-${{ github.sha }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # Windows bundling and Authenticode signing on a fresh runner. The build job ran
+  # `tauri build --no-bundle` with no certificate; its executable is only data here.
+  # Before any secret is on the runner, `prepare-windows` checks the upload (exactly
+  # the executable, build-info.json and SHA256SUMS as regular files, matching
+  # checksums, this run's identity, an unsigned x64 image with Tauri's bundle-type
+  # marker), stages the executable in a fresh target directory, and fetches the two
+  # Tauri CLI tarballs pnpm-lock.yaml pins, checked against their integrity. The
+  # checkout and node are recorded then and rechecked after the import. No package
+  # manager, cargo build or dependency script runs in this job, and no build output is
+  # executed: `tauri bundle` runs `cargo metadata --no-deps`, `rustc -vV`, signtool and
+  # the NSIS and WiX tools it downloads and checks by hash. It patches and signs the
+  # executable, and signs the NSIS plugins, the uninstaller (NSIS `!uninstfinalize`)
+  # and both installers. The certificate is removed before the signatures are checked.
+  # As on macOS, this job signs whatever the build produced.
+  windows-signing:
+    name: Windows bundling and signing
+    needs: package
+    if: inputs.environment != '' && inputs.updates && contains(inputs.matrix, 'x86_64-pc-windows-msvc')
+    timeout-minutes: 45
+    runs-on: windows-2025
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Refuse refs other than main
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            Write-Output "::error::Signing runs only from refs/heads/main, not $env:GITHUB_REF"
+            exit 1
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No dependency cache: nothing is installed from the lockfile here.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+      - name: Check environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+        run: node scripts/release-gate.mjs environment $env:RELEASE_ENVIRONMENT
+      # For `cargo metadata --no-deps` and `rustc -vV`, which `tauri bundle` runs.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1" # Keep aligned with rust-toolchain.toml.
+      # Everything from here to the certificate import handles the build output with no
+      # secret on this runner. No step before the import may reference a secret
+      # (scripts/build-test-desktop.test.mjs checks this).
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sideband-unbundled-x86_64-pc-windows-msvc-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-input
+      - name: Check the build output and fetch the Tauri CLI
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/build-test-desktop.mjs prepare-windows "$env:RUNNER_TEMP/windows-input" "$env:RUNNER_TEMP/windows-state.json"
+      - name: Record the checkout and node
+        id: baseline
+        run: |
+          $changes = git status --porcelain --ignored --untracked-files=all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($changes) {
+            Write-Output "::error::The checkout changed while handling the build output:"
+            $changes
+            exit 1
+          }
+          $node = node -p 'process.execPath'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "node=$node" >> $env:GITHUB_OUTPUT
+          "node_sha256=$((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash)" >> $env:GITHUB_OUTPUT
+      # Into the current user's store, not exportable. Without WINDOWS_CERTIFICATE the
+      # installers are still bundled here, unsigned.
+      - name: Import Windows signing certificate
+        id: certificate
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Output "No WINDOWS_CERTIFICATE; the Windows installers are bundled unsigned."
+            exit 0
+          }
+          # Its own directory, apart from the downloaded build output and the staged files.
+          $dir = Join-Path $env:RUNNER_TEMP ('certificate-' + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          try {
+            $pfx = Join-Path $dir 'signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+            "imported=$(($imported | ForEach-Object Thumbprint) -join ',')" >> $env:GITHUB_OUTPUT
+            $signing = @($imported | Where-Object { $_.HasPrivateKey -and ($_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.3') })
+            if ($signing.Count -ne 1) { throw "The PFX must hold exactly one code-signing certificate with its key (found $($signing.Count))" }
+            "thumbprint=$($signing[0].Thumbprint)" >> $env:GITHUB_OUTPUT
+          } finally {
+            Remove-Item -LiteralPath $dir -Recurse -Force
+          }
+      - name: Recheck, then bundle and sign
+        env:
+          NODE_BIN: ${{ steps.baseline.outputs.node }}
+          NODE_SHA256: ${{ steps.baseline.outputs.node_sha256 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.certificate.outputs.thumbprint }}
+        run: |
+          $changes = git status --porcelain --ignored --untracked-files=all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($changes) {
+            Write-Output "::error::The checkout changed since it was recorded:"
+            $changes
+            exit 1
+          }
+          if ((Get-FileHash -LiteralPath $env:NODE_BIN -Algorithm SHA256).Hash -ne $env:NODE_SHA256) {
+            Write-Output "::error::$env:NODE_BIN changed since it was recorded"
+            exit 1
+          }
+          & $env:NODE_BIN scripts/build-test-desktop.mjs bundle-windows "$env:RUNNER_TEMP/windows-state.json" "$env:RUNNER_TEMP/windows-output"
+      - name: Remove the signing certificate and staged files
+        if: always()
+        env:
+          IMPORTED: ${{ steps.certificate.outputs.imported }}
+        run: |
+          foreach ($thumbprint in @($env:IMPORTED -split ',' | Where-Object { $_ })) {
+            $item = Get-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -ErrorAction SilentlyContinue
+            if ($item -and $item.HasPrivateKey) { Remove-Item -LiteralPath $item.PSPath -DeleteKey }
+            elseif ($item) { Remove-Item -LiteralPath $item.PSPath }
+          }
+          Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Directory | Where-Object { $_.Name -like 'sideband-bundle-*' -or $_.Name -like 'sideband-tauri-cli-*' } | Remove-Item -Recurse -Force
+      # With the key gone: both installers, and the executable from an administrative
+      # image of the MSI (nothing is installed or run). The NSIS uninstaller and the
+      # installed executable are checked on a test machine (docs/release.md, Windows).
+      - name: Verify the signatures with signtool
+        if: steps.certificate.outputs.thumbprint != ''
+        env:
+          THUMBPRINT: ${{ steps.certificate.outputs.thumbprint }}
+        run: |
+          $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signtool = Get-ChildItem -LiteralPath $kits -Recurse -Filter signtool.exe | Where-Object { $_.Directory.Name -eq 'x64' } | Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw 'signtool.exe was not found in the Windows SDK' }
+          $output = Join-Path $env:RUNNER_TEMP 'windows-output'
+          $installers = @(Get-ChildItem -LiteralPath $output -File | Where-Object { $_.Extension -in '.exe', '.msi' })
+          if ($installers.Count -ne 2) { throw "Expected two installers, found $($installers.Count)" }
+          $image = Join-Path $env:RUNNER_TEMP 'msi-image'
+          $msi = $installers | Where-Object Extension -eq '.msi'
+          $process = Start-Process msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$image`"") -Wait -PassThru
+          if ($process.ExitCode) { throw "msiexec /a failed with exit code $($process.ExitCode)" }
+          $binary = (Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'windows-state.json') | ConvertFrom-Json).binary
+          $apps = @(Get-ChildItem -LiteralPath $image -Recurse -File -Filter $binary)
+          if ($apps.Count -ne 1) { throw "Expected one $binary in the MSI, found $($apps.Count)" }
+          foreach ($file in $installers + $apps) {
+            & $signtool.FullName verify /pa /v $file.FullName
+            if ($LASTEXITCODE) { throw "signtool verify /pa failed for $($file.Name)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $env:THUMBPRINT) {
+              throw "$($file.Name): $($signature.Status), signed by $($signature.SignerCertificate.Thumbprint)"
+            }
+          }
+          Remove-Item -LiteralPath $image -Recurse -Force
+      # The release uploads, checksums and attests these, not the unbundled build.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sideband-test-x86_64-pc-windows-msvc-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-output
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

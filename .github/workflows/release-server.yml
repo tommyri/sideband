@@ -60,12 +60,16 @@ jobs:
           RELEASE_FORCE: ${{ inputs.force }}
         run: node scripts/release-gate.mjs server-plan
 
-  ci:
+  preflight:
     needs: gate
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/preflight.yml
+
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/check-platforms.yml
 
   build:
-    needs: gate
+    needs: [gate, preflight]
     timeout-minutes: 60
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}

@@ -114,6 +114,8 @@ Windows or Linux breakage or leaked secrets, so dispatch:
   the container and Compose smoke test, `check-deps`, `cargo deny` and the
   documentation checks. The release workflows also run it for the commit they
   publish.
+- **Frontend checks** (`check-frontend.yml`) for UI iteration. It runs the frontend
+  checks, production build and compact-window browser tests on one Linux runner.
 - **Public repository checks** (`public-repo.yml`) before pushing to the public
   repository and before every release: tracked-file hygiene and the Gitleaks scan.
 - **Desktop test builds** after packaging changes, and **Fuzz** after parser changes.

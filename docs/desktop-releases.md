@@ -49,3 +49,12 @@ this by default and requires the updater keypair; turn it off for manual test
 installers. See [packaging and updater setup](release.md) for keys, optional OS
 signing, platform feeds, and installed acceptance checks. Without OS credentials,
 Windows packages remain unsigned and macOS packages ad-hoc signed.
+
+## Comparing CI timings
+
+The Windows x64 and Apple Silicon 0.1.1 release took
+25m 33s from dispatch to publication and about 88 summed runner-minutes. The
+Windows packaging and workspace CI jobs took 19m 08s and 18m 53s respectively.
+Compare both job durations on a warm cache and after a `Cargo.lock` change before
+tuning the Windows cache. The dispatch-to-publication time also includes reviewer
+waits. [0.1.1 job and step timings](https://github.com/tommyri/sideband/actions/runs/45635515282)

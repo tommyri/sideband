@@ -57,7 +57,7 @@ measurements never auto-mark an audible test passed. Server operators can use
 Install the Rust toolchain pinned by rust-toolchain.toml, Node 26.13.0, pnpm 12.18.0,
 and the normal Tauri native build prerequisites for your OS. On macOS use
 Xcode Command Line Tools; Windows requires Visual Studio C++ build tools and
-WebView2. Linux build packages are listed in .github/workflows/test-desktop.yml.
+WebView2. Linux build packages are listed in `scripts/install-linux-deps.sh` under `desktop`.
 
 From the repository:
 

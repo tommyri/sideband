@@ -421,8 +421,26 @@ function jobText(workflow, name) {
 }
 const withoutComments = (text) => text.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n')
 
+test('desktop releases omit package tests only for targets in the same-run workspace test matrix', async () => {
+  const [release, platforms, standalone, packaging] = await Promise.all(
+    ['release-desktop', 'check-platforms', 'test-desktop', 'package-desktop'].map((name) =>
+      readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8')),
+  )
+  const workspace = jobText(platforms, 'check')
+  const targets = [...workspace.matchAll(/^\s+target: ([\w-]+)$/gm)].map((match) => match[1])
+  assert(targets.length > 0)
+  assert.match(workspace, /run: cargo test --locked --workspace/)
+  assert.match(jobText(release, 'ci'), /uses: .\/\.github\/workflows\/check-platforms.yml/)
+  const covered = jobText(release, 'build').match(/workspace_test_targets: '([^']+)'/)
+  assert(covered, 'release packaging must declare the targets already tested')
+  assert.deepEqual(JSON.parse(covered[1]).sort(), targets.sort())
+  assert(!jobText(standalone, 'build').includes('workspace_test_targets'))
+  assert.match(packaging, /workspace_test_targets:\n(?: {8}[^\n]+\n)*? {8}default: '\[\]'/)
+  assert(jobText(packaging, 'package').includes("!contains(fromJSON(inputs.workspace_test_targets), matrix.target)"))
+})
+
 test('no step of the macOS signing job before the keychain import can see a secret', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/test-desktop.yml', import.meta.url), 'utf8')
+  const workflow = await readFile(new URL('../.github/workflows/package-desktop.yml', import.meta.url), 'utf8')
   const job = jobText(workflow, 'macos-signing')
   const steps = job.split('\n      - ').slice(1)
   const at = (pattern) => steps.findIndex((step) => pattern.test(step))
@@ -754,7 +772,7 @@ test('a bad Windows upload leaves nothing behind and fetches nothing', async () 
 })
 
 test('the Windows certificate is only in a job that runs no install, build or dependency script', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/test-desktop.yml', import.meta.url), 'utf8')
+  const workflow = await readFile(new URL('../.github/workflows/package-desktop.yml', import.meta.url), 'utf8')
   const job = jobText(workflow, 'windows-signing')
   const steps = job.split('\n      - ').slice(1)
   const at = (pattern) => steps.findIndex((step) => pattern.test(step))

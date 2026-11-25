@@ -14,11 +14,17 @@ approved the publication.
 | --- | --- | --- |
 | Dispatch on | `main` only | a `server-vX.Y.Z` tag whose commit is on `main` |
 | Version | the `version` input (mutable during development) | from the tag; must equal the `ss-server` crate version |
-| Tested | `ci.yml` runs as a required job of the same run | `ci.yml` runs as a required job of the same run |
+| Tested | Frontend, dependency audit and platform CI in the release run | Frontend, dependency audit and platform CI in the release run |
 | Approval | `desktop-release` environment: when the run starts (`prepare`) and before signing and publishing (`publish`) | `server-release` environment, before `publish` |
 | Secrets | updater key only in the `sign` step of `publish`; Apple certificate and notarization key only in the `macos-signing` job; Windows certificate only in the `windows-signing` job (`desktop-signing`) | none; `GITHUB_TOKEN` only |
 | Overwrites | same-version assets are replaced; feeds never move backwards | an existing version tag or release fails unless `force` is set; `latest` only moves forward |
 | Provenance | `SHA256SUMS` per platform and a build provenance attestation for every asset | `SHA256SUMS` and attestations for the binaries and the image |
+
+After release preparation, the frontend checks and Rust dependency audit run in
+parallel. Both must pass before platform CI and packaging start. The workspace
+tests cover the desktop crate on Windows x64, macOS arm64 and Linux x64. An
+Intel Mac release runs the desktop tests on its Intel runner. Standalone desktop
+test builds run the desktop tests on every selected runner.
 
 Every job that publishes or reads a release secret starts with a ref check and
 then asks the GitHub API whether its environment has the expected policy

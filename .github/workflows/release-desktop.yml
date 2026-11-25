@@ -70,8 +70,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-gate.mjs environment desktop-release
-      - name: Release tooling tests
-        run: node --test scripts/build-test-desktop.test.mjs scripts/release-desktop.test.mjs scripts/release-gate.test.mjs
+      - name: Release gate tests
+        run: node --test scripts/release-gate.test.mjs
       - name: Validate version and selected platforms
         id: selection
         env:
@@ -86,18 +86,23 @@ jobs:
           RELEASE_LINUX: ${{ inputs.linux }}
         run: node scripts/release-desktop.mjs select
 
-  ci:
+  preflight:
     needs: prepare
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/preflight.yml
+
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/check-platforms.yml
 
   build:
-    needs: prepare
-    uses: ./.github/workflows/test-desktop.yml
+    needs: [prepare, preflight]
+    uses: ./.github/workflows/package-desktop.yml
     # actions: read lets the signing jobs check their environment's protection.
     permissions:
       contents: read
       actions: read
     with:
+      workspace_test_targets: '["x86_64-unknown-linux-gnu","aarch64-apple-darwin","x86_64-pc-windows-msvc"]'
       matrix: ${{ needs.prepare.outputs.matrix }}
       version: ${{ inputs.version }}
       updates: ${{ inputs.updates }}
