@@ -1,0 +1,3 @@
+# Synthetic App Store Connect identifiers and PEM text in the notarization test fixture.
+3de60685e08b6d332ecf40427cf7b5f014f8d00e:scripts/build-test-desktop.test.mjs:generic-api-key:117
+3de60685e08b6d332ecf40427cf7b5f014f8d00e:scripts/build-test-desktop.test.mjs:private-key:118
