@@ -15,8 +15,8 @@ approved the publication.
 | Dispatch on | `main` only | a `server-vX.Y.Z` tag whose commit is on `main` |
 | Version | the `version` input (mutable during development) | from the tag; must equal the `ss-server` crate version |
 | Tested | Frontend, dependency audit and platform CI in the release run | Frontend, dependency audit and platform CI in the release run |
-| Approval | `desktop-release` environment: when the run starts (`prepare`) and before signing and publishing (`publish`) | `server-release` environment, before `publish` |
-| Secrets | updater key only in the `sign` step of `publish`; Apple certificate and notarization key only in the `macos-signing` job; Windows certificate only in the `windows-signing` job (`desktop-signing`) | none; `GITHUB_TOKEN` only |
+| Approval | Development installers require two reviews in `desktop-release`. Matched alphas require one review in `publish-alpha`. | `server-release` environment, before `publish` |
+| Secrets | The publication job uses the updater key in **Sign updater payloads**. The `desktop-signing` environment supplies Apple credentials to `macos-signing` and the Windows certificate to `windows-signing`. | none; `GITHUB_TOKEN` only |
 | Overwrites | same-version assets are replaced; feeds never move backwards | an existing version tag or release fails unless `force` is set; `latest` only moves forward |
 | Provenance | `SHA256SUMS` per platform and a build provenance attestation for every asset | `SHA256SUMS` and attestations for the binaries and the image |
 
@@ -33,7 +33,8 @@ are set up, those jobs fail before any secret is read.
 
 These checks live in workflow files, and a branch can change its own workflow
 files. The boundary is the environment: its secrets are given only to jobs on
-the allowed ref, after approval. The checks make the trusted workflow on `main`
+the allowed ref, and environments with required reviewers wait for approval.
+The checks make the trusted workflow on `main`
 fail closed when that configuration is missing or loosened. Two limits remain
 and are not fixed by any workflow file:
 
@@ -60,8 +61,8 @@ workflow.
      branch rule `main`. No other rules.
    - Environment secrets: `TAURI_SIGNING_PRIVATE_KEY`,
      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (see below).
-2. **New environment `desktop-signing`.** No reviewer (the run was approved
-   at `prepare`). Selected branches and tags: branch `main` only. Environment
+2. **New environment `desktop-signing`.** No reviewer. Platform signing runs during
+   packaging on `main`. Selected branches and tags: branch `main` only. Environment
    secrets, only when you configure OS signing (see
    [operating-system signing](#optional-operating-system-signing)):
    `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
@@ -95,7 +96,7 @@ workflow.
    each must show exactly one rule: `branch:main`, `branch:main` and
    `tag:server-v*`.
 7. Dispatch **Release desktop installers** on any branch other than `main`.
-   It must fail in `prepare` (environment branch policy, or the ref check)
+   It must fail in `approve-desktop-build` (environment branch policy, or the ref check)
    without running any step that reads a secret. Note the run URL in T-097.
 
 The existing `build-<run>-amd64`/`-arm64` tags in
@@ -179,7 +180,7 @@ updater need one manual installation of an update-enabled build.
 ## Cut a development release
 
 Dispatch from `main`, then approve twice in the run page's **Review deployments**:
-once for `prepare` (starts the builds and CI) and once for `publish` (signs and
+once for `approve-desktop-build` (starts the builds and CI) and once for `publish` (signs and
 uploads, after every build and CI job passed). Select a version, OSes, optional
 Intel Mac runner, and whether to enable signed updates. Windows produces NSIS `.exe` and WiX `.msi`; macOS produces `.dmg`, app
 ZIP and (for updates) `.app.tar.gz`; Linux produces `.deb` and `.AppImage`.
@@ -222,7 +223,11 @@ gh workflow run release-alpha.yml --ref main -f version=0.1.4-alpha.1
 
 The workflow runs preflight and platform CI once, packages Windows x64 and
 Apple Silicon installers, and smoke-tests the Linux amd64 and arm64 images.
-The protected `desktop-release` environment approves publication from main.
+When those jobs pass, open **Review deployments** and approve **desktop-release**
+once for **Publish alpha installers, update feeds and Docker image**. This job
+signs and verifies the desktop update payloads, pushes and attests the versioned
+Docker image, then publishes the installers and updates the alpha feeds.
+If a build or smoke test fails, the run stops before requesting approval.
 The image uses only the exact alpha tag. The GitHub prerelease and both signed
 update manifests reference the same commit. Reruns can finish a draft and
 repair a feed. Use a fresh alpha number for changes to published binaries.

@@ -1,0 +1,88 @@
+name: Check and build desktop release
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      alpha:
+        type: boolean
+        default: false
+      updates:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: true
+      macos:
+        type: boolean
+        default: true
+      macos_intel:
+        type: boolean
+        default: false
+      linux:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.selection.outputs.matrix }}
+    steps:
+      - name: Require main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release gate tests
+        run: node --test scripts/release-gate.test.mjs
+      - name: Validate version and selected platforms
+        id: selection
+        env:
+          RELEASE_ALPHA: ${{ inputs.alpha || false }}
+          RELEASE_UPDATES: ${{ inputs.updates }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_WINDOWS: ${{ inputs.windows }}
+          RELEASE_MACOS: ${{ inputs.macos }}
+          RELEASE_MACOS_INTEL: ${{ inputs.macos_intel }}
+          RELEASE_LINUX: ${{ inputs.linux }}
+        run: node scripts/release-desktop.mjs select
+
+  preflight:
+    needs: prepare
+    uses: ./.github/workflows/preflight.yml
+
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/check-platforms.yml
+
+  build:
+    needs: [prepare, preflight]
+    uses: ./.github/workflows/package-desktop.yml
+    # actions: read lets the signing jobs check their environment's protection.
+    permissions:
+      contents: read
+      actions: read
+    with:
+      workspace_test_targets: '["x86_64-unknown-linux-gnu","aarch64-apple-darwin","x86_64-pc-windows-msvc"]'
+      matrix: ${{ needs.prepare.outputs.matrix }}
+      version: ${{ inputs.version }}
+      updates: ${{ inputs.updates }}
+      # OS code-signing and notarization credentials, if configured, for the
+      # macos-signing and windows-signing jobs only. No updater key.
+      environment: ${{ inputs.updates && 'desktop-signing' || '' }}
+
+  server-build:
+    if: inputs.alpha
+    needs: preflight
+    uses: ./.github/workflows/package-server.yml
+    with:
+      version: ${{ inputs.version }}

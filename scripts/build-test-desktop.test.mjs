@@ -423,7 +423,7 @@ const withoutComments = (text) => text.split('\n').filter((line) => !/^\s*#/.tes
 
 test('desktop releases omit package tests only for targets in the same-run workspace test matrix', async () => {
   const [release, platforms, standalone, packaging] = await Promise.all(
-    ['release-desktop', 'check-platforms', 'test-desktop', 'package-desktop'].map((name) =>
+    ['build-desktop-release', 'check-platforms', 'test-desktop', 'package-desktop'].map((name) =>
       readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8')),
   )
   const workspace = jobText(platforms, 'check')
@@ -437,6 +437,36 @@ test('desktop releases omit package tests only for targets in the same-run works
   assert(!jobText(standalone, 'build').includes('workspace_test_targets'))
   assert.match(packaging, /workspace_test_targets:\n(?: {8}[^\n]+\n)*? {8}default: '\[\]'/)
   assert(jobText(packaging, 'package').includes("!contains(fromJSON(inputs.workspace_test_targets), matrix.target)"))
+})
+
+test('alpha builds run before one protected job publishes the image, installers and feeds', async () => {
+  const [release, builds] = await Promise.all(['release-desktop', 'build-desktop-release'].map(name =>
+    readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8')))
+  const build = jobText(release, 'build-alpha')
+  assert.match(build, /if: inputs\.alpha/)
+  assert.doesNotMatch(build, /needs:|environment:/)
+  assert.match(build, /uses: \.\/\.github\/workflows\/build-desktop-release\.yml/)
+  assert.doesNotMatch(builds, /environment: desktop-release|TAURI_SIGNING_PRIVATE_KEY/)
+
+  const alpha = jobText(release, 'publish-alpha')
+  assert.match(alpha, /needs: build-alpha/)
+  assert.match(alpha, /environment: desktop-release/)
+  assert.match(alpha, /packages: write/)
+  assert.match(alpha, /steps: \*publish-steps/)
+  const desktop = jobText(release, 'publish')
+  const jobNames = [...release.split('\njobs:\n')[1].matchAll(/^  ([\w-]+):$/gm)].map(match => match[1])
+  const alphaReviews = jobNames.filter(name => {
+    const job = jobText(release, name)
+    return job.includes('environment: desktop-release') && !job.includes('!inputs.alpha')
+  })
+  assert.deepEqual(alphaReviews, ['publish-alpha'])
+  assert.match(jobText(release, 'approve-desktop-build'), /!inputs\.alpha/)
+  assert.match(desktop, /!inputs\.alpha/)
+  assert.doesNotMatch(desktop, /packages: write/)
+  const steps = desktop.split('steps: &publish-steps')[1]
+  const order = ['Sign updater payloads', 'Verify and name release assets', 'Publish versioned alpha image', 'Attest image', 'Publish installers and update feeds']
+  const indices = order.map(name => steps.indexOf(`name: ${name}\n`))
+  assert(indices.every((n, i) => n >= 0 && (i === 0 || n > indices[i - 1])))
 })
 
 test('no step of the macOS signing job before the keychain import can see a secret', async () => {

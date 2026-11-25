@@ -29,7 +29,7 @@ gh workflow run release-desktop.yml --ref main \
   -f version=0.0.1 -f updates=false -f windows=true -f macos=false -f linux=false
 ```
 
-Matched Mac, Windows and server alphas use the [Publish alpha workflow](release.md#publish-a-matched-alpha) and a dedicated signed updater feed.
+Matched Mac, Windows and server alphas build on dispatch. One approval publishes the installers, Docker image and dedicated signed update feeds. See [Publish a matched alpha](release.md#publish-a-matched-alpha).
 
 ## Reusing a version during development
 

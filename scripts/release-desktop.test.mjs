@@ -46,12 +46,10 @@ test('updater signatures are checked against the public key and the signed versi
   assert.throws(() => verifyUpdaterSignature({ bytes, signature: b64('garbage'), publicKey: other.publicKey, version: '0.1.0' }), /signature/)
 })
 
-test('prepare sees only whether the signing key is set', () => {
+test('release selection validates the public updater configuration without signing secrets', () => {
   const env = { RELEASE_VERSION: '0.1.0', RELEASE_MACOS: 'true', RELEASE_UPDATES: 'true', GITHUB_REPOSITORY: 'owner/repo', TAURI_UPDATER_PUBLIC_KEY: cli.publicKey }
-  assert.throws(() => selectRelease(env), /signing key/)
-  assert.throws(() => selectRelease({ ...env, TAURI_SIGNING_KEY_CONFIGURED: 'false' }), /signing key/)
-  assert.deepEqual(selectRelease({ ...env, TAURI_SIGNING_KEY_CONFIGURED: 'true' }).include.map(x => x.target), ['aarch64-apple-darwin'])
-  assert.throws(() => selectRelease({ ...env, TAURI_SIGNING_KEY_CONFIGURED: 'true', TAURI_UPDATER_PUBLIC_KEY: 'x' }), /public key/)
+  assert.deepEqual(selectRelease(env).include.map(x => x.target), ['aarch64-apple-darwin'])
+  assert.throws(() => selectRelease({ ...env, TAURI_UPDATER_PUBLIC_KEY: 'x' }), /public key/)
   assert.equal(selectRelease({ ...env, RELEASE_UPDATES: 'false', TAURI_UPDATER_PUBLIC_KEY: '' }).include.length, 1)
 })
 

@@ -1,5 +1,5 @@
 // Release steps, each run as its own workflow step:
-//   select          prepare job: inputs and platform matrix (sees only whether the key is set)
+//   select          prepare job: validate public inputs and select the platform matrix
 //   sign INPUT      publish job: the only step given the updater key
 //   stage INPUT OUT publish job: verify signatures and checksums, name the assets
 //   publish OUT     publish job: upload the release, then the update feeds
@@ -39,8 +39,6 @@ export function selectRelease(env) {
     throw new Error('An alpha requires signed updates on both Mac and Windows')
   }
   if (env.RELEASE_UPDATES === 'true') {
-    // Fail before spending runner time; the key itself is given only to the signing step.
-    if (env.TAURI_SIGNING_KEY_CONFIGURED !== 'true') throw new Error('Signed updates need the updater signing key (secret TAURI_SIGNING_PRIVATE_KEY in the desktop-release environment)')
     for (const entry of matrix.include) updateConfiguration(env, entry.target, env.RELEASE_VERSION)
   }
   return matrix
