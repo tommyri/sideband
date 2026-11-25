@@ -280,6 +280,157 @@ async fn profile_registration_obeys_closed_registration_and_existing_member_bans
     owner.close().await;
 }
 
+fn backup_keys(world: &World, device: u8) -> ss_client_core::profile::ProfileCredentials {
+    ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[device; 32],
+        &world.address.id().unwrap(),
+        String::new(),
+        String::new(),
+    )
+    .unwrap()
+}
+
+async fn recover_profile(
+    world: &World,
+    device: u8,
+    member: Id,
+    grant: v1::RecoveryGrant,
+) -> Result<Client, Error> {
+    Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(
+            backup_keys(world, device).recovering(member, grant),
+        )),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+}
+
+fn assert_profile_refused(result: Result<Client, Error>, expected: v1::ErrorCode) {
+    let Some(error) = result.err() else {
+        panic!("expected profile refusal");
+    };
+    assert!(
+        matches!(&error,Error::Server{code,..} if *code==i32::from(expected)),
+        "unexpected result {error}"
+    );
+}
+
+#[tokio::test]
+async fn profile_recovery_authorizes_one_new_device_and_respects_revocation() {
+    let world = World::new().await;
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let user = own_id(&first);
+    first.close().await;
+    let grant = backup_keys(&world, 2).recovery_grant(user);
+    let source = auth::list_profile_devices(&world.pool, "profile_owner")
+        .await
+        .unwrap()[0]
+        .id;
+    let new = recover_profile(&world, 3, user, grant.clone())
+        .await
+        .unwrap();
+    assert_eq!(own_id(&new), user);
+    let general = named(&new.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        new.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    new.close().await;
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "profile_owner")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    auth::revoke_profile_device(&world.pool, "profile_owner", source)
+        .await
+        .unwrap();
+    // An enrolled replacement is independent of its original device. An old
+    // backup cannot authorize a third device once its source is removed.
+    recover_profile(&world, 3, user, grant.clone())
+        .await
+        .unwrap()
+        .close()
+        .await;
+    assert_profile_refused(
+        recover_profile(&world, 4, user, grant).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    let fresh = backup_keys(&world, 3).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 2, user, fresh).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+}
+
+#[tokio::test]
+async fn profile_recovery_and_recorded_login_never_register_on_a_reset_server() {
+    // The restored file names a member id that this current server has never seen.
+    let world = World::new().await;
+    let user = Id::generate();
+    let source = backup_keys(&world, 2).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 3, user, source).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    let keys = ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[2; 32],
+        &world.address.id().unwrap(),
+        "old_member".into(),
+        world.invite.clone(),
+    )
+    .unwrap()
+    .existing_member(user);
+    let refused = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(keys)),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await;
+    assert_profile_refused(refused, v1::ErrorCode::Unauthenticated);
+    // Even with a valid owner invite, both paths left the bootstrap invitation unconsumed.
+    let owner = world.owner().await;
+    assert_ne!(own_id(&owner), user);
+    owner.close().await;
+}
+
+#[tokio::test]
+async fn profile_recovery_rejects_other_members_an_unknown_source_and_bans() {
+    let world = World::new().await;
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let user = own_id(&first);
+    first.close().await;
+    let grant = backup_keys(&world, 2).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 3, Id::generate(), grant.clone()).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    assert_profile_refused(
+        recover_profile(&world, 3, user, backup_keys(&world, 9).recovery_grant(user)).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    ss_server::handlers::ban_account(&world.pool, "profile_owner", Some("test ban"))
+        .await
+        .unwrap();
+    assert_profile_refused(
+        recover_profile(&world, 3, user, grant).await,
+        v1::ErrorCode::Banned,
+    );
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "profile_owner")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn snapshot_commands_events_persisted_session_and_drop() {
     let world = World::new().await;

@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config
         .bytes(["."])
+        .boxed(".socialspeak.v1.RecoverProfile.proof")
         .file_descriptor_set_path(&descriptors)
         .protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     config.compile_protos(&protos, &["proto"])?;

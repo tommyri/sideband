@@ -19,6 +19,8 @@ pub struct ProfileCredentials {
     device: Ed25519KeyPair,
     username: String,
     invite_code: String,
+    recovery: Option<v1::RecoveryGrant>,
+    expected_user: Option<ss_core::Id>,
 }
 
 impl ProfileCredentials {
@@ -37,7 +39,61 @@ impl ProfileCredentials {
             device: scoped_key(device_root, b"Sideband/v1/device\0", server)?,
             username,
             invite_code,
+            recovery: None,
+            expected_user: None,
         })
+    }
+
+    /// Delegation stored only in a user-exported encrypted backup.
+    pub fn recovery_grant(&self, user: ss_core::Id) -> v1::RecoveryGrant {
+        let transcript = ss_proto::profile::recovery_authorization(
+            self.membership.public_key().as_ref(),
+            &user.as_bytes(),
+        );
+        v1::RecoveryGrant {
+            source: self.device.public_key().as_ref().to_vec().into(),
+            authorization: self.device.sign(&transcript).as_ref().to_vec().into(),
+        }
+    }
+
+    /// Require an existing membership and its backup delegation on the next sign-in.
+    #[must_use]
+    pub fn recovering(mut self, user: ss_core::Id, grant: v1::RecoveryGrant) -> Self {
+        self.expected_user = Some(user);
+        self.recovery = Some(grant);
+        self
+    }
+
+    /// Sign in to an already-recorded account. Registration is forbidden.
+    #[must_use]
+    pub fn existing_member(mut self, user: ss_core::Id) -> Self {
+        self.expected_user = Some(user);
+        self
+    }
+
+    pub(crate) fn expected_user(&self) -> Option<ss_core::Id> {
+        self.expected_user
+    }
+
+    pub(crate) fn hello(
+        mut self,
+        server: &ServerId,
+        binding: &[u8; 32],
+    ) -> Result<v1::hello::Auth, Error> {
+        let recovery = self.recovery.take().zip(self.expected_user);
+        let known = self.expected_user.is_some();
+        let mut proof = self.sign(server, binding)?;
+        if let Some((grant, user)) = recovery {
+            return Ok(v1::hello::Auth::RecoverProfile(v1::RecoverProfile {
+                proof: Some(Box::new(proof)),
+                user_id: user.as_bytes().to_vec().into(),
+                grant: Some(grant),
+            }));
+        }
+        if known {
+            proof.register = None;
+        }
+        Ok(v1::hello::Auth::Profile(proof))
     }
 
     pub(crate) fn sign(

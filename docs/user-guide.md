@@ -56,9 +56,22 @@ host’s invite code if the server asks for one. On your next visit, use your
 saved session or choose **Use a local profile** to sign in again. Your roles
 and messages belong to your membership on that server.
 
-Keep this installation and its credential store if you need to return with the
-same profile. Pairing another computer, linking an existing password account
-and restoring a backup are planned separately.
+### Back up your profile
+
+In personal settings, open **Manage backup** and choose **Save backup file**.
+A private iCloud Drive or Google Drive folder that you can open without this
+computer is a good place for the file. A USB drive or a password manager that
+accepts attachments also works. Sideband then shows 12 words that open this
+particular file. Keep those words in your password manager or on paper. If the
+file is in your password manager, keep the words on paper. Choose **I saved my
+key** once you have put them somewhere safe.
+
+On a fresh Mac or Windows installation, choose **Restore from backup**. Open
+the file and enter the 12 words in order. You can restore your profile and
+server list offline. When you reconnect, each server checks access and confirms
+the new device. If a server has revoked the device that made the backup, contact
+its host about access. Save a new backup after adding memberships on a trusted
+computer.
 
 ### After joining
 

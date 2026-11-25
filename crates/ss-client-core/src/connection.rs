@@ -270,6 +270,10 @@ impl Client {
     ) -> Result<Self, Error> {
         let key = address.id()?;
         let bot = matches!(credentials, Credentials::Bot(_));
+        let expected_member = match &credentials {
+            Credentials::Profile(profile) => profile.expected_user(),
+            _ => None,
+        };
         let credential = match credentials {
             Credentials::Saved => {
                 let storage = storage.clone();
@@ -288,6 +292,16 @@ impl Client {
             Credentials::Profile(keys) => Handshake::Profile(keys),
         };
         let (live, welcome) = establish(&address, pins.clone(), credential).await?;
+        if let Some(member) = expected_member
+            && welcome
+                .user
+                .as_ref()
+                .is_none_or(|user| user.id.as_ref() != member.as_bytes())
+        {
+            return Err(Error::Protocol(
+                "the server returned a different profile membership",
+            ));
+        }
         let store = StateStore::default();
         store.welcome(&welcome)?;
         if !bot {
@@ -352,6 +366,10 @@ impl Client {
     /// The configured server address.
     pub fn address(&self) -> &ServerAddr {
         &self.address
+    }
+    /// Trust decision from the authenticated transport for this session.
+    pub fn verified_trust(&self) -> Option<ss_net::pins::TrustPolicy> {
+        self.auth.read().as_ref().map(|auth| auth.trust)
     }
     /// Close and wait for the owning worker to release its resources.
     pub async fn close(mut self) {
@@ -479,7 +497,7 @@ async fn establish(
                     .quic()
                     .export_keying_material(&mut binding, ss_proto::profile::EXPORTER_LABEL, &[])
                     .map_err(|_| Error::Protocol("profile TLS channel binding unavailable"))?;
-                v1::hello::Auth::Profile(keys.sign(&address.id()?, &binding)?)
+                keys.hello(&address.id()?, &binding)?
             }
         };
         let mut live = Live {

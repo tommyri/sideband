@@ -44,12 +44,14 @@ impl Auth {
         let name = device_name(hello);
         let mut guard = self.pool.write().await;
         let mut tx = guard.begin().await.map_err(db::Error::from)?;
-        // The left join distinguishes an unknown membership from a known
-        // membership whose device is new or revoked. Only the former may join.
-        let existing: Option<(Id, Option<Id>)> = sqlx::query_as(
-            "SELECT m.user_id, d.id FROM profile_memberships m
+        let recovery = match &hello.auth {
+            Some(v1::hello::Auth::RecoverProfile(recover)) => Some(recover),
+            _ => None,
+        };
+        let existing: Option<(Id, Option<Id>, Option<i64>)> = sqlx::query_as(
+            "SELECT m.user_id, d.id, d.revoked_at FROM profile_memberships m
              LEFT JOIN profile_devices d ON d.membership_key = m.membership_key
-               AND d.device_key = ? AND d.revoked_at IS NULL
+               AND d.device_key = ?
              WHERE m.membership_key = ?",
         )
         .bind(auth.device_key.as_ref())
@@ -57,9 +59,22 @@ impl Auth {
         .fetch_optional(&mut *tx)
         .await
         .map_err(db::Error::from)?;
+        if let Some(recover) = recovery
+            && existing.is_none_or(|(user, _, _)| recover.user_id.as_ref() != user.as_bytes())
+        {
+            return Err(Error::InvalidProfile);
+        }
         let (user, device, created) = match existing {
-            Some((user, Some(device))) => (load_person(&mut tx, user).await?, device, false),
-            Some((_, None)) => return Err(Error::InvalidProfile),
+            Some((user, Some(device), None)) => (load_person(&mut tx, user).await?, device, false),
+            Some((user, None, None)) => {
+                let recover = recovery.ok_or(Error::InvalidProfile)?;
+                let member = load_person(&mut tx, user).await?;
+                // The source can be offline. A revoked source cannot authorize a new device.
+                verify_recovery(&mut tx, auth, recover).await?;
+                let device = insert_device(&mut tx, auth, &name).await?;
+                (member, device, false)
+            }
+            Some(_) => return Err(Error::InvalidProfile),
             None => {
                 let register = auth.register.as_ref().ok_or(Error::InvalidProfile)?;
                 let (user, device) = enroll(&mut tx, auth, register, &name).await?;
@@ -82,6 +97,26 @@ fn verify(key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Error> {
     UnparsedPublicKey::new(&ED25519, key)
         .verify(message, signature)
         .map_err(|_| Error::InvalidProfile)
+}
+
+async fn verify_recovery(
+    conn: &mut SqliteConnection,
+    auth: &v1::ProfileAuth,
+    recover: &v1::RecoverProfile,
+) -> Result<(), Error> {
+    // profile_hello already validated this membership signature on the new key.
+    auth.register.as_ref().ok_or(Error::InvalidProfile)?;
+    let transcript = profile::recovery_authorization(&auth.membership_key, &recover.user_id);
+    let grant = recover.grant.as_ref().ok_or(Error::InvalidProfile)?;
+    verify(&grant.source, &transcript, &grant.authorization)?;
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM profile_devices WHERE membership_key = ? AND device_key = ? AND revoked_at IS NULL)"
+    ).bind(auth.membership_key.as_ref()).bind(grant.source.as_ref()).fetch_one(&mut *conn).await.map_err(db::Error::from)?;
+    if active {
+        Ok(())
+    } else {
+        Err(Error::InvalidProfile)
+    }
 }
 
 async fn enroll(
@@ -107,6 +142,15 @@ async fn enroll(
         .execute(&mut *conn)
         .await
         .map_err(db::Error::from)?;
+    let device = insert_device(conn, auth, device_name).await?;
+    Ok((user, device))
+}
+
+async fn insert_device(
+    conn: &mut SqliteConnection,
+    auth: &v1::ProfileAuth,
+    device_name: &str,
+) -> Result<Id, Error> {
     let device = Id::generate();
     sqlx::query(
         "INSERT INTO profile_devices (id, device_key, membership_key, device_name) VALUES (?, ?, ?, ?)",
@@ -121,7 +165,7 @@ async fn enroll(
         db::Error::Conflict => Error::InvalidProfile,
         other => other.into(),
     })?;
-    Ok((user, device))
+    Ok(device)
 }
 
 /// A currently enrolled device on a local membership.

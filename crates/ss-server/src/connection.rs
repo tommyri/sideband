@@ -466,7 +466,12 @@ impl Server {
                 wait,
             )));
         }
-        let outcome = if let Some(v1::hello::Auth::Profile(profile)) = &hello.auth {
+        let profile = match &hello.auth {
+            Some(v1::hello::Auth::Profile(auth)) => Some(auth),
+            Some(v1::hello::Auth::RecoverProfile(recover)) => recover.proof.as_deref(),
+            _ => None,
+        };
+        let outcome = if let Some(profile) = profile {
             let mut binding = [0; 32];
             if quic
                 .export_keying_material(&mut binding, ss_proto::profile::EXPORTER_LABEL, &[])
@@ -1648,6 +1653,15 @@ fn scrub(hello: &mut v1::Hello) {
         Some(v1::hello::Auth::Login(login)) => login.password.zeroize(),
         Some(v1::hello::Auth::Profile(profile)) => {
             if let Some(register) = &mut profile.register {
+                register.invite_code.zeroize();
+            }
+        }
+        Some(v1::hello::Auth::RecoverProfile(recover)) => {
+            if let Some(register) = recover
+                .proof
+                .as_mut()
+                .and_then(|proof| proof.register.as_mut())
+            {
                 register.invite_code.zeroize();
             }
         }

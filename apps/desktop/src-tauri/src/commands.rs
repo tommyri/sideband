@@ -270,6 +270,12 @@ pub async fn connect(
     )
     .await
     .map_err(api_error)?;
+    if input.mode == "profile"
+        && let Err(error) = crate::profile::catalog::remember_client(&state, &client).await
+    {
+        client.close().await;
+        return Err(error);
+    }
     let server_id = address.id().map_err(api_error)?.as_str().to_owned();
     let label = client
         .state()

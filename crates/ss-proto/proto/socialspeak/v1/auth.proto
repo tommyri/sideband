@@ -51,6 +51,24 @@ message ProfileRegister {
   bytes membership_signature = 3;
 }
 
+// Offline approval by a device that belonged to this membership when a backup was made.
+message RecoveryGrant {
+  // Enrolled source device's server-scoped public key.
+  bytes source = 1;
+  // Source signature over the membership key and local member id.
+  bytes authorization = 2;
+}
+
+// Recover an existing membership on a fresh device, or sign in again after enrollment.
+message RecoverProfile {
+  // Connection-bound proof of possession by the replacement device.
+  ProfileAuth proof = 1;
+  // Local account id recorded by the backed-up client.
+  bytes user_id = 2;
+  // Authorization from an enrolled source device, retained through offline restores.
+  RecoveryGrant grant = 3;
+}
+
 // First message on the control stream.
 message Hello {
   // Must be `PROTOCOL_VERSION` (1) for this schema.
@@ -76,6 +94,8 @@ message Hello {
     string bot_token = 9;
     // Connection-bound, server-scoped profile credential.
     ProfileAuth profile = 10;
+    // Enroll a replacement for an existing profile membership.
+    RecoverProfile recover_profile = 12;
   }
 }
 
