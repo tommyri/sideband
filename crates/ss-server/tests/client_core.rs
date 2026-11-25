@@ -1255,30 +1255,32 @@ async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
     let flood = futures::future::join_all(senders.iter().enumerate().map(|(who, sender)| {
         let mention = &mention;
         async move {
-            let mut ids = Vec::new();
             for index in 0..EACH {
                 let content = format!("{mention} ping {who}.{index}");
-                ids.push(sender.send_message(post(general, &content)).await.unwrap());
+                sender.send_message(post(general, &content)).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(3)).await;
             }
-            ids
         }
     }));
     let sign_ins = futures::future::join_all((0..SESSIONS).map(|index| async move {
         tokio::time::sleep(Duration::from_millis(4 * index)).await;
         saved().await.unwrap()
     }));
-    let (ids, sessions) = tokio::join!(flood, sign_ins);
-    let ids: Vec<_> = ids.into_iter().flatten().map(wire).collect();
+    let (_, sessions) = tokio::join!(flood, sign_ins);
+    // Late sessions may know every mention from their snapshot. Send a
+    // marker after sign-in so every session has a live event to wait for.
+    let marker = wire(
+        owner
+            .send_message(post(general, "after sign-in"))
+            .await
+            .unwrap(),
+    );
     for session in &sessions {
         let mut events = session.subscribe();
-        // A session that signed in after a message only knows it from the
-        // snapshot count; wait for the newest live one.
-        let newest = ids.iter().max().unwrap().clone();
         until(session, &mut events, |s| {
             s.messages
                 .get(&general)
-                .is_some_and(|cache| cache.ordered().iter().any(|m| m.id == newest))
+                .is_some_and(|cache| cache.ordered().iter().any(|m| m.id == marker))
         })
         .await;
     }
@@ -1291,7 +1293,7 @@ async fn mentions_stored_while_a_session_signs_in_are_counted_once() {
             .map(|read| read.mention_count)
     };
     let truth = count(&saved().await.unwrap());
-    assert_eq!(truth, Some(u32::try_from(ids.len()).unwrap()));
+    assert_eq!(truth, Some(u32::try_from(SENDERS * EACH).unwrap()));
     let counts: Vec<_> = sessions.iter().map(count).collect();
     assert!(
         counts.iter().all(|count| *count == truth),
