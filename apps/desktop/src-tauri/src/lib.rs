@@ -1,3 +1,4 @@
+mod account_link;
 mod admin;
 mod attachments;
 mod audio;
@@ -15,6 +16,7 @@ mod moderation_admin;
 mod notifications;
 mod onboarding;
 mod persistence;
+mod profile;
 mod role_admin;
 mod search;
 mod server_settings;
@@ -39,99 +41,121 @@ use tauri::{
 
 pub fn run() {
     ss_net::tls::install_default_crypto_provider();
-    let mut builder = tauri::Builder::default();
+    let mut builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
     if updates::enabled() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
     builder
         .manage(updates::Pending::default())
+        .manage(profile::backup::PendingBackup::default())
+        .manage(profile::pairing::Pairings::default())
         .manage(viewer::Viewers::default())
         .manage(stream::Sharing::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![
-            stream::screen_sources,
-            stream::screen_preview,
-            stream::screen_snapshot,
-            stream::start_screen_share,
-            stream::stop_screen_share,
-            viewer::open_stream_viewer,
-            viewer::stream_viewers,
-            updates::check_update,
-            updates::install_update,
-            notifications::notification_preferences,
-            notifications::save_notification_preferences,
-            notifications::test_notification,
-            diagnostics::diagnostics_snapshot,
-            testing::test_build_identity,
-            testing::export_test_report,
-            commands::connect,
-            commands::approve_fingerprint,
-            commands::disconnect,
-            commands::get_snapshot,
-            commands::send_message,
-            commands::create_channel,
-            commands::load_history,
-            chat::chat_snapshot,
-            chat::chat_action,
-            chat::message_context,
-            chat::load_newer,
-            chat::open_chat_link,
-            admin::invite_page,
-            moderation_admin::get_moderation_page,
-            moderation_admin::moderate_member,
-            server_settings::get_server_settings,
-            server_settings::save_server_settings,
-            server_settings::upload_server_icon,
-            search::search_messages,
-            role_admin::role_admin_snapshot,
-            role_admin::role_admin_action,
-            role_admin::role_overrides,
-            channel_admin::channel_admin_snapshot,
-            channel_admin::channel_admin_action,
-            webhooks::webhook_page,
-            webhooks::create_server_webhook,
-            webhooks::revoke_server_webhook,
-            audit::audit_page,
-            admin::create_server_invite,
-            admin::revoke_server_invite,
-            attachments::attachment_transfer,
-            attachments::cancel_attachment,
-            dm::dm_action,
-            dm::load_dms,
-            onboarding::probe_server,
-            onboarding::use_public_certificate,
-            onboarding::remove_server,
-            onboarding::reorder_servers,
-            voice::get_server_view,
-            voice::join_voice,
-            voice::leave_voice,
-            voice::voice_control,
-            voice::member_action,
-            audio::audio_environment,
-            audio::save_audio,
-            audio::audio_level,
-            audio::test_audio,
-            audio::stop_audio_test,
-            input::input_snapshot,
-            input::save_shortcuts,
-            input::suspend_shortcuts,
-            input::capture_shortcut,
-            input::cancel_shortcut_capture,
-            input::configure_system_shortcuts,
-        ])
+        .invoke_handler(ipc_handler())
         .setup(setup)
         .on_window_event(window_event)
         .run(tauri::generate_context!())
         .expect("failed to run Sideband desktop");
+}
+
+fn ipc_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        stream::screen_sources,
+        stream::screen_preview,
+        stream::screen_snapshot,
+        stream::start_screen_share,
+        stream::stop_screen_share,
+        viewer::open_stream_viewer,
+        viewer::stream_viewers,
+        updates::check_update,
+        updates::install_update,
+        notifications::notification_preferences,
+        notifications::save_notification_preferences,
+        notifications::test_notification,
+        diagnostics::diagnostics_snapshot,
+        testing::test_build_identity,
+        testing::export_test_report,
+        profile::pairing::current_pair_link,
+        profile::pairing::pair_start,
+        profile::pairing::pair_join,
+        profile::pairing::pair_update,
+        profile::create_local_profile,
+        profile::get_local_profile,
+        account_link::review_profile_account,
+        account_link::link_profile_account,
+        profile::relay::sync_server_list,
+        profile::relay::choose_sync_server,
+        profile::relay::check_sync_copy,
+        profile::backup::save_profile_backup,
+        profile::backup::choose_profile_backup,
+        profile::backup::restore_profile_backup,
+        commands::connect,
+        commands::approve_fingerprint,
+        commands::disconnect,
+        commands::get_snapshot,
+        commands::send_message,
+        commands::create_channel,
+        commands::load_history,
+        chat::chat_snapshot,
+        chat::chat_action,
+        chat::message_context,
+        chat::load_newer,
+        chat::open_chat_link,
+        admin::invite_page,
+        moderation_admin::get_moderation_page,
+        moderation_admin::moderate_member,
+        server_settings::get_server_settings,
+        server_settings::save_server_settings,
+        server_settings::upload_server_icon,
+        search::search_messages,
+        role_admin::role_admin_snapshot,
+        role_admin::role_admin_action,
+        role_admin::role_overrides,
+        channel_admin::channel_admin_snapshot,
+        channel_admin::channel_admin_action,
+        webhooks::webhook_page,
+        webhooks::create_server_webhook,
+        webhooks::revoke_server_webhook,
+        audit::audit_page,
+        admin::create_server_invite,
+        admin::revoke_server_invite,
+        attachments::attachment_transfer,
+        attachments::cancel_attachment,
+        dm::dm_action,
+        dm::load_dms,
+        onboarding::probe_server,
+        onboarding::get_public_server_icon,
+        onboarding::use_public_certificate,
+        onboarding::remove_server,
+        onboarding::reorder_servers,
+        voice::get_server_view,
+        voice::join_voice,
+        voice::leave_voice,
+        voice::voice_control,
+        voice::member_action,
+        audio::audio_environment,
+        audio::save_audio,
+        audio::audio_level,
+        audio::test_audio,
+        audio::stop_audio_test,
+        input::input_snapshot,
+        input::save_shortcuts,
+        input::suspend_shortcuts,
+        input::capture_shortcut,
+        input::cancel_shortcut_capture,
+        input::configure_system_shortcuts,
+    ]
 }
 
 /// App state, background tasks, the app menu and the tray.

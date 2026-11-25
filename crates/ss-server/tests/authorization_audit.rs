@@ -494,6 +494,81 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         perms_and(&["VIEW_CHANNEL"], &["caller(", "visible_channels("]),
     ),
     (
+        "http/account_link.rs",
+        "get",
+        "/api/v1/me/profile-link",
+        scoped(
+            &["caller(", "review_account("],
+            "server's own authenticated member only",
+        ),
+    ),
+    (
+        "http/account_link.rs",
+        "put",
+        "/api/v1/me/profile-link",
+        scoped(
+            &["caller(", "link_account("],
+            "both profile proofs are bound to the authenticated member and session",
+        ),
+    ),
+    (
+        "http/pairing.rs",
+        "post",
+        "/api/v1/pairing/owner",
+        scoped(
+            &["authenticated(", "authorize(", "s.member == member"],
+            "originating profile-device session only",
+        ),
+    ),
+    (
+        "http/pairing.rs",
+        "post",
+        "/api/v1/pairing/device",
+        scoped(
+            &["authorize(", "Sha256::digest(token)"],
+            "unpredictable invitation slot and claim-specific delivery token",
+        ),
+    ),
+    (
+        "http/profile_sync.rs",
+        "get",
+        "/api/v1/profile-sync/status",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
+        "http/profile_sync.rs",
+        "get",
+        "/api/v1/profile-sync/copy",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
+        "http/profile_sync.rs",
+        "put",
+        "/api/v1/profile-sync/copy",
+        scoped(
+            &[
+                "authenticate_bearer(",
+                "authorize(",
+                "settings::offers_profile_sync(",
+            ],
+            "active profile-device session owns this relay row",
+        ),
+    ),
+    (
         "http/server_settings.rs",
         "get",
         "/api/v1/server/settings",
@@ -504,6 +579,15 @@ const ROUTES: &[(&str, &str, &str, Policy)] = &[
         "put",
         "/api/v1/server/settings",
         perms_and(&["MANAGE_SERVER"], &["caller("]),
+    ),
+    (
+        "http/server_settings.rs",
+        "get",
+        "/api/v1/server/icon",
+        scoped(
+            &["settings::public_icon("],
+            "current operator-published server icon only",
+        ),
     ),
     (
         "http/server_settings.rs",

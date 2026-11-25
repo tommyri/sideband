@@ -29,7 +29,7 @@ export function parseAddress(
 export type AccountField = 'username' | 'password' | 'invite'
 export function accountErrors(
   username: string,
-  password: string,
+  password: string | null,
   register: boolean,
   inviteRequired: boolean,
   invite: string,
@@ -38,10 +38,12 @@ export function accountErrors(
   if (!username.trim()) errors.username = 'Enter your server username.'
   else if (register && !/^[a-z0-9_.]{3,32}$/.test(username.trim()))
     errors.username = 'Use 3–32 lowercase letters, digits, underscores or dots.'
-  const length = new TextEncoder().encode(password).length
-  if (!password) errors.password = 'Enter your password.'
-  else if (length > 128 || (register && length < 8))
-    errors.password = 'Use a password between 8 and 128 bytes.'
+  if (password !== null) {
+    const length = new TextEncoder().encode(password).length
+    if (!password) errors.password = 'Enter your password.'
+    else if (length > 128 || (register && length < 8))
+      errors.password = 'Use a password between 8 and 128 bytes.'
+  }
   if (inviteRequired && !invite.trim()) errors.invite = 'Enter the invite code from your host.'
   return errors
 }

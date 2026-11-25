@@ -4,12 +4,15 @@
 //! The owner code is a `server_settings` row because an `invites` row cannot
 //! exist before the first user (`created_by` is required).
 
+mod account_link;
 mod limiter;
 mod live;
 mod password;
+mod profile;
 mod token;
 
 pub use live::{CLOSE_SIGNED_OUT, Sessions, list_sessions, revoke_sessions};
+pub use profile::{ProfileDevice, list_profile_devices, revoke_profile_device};
 
 /// The connection a session command arrived on. `bot` when `user` is a bot
 /// account, whose `session` is a bot token row.
@@ -56,6 +59,9 @@ pub enum Error {
     /// Username or password did not match, or the token is unknown or expired.
     #[error("invalid username or password")]
     Unauthenticated,
+    /// The supplied profile credential does not authorize this device.
+    #[error("this device is not authorized to sign in with this profile")]
+    InvalidProfile,
     /// The account exists and the password matched, but it cannot log in.
     #[error("account disabled")]
     Disabled,
@@ -105,7 +111,9 @@ impl Error {
     /// Protocol code for this failure.
     pub(crate) fn code(&self) -> ErrorCode {
         match self {
-            Self::Unauthenticated | Self::Disabled => ErrorCode::Unauthenticated,
+            Self::Unauthenticated | Self::InvalidProfile | Self::Disabled => {
+                ErrorCode::Unauthenticated
+            }
             Self::Banned { .. } => ErrorCode::Banned,
             Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::InvalidInvite | Self::Invalid(_) => ErrorCode::Invalid,
@@ -192,6 +200,9 @@ impl Auth {
                 self.resume(token).await
             }
             Some(v1::hello::Auth::BotToken(token)) => self.authenticate_bot(token).await,
+            Some(v1::hello::Auth::Profile(_) | v1::hello::Auth::RecoverProfile(_)) => {
+                Err(Error::InvalidProfile)
+            } // Requires the TLS exporter.
             None => Err(Error::Invalid("missing credentials")),
         }
     }
@@ -278,15 +289,19 @@ impl Auth {
             classify(&mut conn, &register.invite_code, Timestamp::now()).await?
         };
         let password_hash = password::hash(&register.password).await?;
-        let pending = Pending {
-            username: register.username.clone(),
+        let mut guard = self.pool.write().await;
+        let mut tx = guard.begin().await.map_err(db::Error::from)?;
+        let user = insert_member(
+            &mut tx,
+            &register.username,
             password_hash,
-            issued: token::issue()?,
-            device_name: device_name(hello),
             kind,
-            invite_code: register.invite_code.clone(),
-        };
-        self.insert_registration(pending).await
+            &register.invite_code,
+        )
+        .await?;
+        let authed = issue_session(&mut tx, user, device_name(hello)).await?;
+        tx.commit().await.map_err(db::Error::from)?;
+        Ok(authed)
     }
 
     async fn login(
@@ -302,12 +317,12 @@ impl Auth {
         self.limiter
             .admit(&login.username, peer)
             .map_err(|retry_after| Error::RateLimited { retry_after })?;
-        // A bot has no password: its name logs in like an unknown one.
+        // Passwordless profile members and bots cost the same as unknown names.
         let found = {
             let mut conn = self.pool.read().await?;
             users::get_by_username(&mut conn, &login.username)
                 .await?
-                .filter(|user| user.kind == UserKind::User)
+                .filter(|user| user.kind == UserKind::User && !user.password_hash.is_empty())
         };
         // An unknown username costs the same argon2 run as a wrong password,
         // so the reply time does not tell the two apart.
@@ -384,77 +399,69 @@ impl Auth {
         user_id: Id,
         device_name: String,
     ) -> Result<Authenticated, Error> {
-        let issued = token::issue()?;
         let mut conn = self.pool.write().await;
         let user = load_active(&mut conn, user_id).await?;
-        let now = Timestamp::now();
-        let session = sessions::insert(
-            &mut conn,
-            NewSession {
-                id: Id::generate(),
-                user_id: user.id,
-                token_hash: issued.hash,
-                device_name,
-                expires_at: Some(expiry(now, now)),
-            },
-        )
-        .await?;
-        let permissions = permissions_for(&mut conn, user.id).await?;
-        Ok(Authenticated {
-            user,
-            resume_token: issued.token.to_string(),
-            session_id: session.id,
-            permissions,
-            bot: false,
-        })
+        issue_session(&mut conn, user, device_name).await
     }
+}
 
-    async fn insert_registration(&self, pending: Pending) -> Result<Authenticated, Error> {
-        let mut guard = self.pool.write().await;
-        let mut tx = guard.begin().await.map_err(db::Error::from)?;
-        ensure_distinct(&mut tx, &pending.username).await?;
-        let owner = claim_invite(&mut tx, &pending).await?;
-        let display_name = pending.username.clone();
-        let user = users::insert(
-            &mut tx,
-            NewUser {
-                id: Id::generate(),
-                username: pending.username,
-                display_name,
-                password_hash: pending.password_hash,
-                kind: UserKind::User,
-            },
-        )
-        .await
-        .map_err(|error| match error {
-            db::Error::Conflict => Error::Conflict,
-            other => other.into(),
-        })?;
-        if owner {
-            roles::assign(&mut tx, user.id, ADMIN_ROLE_ID).await?;
-        }
-        let now = Timestamp::now();
-        let session = sessions::insert(
-            &mut tx,
-            NewSession {
-                id: Id::generate(),
-                user_id: user.id,
-                token_hash: pending.issued.hash,
-                device_name: pending.device_name,
-                expires_at: Some(expiry(now, now)),
-            },
-        )
-        .await?;
-        let permissions = permissions_for(&mut tx, user.id).await?;
-        tx.commit().await.map_err(db::Error::from)?;
-        Ok(Authenticated {
-            user,
-            resume_token: pending.issued.token.to_string(),
-            session_id: session.id,
-            permissions,
-            bot: false,
-        })
+// Both registration methods use the same local name, invite and role policy.
+async fn insert_member(
+    conn: &mut sqlx::SqliteConnection,
+    username: &str,
+    password_hash: String,
+    kind: InviteKind,
+    invite_code: &str,
+) -> Result<db::User, Error> {
+    ensure_distinct(conn, username).await?;
+    let owner = claim_invite(conn, kind, invite_code).await?;
+    let user = users::insert(
+        conn,
+        NewUser {
+            id: Id::generate(),
+            username: username.to_owned(),
+            display_name: username.to_owned(),
+            password_hash,
+            kind: UserKind::User,
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        db::Error::Conflict => Error::Conflict,
+        other => other.into(),
+    })?;
+    if owner {
+        roles::assign(conn, user.id, ADMIN_ROLE_ID).await?;
     }
+    Ok(user)
+}
+
+async fn issue_session(
+    conn: &mut sqlx::SqliteConnection,
+    user: db::User,
+    device_name: String,
+) -> Result<Authenticated, Error> {
+    let issued = token::issue()?;
+    let now = Timestamp::now();
+    let session = sessions::insert(
+        conn,
+        NewSession {
+            id: Id::generate(),
+            user_id: user.id,
+            token_hash: issued.hash,
+            device_name,
+            expires_at: Some(expiry(now, now)),
+        },
+    )
+    .await?;
+    let permissions = permissions_for(conn, user.id).await?;
+    Ok(Authenticated {
+        user,
+        resume_token: issued.token.to_string(),
+        session_id: session.id,
+        permissions,
+        bot: false,
+    })
 }
 
 /// Prints or reuses the owner code when the database has no users.
@@ -535,29 +542,24 @@ pub async fn set_password(pool: &db::Pool, username: &str, password: &str) -> Re
     Ok(ended)
 }
 
-struct Pending {
-    username: String,
-    password_hash: String,
-    issued: token::Issued,
-    device_name: String,
-    kind: InviteKind,
-    invite_code: String,
-}
-
 enum InviteKind {
     Owner,
     Regular(Id),
 }
 
-async fn claim_invite(conn: &mut sqlx::SqliteConnection, pending: &Pending) -> Result<bool, Error> {
+async fn claim_invite(
+    conn: &mut sqlx::SqliteConnection,
+    kind: InviteKind,
+    code: &str,
+) -> Result<bool, Error> {
     if settings::get(conn, settings::REGISTRATION_MODE)
         .await?
         .is_some_and(|s| s.value == "closed")
     {
         return Err(Error::InvalidInvite);
     }
-    match pending.kind {
-        InviteKind::Owner => claim_owner(conn, &pending.invite_code).await,
+    match kind {
+        InviteKind::Owner => claim_owner(conn, code).await,
         InviteKind::Regular(id) => {
             if invites::consume(conn, id, Timestamp::now()).await? {
                 Ok(false)
@@ -620,7 +622,10 @@ async fn load_active(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<d
 
 /// [`load_active`], for a session token: a bot account never has one, and a
 /// row naming one is refused rather than trusted.
-async fn load_person(conn: &mut sqlx::SqliteConnection, user_id: Id) -> Result<db::User, Error> {
+pub(crate) async fn load_person(
+    conn: &mut sqlx::SqliteConnection,
+    user_id: Id,
+) -> Result<db::User, Error> {
     let user = load_active(conn, user_id).await?;
     if user.kind == UserKind::Bot {
         return Err(Error::Unauthenticated);

@@ -10,7 +10,9 @@
 mod channel;
 mod error;
 mod id;
+pub mod pairing;
 mod permissions;
+pub mod profile_link;
 mod timestamp;
 mod user;
 mod voice;

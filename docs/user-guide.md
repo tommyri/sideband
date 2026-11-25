@@ -25,8 +25,12 @@ To report a problem with evidence, see
 3. A verified domain or previously trusted fingerprint takes you to the account
    form. For a new self-signed certificate, compare the full SHA-256 fingerprint
    with your host through a conversation you already trust. Confirm that it
-   matches and choose **Trust this server** to continue.
-4. Create your account on this server, or choose **Log in instead**. Usernames
+   matches and choose **Trust this server** to continue. The join screen shows
+   the server name and hostname with its public logo or initials.
+4. On a server that offers profile sign-in, choose **Create a local profile**
+   or **Join with profile**. If you already have a username and password on
+   this server, choose **Use a server account** and log in to keep your
+   messages and roles. On older servers, create an account or log in. Usernames
    are 3–32 lowercase letters, digits, underscores or dots. Passwords are
    8–128 UTF-8 bytes. Invite-only servers also ask for the code from your host.
    Servers with closed registration offer login. A rejected attempt keeps your
@@ -37,6 +41,47 @@ The app remembers your session on this computer, never your password.
 Next time, select the server and choose **Reconnect / log in**, then
 **Reconnect with saved session**. While the app is open it reconnects by
 itself after a network drop.
+
+### Use a local profile on Mac or Windows
+
+Choose **Create a local profile** in **Add server** to name your profile before
+you pick a server. You can also do this while accepting an invitation. Sideband
+keeps the sign-in keys in your Mac or Windows credential store. You can use the
+same profile on this computer to join several communities without creating a
+password for each one.
+
+When you choose **Join with profile**, check the username others will see on
+this server. You can pick a different username for each community. Enter your
+host’s invite code if the server asks for one. On your next visit, use your
+saved session or choose **Use a local profile** to sign in again. Your roles
+and messages belong to your membership on that server.
+
+Open **Personal settings → Profile and devices** to manage your profile.
+
+- **Link existing accounts** shows the accounts on this computer. Check the
+  server address, signed-in username and role before you confirm. You can
+  review more accounts together. **Server sign-in only** means you can keep
+  using that community with its usual login on this computer.
+- **Sync servers** lets you choose a joined community that offers encrypted
+  profile storage. Confirm the server name and address. Sideband encrypts the
+  membership list on your computer before sending the first copy. If no server
+  offers sync, you can still make a recovery backup.
+- **Link a device** creates a five-minute invitation on your chosen sync server. Keep the trusted computer connected. Open the pairing link on the other computer, or choose **Link this computer** on its first screen and enter both the sync server address and the one-time code. Give the computer a recognizable name. Compare the three words on both screens. If they match and you recognize the computer, select **Allow** on the trusted device, then **Finish linking** on the new one. If they differ, select **Deny request**. You can create a new code and try again. Open a server and sign in with your profile to use your existing membership. Microphone, push-to-talk and notifications stay local to each computer.
+- **Manage backup** saves a file and shows you 12 words that open it. A private
+  iCloud Drive or Google Drive folder is an option for the file. Keep the
+  words separately in a password manager or on paper. A USB drive also works.
+  If you store the file as a password-manager attachment, keep the words on
+  paper. **Copy words** and **I saved my key** are separate steps.
+
+On a fresh Mac or Windows installation, choose **Restore from backup** on the
+first join screen. Select the file and enter its words. You can open it even
+when every server is offline. Select a restored server and choose **Sign in
+with profile** when it is reachable. Its current roles, bans and device
+permissions still apply. If that server revoked the device that made your
+backup before you recovered access, contact its host. A file restores the memberships it contained when
+you saved it. Make a new backup after important changes.
+
+### After joining
 
 Sideband reopens the last text channel or direct message you viewed with this
 account on this server. On your first visit, or if that conversation is gone,
@@ -283,7 +328,7 @@ determine which administrative actions appear.
 | **Members & moderation** | Kick members or Ban members | Search members, kick, ban for a time or permanently, unban |
 | **Roles and permissions** | Manage roles or Manage channels | Create, edit, reorder and delete roles; assign roles to members; set per-channel overrides |
 | **Manage channels** | Manage channels | Create, edit, move and delete channels and categories |
-| **Server settings** | Manage server | Name, description, icon, and registration (invite only or closed) |
+| **Server settings** | Manage server | Name, description, icon, **Show logo before people join**, and registration (invite only or closed) |
 | **Webhooks** | Manage server | Incoming webhooks that let another service post into a channel |
 | **Audit log** | View audit log | Filtered history of administrative actions |
 

@@ -13,6 +13,18 @@ pub const NAME: &str = "name";
 pub const DESCRIPTION: &str = "description";
 /// Seeded icon key. The value is an attachment id or empty.
 pub const ICON: &str = "icon";
+/// Whether visitors can see the server icon before signing in. Defaults to false.
+pub const PUBLIC_ICON: &str = "public_icon";
+/// Whether this server accepts encrypted profile copies from its members.
+pub const PROFILE_SYNC: &str = "profile_sync";
+
+/// The operator opts in explicitly. Upgrading an existing database keeps sync off.
+pub async fn offers_profile_sync(conn: &mut SqliteConnection) -> Result<bool, Error> {
+    Ok(get(conn, PROFILE_SYNC)
+        .await?
+        .is_some_and(|setting| setting.value == "true"))
+}
+
 /// Seeded registration policy key.
 pub const REGISTRATION_MODE: &str = "registration_mode";
 /// Invite-only registration.
@@ -27,6 +39,32 @@ pub async fn get(conn: &mut SqliteConnection, key: &str) -> Result<Option<Settin
     .fetch_optional(&mut *conn)
     .await)?;
     Ok(row.map(SettingRow::into_setting))
+}
+
+/// Returns the current logo only when the operator opted in and its attachment exists.
+pub async fn public_icon(conn: &mut SqliteConnection) -> Result<Option<super::Attachment>, Error> {
+    let enabled = get(conn, PUBLIC_ICON)
+        .await?
+        .is_some_and(|s| s.value == "true");
+    if !enabled {
+        return Ok(None);
+    }
+    let Some(id) = get(conn, ICON).await?.and_then(|s| s.value.parse().ok()) else {
+        return Ok(None);
+    };
+    Ok(super::attachments::get(conn, id).await?.filter(valid_icon))
+}
+
+/// Only standalone raster uploads within the server icon limits can be published.
+pub fn valid_icon(file: &super::Attachment) -> bool {
+    file.message_id.is_none()
+        && matches!(
+            file.mime.as_str(),
+            "image/png" | "image/jpeg" | "image/webp"
+        )
+        && (1..=2 * 1024 * 1024).contains(&file.size)
+        && file.width.is_some_and(|n| (1..=4096).contains(&n))
+        && file.height.is_some_and(|n| (1..=4096).contains(&n))
 }
 
 /// Inserts or replaces a setting.

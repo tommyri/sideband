@@ -214,6 +214,24 @@ Settings people usually change:
   level (default `info`). Logs go to standard error and to daily files in
   `<data dir>/logs/`.
 
+### Offer encrypted profile sync to members
+
+Upgrade your server and desktop to a build with profile sync support. The
+database migration runs when the service starts. An existing deployment
+uses its current data directory, HTTPS port and certificate. Hosting starts off.
+
+Sign in with **Manage server** permission. Open **Server settings**, turn on
+**Offer profile sync to members**, and choose **Save settings**. Members with
+a linked profile can now choose this community in their profile settings.
+The public server document at `/api/v1/server` advertises `profileSync`
+while hosting is enabled. **Show logo before people join** is independent.
+
+Each member can store one encrypted copy up to 512 KiB in the server database.
+The server can see which local member used the service and the size of their
+copy. Only a client with the matching profile key can read its contents.
+Turning hosting off stops reads and writes immediately. Existing copies stay
+in the database and become accessible again if hosting is enabled.
+
 ## 7. Backups, upgrades and monitoring
 
 - **Backup and restore:** `ss-server backup` is safe while the server runs. It

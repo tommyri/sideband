@@ -1,0 +1,31 @@
+.profile-sync {
+  min-width: 0;
+}
+.profile-sync h3 {
+  margin: 0 0 8px;
+}
+.profile-sync p {
+  color: var(--secondary);
+}
+.profile-sync [role='alert'] {
+  color: var(--coral);
+}
+.profile-sync ul {
+  list-style: none;
+  padding: 0;
+}
+.profile-sync li,
+.profile-sync-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.profile-sync li {
+  justify-content: space-between;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.profile-sync .server-preview {
+  margin: 0;
+}

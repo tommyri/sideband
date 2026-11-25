@@ -15,6 +15,8 @@ pub struct AppState {
     /// [`AppState::client`] before awaiting the network.
     clients: std::sync::Mutex<Clients>,
     pub storage: Arc<DesktopStorage>,
+    pub profile_path: std::path::PathBuf,
+    pub relay_selection: Mutex<()>,
     pub pins: Arc<JsonPinStore>,
     pub operations: Mutex<()>,
     pub voice: Mutex<Option<crate::voice::ActiveVoice>>,
@@ -28,6 +30,8 @@ impl AppState {
             transfers: Mutex::new(std::collections::HashMap::new()),
             clients: std::sync::Mutex::new(Clients::default()),
             storage: Arc::new(DesktopStorage::open(path.join("sessions.json"))?),
+            profile_path: path.join("profile.json"),
+            relay_selection: Mutex::new(()),
             pins: Arc::new(JsonPinStore::open(path.join("pins.json"))?),
             operations: Mutex::new(()),
             voice: Mutex::new(None),

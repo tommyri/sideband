@@ -173,6 +173,349 @@ fn post(channel: Id, content: &str) -> v1::SendMessage {
     }
 }
 
+async fn sign_in_profile(world: &World, device: u8, invite: &str) -> Result<Client, Error> {
+    let profile = ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[device; 32],
+        &world.address.id()?,
+        "profile_owner".into(),
+        invite.into(),
+    )?;
+    Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(profile)),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn profile_membership_survives_restart_and_device_revocation_ends_its_sessions() {
+    let mut world = World::new().await;
+    assert!(matches!(sign_in_profile(&world, 2, "invalid").await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Invalid)));
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let member = own_id(&first);
+    let general = named(&first.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        first.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    first.close().await;
+
+    world.restart().await;
+    // New client, same two local roots, no invite or saved session needed.
+    let returned = sign_in_profile(&world, 2, "").await.unwrap();
+    assert_eq!(own_id(&returned), member);
+    assert_eq!(
+        returned.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    assert!(matches!(sign_in_profile(&world, 3, &world.invite).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Unauthenticated)));
+    let token = world
+        .storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    let devices = auth::list_profile_devices(&world.pool, "profile_owner")
+        .await
+        .unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(
+        auth::revoke_profile_device(&world.pool, "profile_owner", devices[0].id)
+            .await
+            .unwrap(),
+        2
+    );
+    let auth = auth::Auth::new(world.pool.clone());
+    assert!(matches!(
+        auth.authenticate_bearer(&token).await,
+        Err(auth::Error::Unauthenticated)
+    ));
+    assert!(matches!(sign_in_profile(&world, 2, &world.invite).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Unauthenticated)));
+    returned.close().await;
+}
+
+#[tokio::test]
+async fn existing_account_link_preserves_identity_roles_and_bans_across_retries() {
+    use ss_client_core::profile::{ProfileCredentials, account_link::LinkState};
+    let mut world = World::new().await;
+    let (port, listener) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let guest = world.guest(&owner).await;
+    let id = own_id(&owner);
+    let keys = |root: u8| {
+        ProfileCredentials::new(
+            &[root; 32],
+            &[2; 32],
+            &world.address.id().unwrap(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap()
+    };
+    let review = owner.review_profile_link(&keys(1)).await.unwrap();
+    assert_eq!(review.id, id);
+    assert_eq!(review.username, "owner");
+    assert_eq!(review.role, "Admin");
+    assert_eq!(review.state, LinkState::Eligible);
+    assert!(
+        owner
+            .link_profile_account(&keys(1), own_id(&guest), "Admin")
+            .await
+            .is_err()
+    );
+    let (a, b) = tokio::join!(
+        async { owner.link_profile_account(&keys(1), id, "Admin").await },
+        async { owner.link_profile_account(&keys(1), id, "Admin").await },
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(
+        owner.review_profile_link(&keys(1)).await.unwrap().state,
+        LinkState::Linked
+    );
+    assert_eq!(
+        owner.review_profile_link(&keys(3)).await.unwrap().state,
+        LinkState::OtherProfile
+    );
+    let other = guest.review_profile_link(&keys(1)).await.unwrap();
+    // One profile cannot take over a second member on the same server.
+    assert!(
+        guest
+            .link_profile_account(&keys(1), other.id, &other.role)
+            .await
+            .is_err()
+    );
+    assert!(
+        auth::list_profile_devices(&world.pool, "guest")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "owner")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    owner.close().await;
+    guest.close().await;
+    let returned = sign_in_profile(&world, 2, "").await.unwrap();
+    assert_eq!(own_id(&returned), id);
+    let general = named(&returned.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        returned.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    ss_server::handlers::ban_account(&world.pool, "owner", Some("test"))
+        .await
+        .unwrap();
+    assert!(returned.review_profile_link(&keys(1)).await.is_err());
+    assert!(
+        matches!(sign_in_profile(&world,2,"").await,Err(Error::Server{code,..}) if code==i32::from(v1::ErrorCode::Banned))
+    );
+    returned.close().await;
+    listener.abort();
+}
+
+#[tokio::test]
+async fn profile_registration_obeys_closed_registration_and_existing_member_bans() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let invite = owner
+        .create_invite(v1::CreateInvite {
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    let set_mode = async |value: &str| {
+        let mut conn = world.pool.write().await;
+        db::settings::set(&mut conn, db::REGISTRATION_MODE, value)
+            .await
+            .unwrap();
+    };
+    set_mode("closed").await;
+    assert!(matches!(sign_in_profile(&world, 2, &invite.code).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Invalid)));
+    set_mode(db::REGISTRATION_INVITE).await;
+    let member = sign_in_profile(&world, 2, &invite.code).await.unwrap();
+    let general = named(&member.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        member.state().read().permissions(general),
+        Some(Permissions::EVERYONE)
+    );
+    let id = own_id(&member);
+    member.close().await;
+    set_mode("closed").await;
+    let returned = sign_in_profile(&world, 2, &invite.code).await.unwrap();
+    assert_eq!(own_id(&returned), id);
+    returned.close().await;
+    ss_server::handlers::ban_account(&world.pool, "profile_owner", Some("test ban"))
+        .await
+        .unwrap();
+    assert!(matches!(sign_in_profile(&world, 2, &invite.code).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Banned)));
+    owner.close().await;
+}
+
+fn backup_keys(world: &World, device: u8) -> ss_client_core::profile::ProfileCredentials {
+    ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[device; 32],
+        &world.address.id().unwrap(),
+        String::new(),
+        String::new(),
+    )
+    .unwrap()
+}
+
+async fn recover_profile(
+    world: &World,
+    device: u8,
+    member: Id,
+    grant: v1::RecoveryGrant,
+) -> Result<Client, Error> {
+    Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(
+            backup_keys(world, device).recovering(member, grant),
+        )),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+}
+
+fn assert_profile_refused(result: Result<Client, Error>, expected: v1::ErrorCode) {
+    let Some(error) = result.err() else {
+        panic!("expected profile refusal");
+    };
+    assert!(
+        matches!(&error,Error::Server{code,..} if *code==i32::from(expected)),
+        "unexpected result {error}"
+    );
+}
+
+#[tokio::test]
+async fn profile_recovery_authorizes_one_new_device_and_respects_revocation() {
+    let world = World::new().await;
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let user = own_id(&first);
+    first.close().await;
+    let grant = backup_keys(&world, 2).recovery_grant(user);
+    let source = auth::list_profile_devices(&world.pool, "profile_owner")
+        .await
+        .unwrap()[0]
+        .id;
+    let new = recover_profile(&world, 3, user, grant.clone())
+        .await
+        .unwrap();
+    assert_eq!(own_id(&new), user);
+    let general = named(&new.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        new.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    new.close().await;
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "profile_owner")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    auth::revoke_profile_device(&world.pool, "profile_owner", source)
+        .await
+        .unwrap();
+    // An enrolled replacement is independent of its original device. An old
+    // backup cannot authorize a third device once its source is removed.
+    recover_profile(&world, 3, user, grant.clone())
+        .await
+        .unwrap()
+        .close()
+        .await;
+    assert_profile_refused(
+        recover_profile(&world, 4, user, grant).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    let fresh = backup_keys(&world, 3).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 2, user, fresh).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+}
+
+#[tokio::test]
+async fn profile_recovery_and_recorded_login_never_register_on_a_reset_server() {
+    // The restored file names a member id that this current server has never seen.
+    let world = World::new().await;
+    let user = Id::generate();
+    let source = backup_keys(&world, 2).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 3, user, source).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    let keys = ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[2; 32],
+        &world.address.id().unwrap(),
+        "old_member".into(),
+        world.invite.clone(),
+    )
+    .unwrap()
+    .existing_member(user);
+    let refused = Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(keys)),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await;
+    assert_profile_refused(refused, v1::ErrorCode::Unauthenticated);
+    // Even with a valid owner invite, both paths left the bootstrap invitation unconsumed.
+    let owner = world.owner().await;
+    assert_ne!(own_id(&owner), user);
+    owner.close().await;
+}
+
+#[tokio::test]
+async fn profile_recovery_rejects_other_members_an_unknown_source_and_bans() {
+    let world = World::new().await;
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let user = own_id(&first);
+    first.close().await;
+    let grant = backup_keys(&world, 2).recovery_grant(user);
+    assert_profile_refused(
+        recover_profile(&world, 3, Id::generate(), grant.clone()).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    assert_profile_refused(
+        recover_profile(&world, 3, user, backup_keys(&world, 9).recovery_grant(user)).await,
+        v1::ErrorCode::Unauthenticated,
+    );
+    ss_server::handlers::ban_account(&world.pool, "profile_owner", Some("test ban"))
+        .await
+        .unwrap();
+    assert_profile_refused(
+        recover_profile(&world, 3, user, grant).await,
+        v1::ErrorCode::Banned,
+    );
+    assert_eq!(
+        auth::list_profile_devices(&world.pool, "profile_owner")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn snapshot_commands_events_persisted_session_and_drop() {
     let world = World::new().await;
@@ -2329,6 +2672,96 @@ fn settings_icon() -> Vec<u8> {
     bytes.into_inner()
 }
 #[tokio::test]
+async fn public_logo_is_scoped_to_the_current_opted_in_icon() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let mut world = World::new().await;
+    let (port, task) = https(&world, false).await;
+    world.address.https_port = port;
+    let owner = world.owner().await;
+    let app = world
+        .server
+        .public_routes()
+        .merge(ss_server::http::info::router(
+            world.pool.clone(),
+            Arc::new(arc_swap::ArcSwap::new(Arc::new(
+                world.pins.get(&world.address.id().unwrap()).unwrap(),
+            ))),
+        ));
+    let visit = |path: &str| {
+        app.clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+    };
+    let metadata = || async {
+        let res = visit("/api/v1/server").await.unwrap();
+        serde_json::from_slice::<serde_json::Value>(
+            &to_bytes(res.into_body(), 16384).await.unwrap(),
+        )
+        .unwrap()
+    };
+    let route = "/api/v1/server/icon";
+    let bytes = settings_icon();
+    let icon = owner.upload_server_icon(bytes.clone()).await.unwrap();
+    let mut settings = owner.server_settings().await.unwrap().settings;
+    assert_eq!(settings.public_icon, Some(false));
+    settings.icon_id = Some(icon.clone());
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    settings.public_icon = Some(true);
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    let public = metadata().await;
+    assert_eq!(public["registrationMode"], "invite");
+    assert_eq!(public["iconUrl"], route);
+    let response = visit(route).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        &to_bytes(response.into_body(), 8192).await.unwrap()[..],
+        &bytes
+    );
+    let private = format!("/api/v1/attachments/{icon}/server-icon");
+    assert!(!visit(&private).await.unwrap().status().is_success());
+
+    // An older client editing another field omits the opt-in.
+    settings.public_icon = None;
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert_eq!(settings.public_icon, Some(true));
+    settings.public_icon = Some(false);
+    settings = owner
+        .save_server_settings(&settings)
+        .await
+        .unwrap()
+        .settings;
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+    settings.public_icon = Some(true);
+    settings.icon_id = None;
+    owner.save_server_settings(&settings).await.unwrap();
+    assert!(metadata().await.get("iconUrl").is_none());
+    assert_eq!(visit(route).await.unwrap().status(), StatusCode::NOT_FOUND);
+    owner.close().await;
+    task.abort();
+}
+
+#[tokio::test]
 async fn server_settings_are_authorized_atomic_audited_and_pin_checked() {
     let mut world = World::new().await;
     let (port, task) = https(&world, false).await;
@@ -2790,3 +3223,6 @@ async fn search_https_scopes_permissions_and_private_messages() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     task.abort();
 }
+
+#[path = "client_core/profile_sync.rs"]
+mod profile_sync;

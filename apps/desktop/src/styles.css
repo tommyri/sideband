@@ -47,6 +47,7 @@ textarea:focus-visible {
 }
 
 .app-shell {
+  --sidebar-row-gap: 4px;
   --bg: #0d1116;
   --rail: #10161d;
   --panel: #151b22;
@@ -175,10 +176,18 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   padding: 16px 10px 13px;
+  gap: 12px;
   align-items: center;
   flex-direction: column;
   background: var(--rail);
   border-right: 1px solid var(--border);
+}
+
+.brand-mark,
+.rail-rule,
+.rail-tools,
+.rail-avatar {
+  flex: none;
 }
 
 .brand-mark {
@@ -194,20 +203,23 @@ textarea:focus-visible {
 .rail-rule {
   width: 28px;
   height: 1px;
-  margin: 13px 0;
   background: var(--border);
+}
+
+.server-buttons,
+.rail-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
 
 .server-buttons {
   min-height: 0;
   overflow-y: auto;
   padding-block: 4px;
-  display: flex;
   align-self: stretch;
   margin-inline: -7px;
-  gap: 10px;
-  align-items: center;
-  flex-direction: column;
 }
 
 .server-button {
@@ -397,6 +409,13 @@ textarea:focus-visible {
   border-radius: 5px;
   font-size: 13px;
   cursor: pointer;
+}
+
+.channel-row + .channel-row,
+.member + .member,
+.live-member + .live-member,
+.live-channel + .live-member {
+  margin-block-start: var(--sidebar-row-gap);
 }
 
 .channel-row:hover {
@@ -1228,6 +1247,10 @@ textarea:focus-visible {
   border-top: 1px solid var(--border);
 }
 .live-channel-scroll {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  row-gap: var(--sidebar-row-gap);
   flex: 1;
   min-height: 0;
   overflow: auto;

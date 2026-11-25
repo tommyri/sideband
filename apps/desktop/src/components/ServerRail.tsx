@@ -7,14 +7,7 @@ import { Bell, Bug, Plus } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { useVoiceStore } from '../features/voice/store'
 
-function initials(label: string) {
-  return label
-    .split(/\s+/)
-    .map((word) => word[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
-}
+import { initials } from '../lib/initials'
 
 export function ServerRail() {
   const [notifications, setNotifications] = useState(false)
@@ -63,29 +56,31 @@ export function ServerRail() {
           <Plus size={20} />
         </button>
       </div>
-      <button
-        className="server-button"
-        aria-label="Notification settings"
-        onClick={() => setNotifications(true)}
-      >
-        <Bell size={20} />
-      </button>
-      {isTauri() && (
-        <>
-          <UpdateControl />
-          <TestingPanel />
-        </>
-      )}
-      {import.meta.env.DEV && (
+      <div className="rail-tools" role="group" aria-label="App tools">
         <button
           className="server-button"
-          aria-label="Toggle event inspector"
-          title="Event inspector (development builds only)"
-          onClick={toggleDebug}
+          aria-label="Notification settings"
+          onClick={() => setNotifications(true)}
         >
-          <Bug size={20} />
+          <Bell size={20} />
         </button>
-      )}
+        {isTauri() && (
+          <>
+            <UpdateControl />
+            <TestingPanel />
+          </>
+        )}
+        {import.meta.env.DEV && (
+          <button
+            className="server-button"
+            aria-label="Toggle event inspector"
+            title="Event inspector (development builds only)"
+            onClick={toggleDebug}
+          >
+            <Bug size={20} />
+          </button>
+        )}
+      </div>
       {notifications && <NotificationSettings close={() => setNotifications(false)} />}
       {own && (
         <div

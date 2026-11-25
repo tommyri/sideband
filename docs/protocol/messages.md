@@ -10,7 +10,7 @@ connection lifecycle, limits and REST are in the
 
 ## Contents
 
-- [auth.proto](#authproto): [`Login`](#login), [`Register`](#register), [`Hello`](#hello), [`Ping`](#ping), [`Pong`](#pong), [`Snapshot`](#snapshot), [`ListDms`](#listdms), [`DmPage`](#dmpage), [`Welcome`](#welcome), [`UpdateProfile`](#updateprofile), [`Logout`](#logout), [`ListSessions`](#listsessions), [`RevokeSession`](#revokesession), [`SessionInfo`](#sessioninfo), [`SessionList`](#sessionlist), [`SessionRevoked`](#sessionrevoked)
+- [auth.proto](#authproto): [`Login`](#login), [`Register`](#register), [`ProfileAuth`](#profileauth), [`ProfileRegister`](#profileregister), [`RecoveryGrant`](#recoverygrant), [`RecoverProfile`](#recoverprofile), [`Hello`](#hello), [`Ping`](#ping), [`Pong`](#pong), [`Snapshot`](#snapshot), [`ListDms`](#listdms), [`DmPage`](#dmpage), [`Welcome`](#welcome), [`UpdateProfile`](#updateprofile), [`Logout`](#logout), [`ListSessions`](#listsessions), [`RevokeSession`](#revokesession), [`SessionInfo`](#sessioninfo), [`SessionList`](#sessionlist), [`SessionRevoked`](#sessionrevoked)
 - [bots.proto](#botsproto): [`CreateBot`](#createbot), [`ResetBotToken`](#resetbottoken), [`RevokeBotToken`](#revokebottoken), [`ListBots`](#listbots), [`Bot`](#bot), [`BotList`](#botlist)
 - [channels.proto](#channelsproto): [`ChannelKind`](#channelkind), [`VoiceProfile`](#voiceprofile), [`VoiceSettings`](#voicesettings), [`Channel`](#channel), [`CreateChannel`](#createchannel), [`UpdateChannel`](#updatechannel), [`DeleteChannel`](#deletechannel), [`MoveChannel`](#movechannel), [`CreateDm`](#createdm), [`LeaveDm`](#leavedm), [`AddDmMembers`](#adddmmembers), [`ChannelCreated`](#channelcreated), [`ChannelUpdated`](#channelupdated), [`ChannelDeleted`](#channeldeleted)
 - [common.proto](#commonproto): [`Id`](#id), [`Timestamp`](#timestamp), [`Empty`](#empty), [`ErrorCode`](#errorcode), [`UserKind`](#userkind), [`User`](#user), [`PresenceStatus`](#presencestatus), [`Presence`](#presence), [`SetPresence`](#setpresence), [`Member`](#member), [`ServerInfo`](#serverinfo)
@@ -44,6 +44,46 @@ New account inside `Hello.auth`.
 | `username` | 2 | `string` |  | Desired unique username. |
 | `password` | 3 | `string` |  | Password. The server hashes it. |
 
+### `ProfileAuth`
+
+Sign in to a server-scoped membership with an enrolled Ed25519 device key.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `membership_key` | 1 | `bytes` |  | Server-scoped 32-byte Ed25519 membership public key. |
+| `device_key` | 2 | `bytes` |  | Server-scoped 32-byte Ed25519 device public key. |
+| `device_signature` | 3 | `bytes` |  | Device signature over the TLS exporter and both public keys. |
+| `register` | 4 | [`ProfileRegister`](#profileregister) |  | First enrollment only. A retry with the same enrolled device is a login. |
+
+### `ProfileRegister`
+
+Register a new membership and authorize its first device.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `username` | 1 | `string` |  | Desired unique name on this server. |
+| `invite_code` | 2 | `string` |  | Bootstrap or regular invite. Validated by the normal registration policy. |
+| `membership_signature` | 3 | `bytes` |  | Membership signature authorizing this device public key. |
+
+### `RecoveryGrant`
+
+Offline approval by a device that belonged to this membership when a backup was made.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `source` | 1 | `bytes` |  | Enrolled source device's server-scoped public key. |
+| `authorization` | 2 | `bytes` |  | Source signature over the membership key and local member id. |
+
+### `RecoverProfile`
+
+Recover an existing membership on a fresh device, or sign in again after enrollment.
+
+| Field | Number | Type | Label | Description |
+|---|---|---|---|---|
+| `proof` | 1 | [`ProfileAuth`](#profileauth) |  | Connection-bound proof of possession by the replacement device. |
+| `user_id` | 2 | `bytes` |  | Local account id recorded by the backed-up client. |
+| `grant` | 3 | [`RecoveryGrant`](#recoverygrant) |  | Authorization from an enrolled source device, retained through offline restores. |
+
 ### `Hello`
 
 First message on the control stream.
@@ -61,6 +101,8 @@ First message on the control stream.
 | `login` | 7 | [`Login`](#login) | `oneof auth` | Password login. |
 | `register` | 8 | [`Register`](#register) | `oneof auth` | Invite registration. |
 | `bot_token` | 9 | `string` | `oneof auth` | Bot token from `CreateBot` or `ResetBotToken`. Authenticates the bot account; never a user session. `Welcome.resume_token` echoes it. |
+| `profile` | 10 | [`ProfileAuth`](#profileauth) | `oneof auth` | Connection-bound, server-scoped profile credential. |
+| `recover_profile` | 12 | [`RecoverProfile`](#recoverprofile) | `oneof auth` | Enroll a replacement for an existing profile membership. |
 
 ### `Ping`
 

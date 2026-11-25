@@ -38,7 +38,7 @@ for T-061 against the server at the end of phase 2 (T-020 to T-034).
 | Boundary | Who is on the other side | What they can do before any check | Main controls |
 |---|---|---|---|
 | Internet → QUIC | Anyone | Complete a handshake, send one `Hello` | Stateless Retry before any slot, 256 sessions total, 32 per validated address, 10 s handshake and Hello deadlines, Hello and password quotas, 1 MiB frames |
-| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; `GET /api/v1/server` and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers, attachments streamed from and to disk with 16 open transfers per account |
+| Internet → HTTPS | Anyone | Complete a TLS handshake, then send requests; the server identity document, its opt-in public logo and webhook posts need no bearer | Same server certificate as QUIC (a reverse proxy may use another valid domain certificate for public-trust clients), handshake deadline, per-address quota, header and request deadlines, body caps, strict headers, attachments streamed from and to disk with 16 open transfers per account |
 | Members → server | Authenticated accounts | Every control command and REST call | `PermissionService::check` per command, role hierarchy, per-account quotas, input limits |
 | Bots → server | Holders of a bot token | The bot API (REST actions, event stream) and native QUIC, as the bot account | The same command handlers and visibility filters, capped by the token's scopes; no voice; per-bot budget and two streams; tokens revocable at once (sections 4 to 6) |
 | Moderators and admins → server | Accounts with management bits | Kick, ban, mute, move, roles, channels, webhooks, invites | Bits plus strict hierarchy (`can_act_on`); only `ADMINISTRATOR` grants `ADMINISTRATOR`; audit log |
@@ -88,6 +88,10 @@ It does not protect against:
 - an attacker who controls the out-of-band fingerprint channel.
 
 ## 4. Authentication and secrets
+
+Desktop profiles use OS-protected keys to sign in to each participating
+server. The [profile sign-in model](protocol/profile-identity.md) describes
+what the server learns, how it authorizes a device and how to revoke one.
 
 - **Passwords**: argon2id, version 0x13, memory 19 456 KiB (19 MiB), 2
   iterations, 1 lane, 16-byte random salt, PHC string output

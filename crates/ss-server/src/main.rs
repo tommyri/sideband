@@ -178,10 +178,33 @@ enum UserAction {
         #[arg(long, default_value_os_t = default_data_dir())]
         data_dir: PathBuf,
     },
+    /// Manage profile device credentials for an account.
+    Devices {
+        /// Local account username.
+        #[arg(long)]
+        username: String,
+        /// Directory containing `socialspeak.db`.
+        #[arg(long, default_value_os_t = default_data_dir())]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        action: DeviceAction,
+    },
     /// List or end an account's login sessions.
     Sessions {
         #[command(subcommand)]
         action: SessionsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeviceAction {
+    /// List active profile device credentials for the account.
+    List,
+    /// Permanently revoke a device and end the sessions it issued.
+    Revoke {
+        /// Device id from the list.
+        #[arg(long)]
+        id: ss_core::Id,
     },
 }
 
@@ -423,6 +446,26 @@ async fn user(action: UserAction) -> anyhow::Result<()> {
         } => ban_user(data_dir, &username, reason).await,
         UserAction::Unban { username, data_dir } => unban_user(data_dir, &username).await,
         UserAction::Sessions { action } => user_sessions(action).await,
+        UserAction::Devices {
+            username,
+            data_dir,
+            action,
+        } => {
+            let pool = ss_server::db::Pool::open(data_dir.join("socialspeak.db")).await?;
+            match action {
+                DeviceAction::List => {
+                    for device in ss_server::auth::list_profile_devices(&pool, &username).await? {
+                        println!("{}  {:?}", device.id, device.name);
+                    }
+                }
+                DeviceAction::Revoke { id } => {
+                    let ended =
+                        ss_server::auth::revoke_profile_device(&pool, &username, id).await?;
+                    println!("Device revoked. {ended} session(s) ended.");
+                }
+            }
+            Ok(())
+        }
     }
 }
 

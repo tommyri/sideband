@@ -20,6 +20,8 @@ pub struct ServerSettingsFields {
     name: String,
     description: String,
     icon_id: Option<String>,
+    public_icon: Option<bool>,
+    profile_sync: Option<bool>,
     registration_mode: String,
     revision: String,
 }
@@ -39,6 +41,8 @@ impl From<ServerSettingsFields> for ServerSettings {
             name: v.name,
             description: v.description,
             icon_id: v.icon_id,
+            public_icon: v.public_icon,
+            profile_sync: v.profile_sync,
             registration_mode: v.registration_mode,
             revision: v.revision,
         }
@@ -90,6 +94,8 @@ async fn project(
             name: settings.name,
             description: settings.description,
             icon_id: settings.icon_id,
+            public_icon: settings.public_icon,
+            profile_sync: settings.profile_sync,
             registration_mode: settings.registration_mode,
             revision: settings.revision,
         },

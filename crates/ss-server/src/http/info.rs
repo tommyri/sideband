@@ -6,13 +6,20 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use serde_json::{Value, json};
+use sqlx::Connection;
 use ss_net::tls::Fingerprint;
 
 use crate::db::{self, Pool, settings};
 
-/// Name, version, fingerprint, and registration mode.
+/// Public identity, registration policy and supported profile capabilities.
 pub fn router(pool: Arc<Pool>, fingerprint: Arc<ArcSwap<Option<Fingerprint>>>) -> Router {
     Router::new()
         .route("/api/v1/server", get(server_info))
@@ -24,16 +31,20 @@ struct InfoState {
     fingerprint: Arc<ArcSwap<Option<Fingerprint>>>,
 }
 
-async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Json<Value>, StatusCode> {
+async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Response, StatusCode> {
     let mut conn = state
         .pool
         .read()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let name = settings::get(&mut conn, settings::NAME)
+    let mut tx = conn
+        .begin()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mode = settings::get(&mut conn, settings::REGISTRATION_MODE)
+    let name = settings::get(&mut tx, settings::NAME)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mode = settings::get(&mut tx, settings::REGISTRATION_MODE)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let fingerprint = (**state.fingerprint.load())
@@ -45,10 +56,31 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Json<Value>,
         || db::REGISTRATION_INVITE.to_owned(),
         |setting| setting.value,
     );
-    Ok(Json(json!({
+    let logo = settings::public_icon(&mut tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut capabilities = vec![
+        "profileSignIn",
+        "profileAccountLinking",
+        "linkedDeviceSignIn",
+    ];
+    if settings::offers_profile_sync(&mut tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        capabilities.push("profileSync");
+    }
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut metadata = json!({
         "name": name,
-        "version": env!("CARGO_PKG_VERSION"),
+        "capabilities": capabilities,
         "fingerprint": fingerprint,
         "registrationMode": registration,
-    })))
+    });
+    if logo.is_some() {
+        metadata["iconUrl"] = Value::from("/api/v1/server/icon");
+    }
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(metadata)).into_response())
 }

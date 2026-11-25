@@ -30,6 +30,9 @@
   padding-block: 16px;
   border-bottom: 1px solid var(--border);
 }
+.personal-audio > header .audio-profile {
+  margin-left: auto;
+}
 .personal-audio > header span {
   color: var(--mint);
   font-size: 12px;

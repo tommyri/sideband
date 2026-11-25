@@ -1,0 +1,36 @@
+.server-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+.server-preview-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  color: var(--mint);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 700;
+}
+.server-preview-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.server-preview-label {
+  display: grid;
+  min-width: 0;
+  color: var(--secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.server-preview-label strong {
+  color: var(--text);
+  font-size: 15px;
+}

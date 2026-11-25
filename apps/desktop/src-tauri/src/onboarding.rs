@@ -2,6 +2,7 @@ use crate::{
     state::AppState,
     types::{ApiError, ProbeInput, ServerProbe},
 };
+use base64::Engine as _;
 use ss_client_core::storage::Storage as _;
 use ss_net::{
     pins::{MemoryPinStore, PinStore, ServerId, TrustPolicy},
@@ -12,7 +13,10 @@ use tauri::State;
 
 /// Discover the actual QUIC certificate without sending a Hello or credentials.
 /// Metadata uses domain validation or the observed pin, never trust-all HTTPS.
-async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe, ApiError> {
+pub(crate) async fn probe(
+    input: ProbeInput,
+    pins: Arc<dyn PinStore>,
+) -> Result<ServerProbe, ApiError> {
     probe_with_policy(input, pins, false).await
 }
 
@@ -23,7 +27,13 @@ struct Metadata {
     name: String,
     registration_mode: String,
     fingerprint: String,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    icon_url: Option<String>,
 }
+
+const PUBLIC_ICON: &str = "/api/v1/server/icon";
+const MAX_ICON: usize = 2 * 1024 * 1024;
 
 /// Connect once over QUIC and report the certificate the server presented
 /// and the trust that would apply to it.
@@ -55,12 +65,13 @@ async fn quic_trust(
     }
 }
 
-/// Read the server's HTTPS metadata under `policy`, at most 16 KiB.
-async fn server_metadata(
+/// Only request fixed paths at the same validated host, under the QUIC trust policy.
+async fn public_response(
     policy: TrustPolicy,
-    host: String,
+    host: &str,
     https_port: u16,
-) -> Result<Metadata, ApiError> {
+    path: &'static str,
+) -> Result<reqwest::Response, ApiError> {
     let http = reqwest::Client::builder()
         .use_preconfigured_tls(
             ss_net::client::tls_config(policy)
@@ -75,27 +86,53 @@ async fn server_metadata(
     let host = if host.contains(':') {
         format!("[{host}]")
     } else {
-        host
+        host.to_owned()
     };
-    let mut response = http
-        .get(format!("https://{host}:{https_port}/api/v1/server"))
+    let response = http
+        .get(format!("https://{host}:{https_port}{path}"))
         .send()
         .await
-        .map_err(http_error)?
-        .error_for_status()
         .map_err(http_error)?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(http_error(response.status()));
+    }
+    Ok(response)
+}
+
+async fn read_bounded(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, ApiError> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(http_error)? {
-        if bytes.len() + chunk.len() > 16_384 {
+        if bytes.len().saturating_add(chunk.len()) > limit {
             return Err(ApiError::new(
                 "invalid_server",
-                "Server metadata is too large.",
+                "Server response is too large.",
             ));
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes)
+    Ok(bytes)
+}
+
+async fn server_metadata(
+    policy: TrustPolicy,
+    host: &str,
+    https_port: u16,
+) -> Result<Metadata, ApiError> {
+    let response = public_response(policy, host, https_port, "/api/v1/server").await?;
+    serde_json::from_slice(&read_bounded(response, 16 * 1024).await?)
         .map_err(|_| ApiError::new("invalid_server", "Invalid server metadata."))
+}
+
+fn recognized_capabilities(capabilities: Vec<String>) -> Vec<String> {
+    capabilities
+        .into_iter()
+        .filter(|s| {
+            matches!(
+                s.as_str(),
+                "profileSignIn" | "profileAccountLinking" | "linkedDeviceSignIn" | "profileSync"
+            )
+        })
+        .collect()
 }
 
 async fn probe_with_policy(
@@ -130,7 +167,7 @@ async fn probe_with_policy(
             .map_err(|e| super::commands::api_error(e.into()))?;
     }
     let (fingerprint, policy) = quic_trust(&address, temporary.clone()).await?;
-    let metadata = server_metadata(policy, address.host, input.https_port).await?;
+    let metadata = server_metadata(policy, &address.host, input.https_port).await?;
     if policy != TrustPolicy::PublicCertificate
         && Fingerprint::try_from(metadata.fingerprint).ok() != Some(fingerprint)
     {
@@ -145,6 +182,8 @@ async fn probe_with_policy(
     }
     Ok(ServerProbe {
         name: metadata.name,
+        capabilities: recognized_capabilities(metadata.capabilities),
+        has_public_icon: metadata.icon_url.as_deref() == Some(PUBLIC_ICON),
         registration_mode: metadata.registration_mode,
         fingerprint: fingerprint.to_string(),
         previous_fingerprint: previous.map(|p| p.to_string()),
@@ -162,9 +201,59 @@ pub async fn probe_server(
     state: State<'_, AppState>,
     input: ProbeInput,
 ) -> Result<ServerProbe, ApiError> {
+    let id = ServerId::new(&input.host, input.port)
+        .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
+    crate::profile::catalog::seed_trust(&state.profile_path, &*state.pins, &id)?;
     tokio::time::timeout(Duration::from_secs(12), probe(input, state.pins.clone()))
         .await
         .map_err(|_| ApiError::new("timeout", "The server did not respond."))?
+}
+
+/// Load decorative artwork only after the server's trust policy has been accepted.
+#[tauri::command]
+pub async fn get_public_server_icon(
+    state: State<'_, AppState>,
+    input: ProbeInput,
+) -> Result<String, ApiError> {
+    public_server_icon(&input, &*state.pins).await
+}
+
+async fn public_server_icon(input: &ProbeInput, pins: &dyn PinStore) -> Result<String, ApiError> {
+    let address = ss_client_core::ServerAddr::new(&input.host, input.port)
+        .map_err(super::commands::api_error)?;
+    let policy = pins
+        .policy(&address.id().map_err(super::commands::api_error)?)
+        .map_err(|e| super::commands::api_error(e.into()))?
+        .ok_or_else(|| ApiError::new("untrusted", "Approve the server certificate first."))?;
+    let response = public_response(policy, &address.host, input.https_port, PUBLIC_ICON).await?;
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(image::ImageFormat::from_mime_type)
+        .filter(|kind| {
+            matches!(
+                kind,
+                image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
+            )
+        })
+        .ok_or_else(|| ApiError::new("icon", "Unsupported server logo."))?;
+    let bytes = read_bounded(response, MAX_ICON).await?;
+    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|_| ApiError::new("icon", "Invalid server logo."))?;
+    if reader.format() != Some(mime)
+        || !reader
+            .into_dimensions()
+            .is_ok_and(|(w, h)| (1..=4096).contains(&w) && (1..=4096).contains(&h))
+    {
+        return Err(ApiError::new("icon", "Invalid server logo."));
+    }
+    Ok(format!(
+        "data:{};base64,{}",
+        mime.to_mime_type(),
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 /// Explicit migration: verify both transports before replacing a legacy pin.
@@ -194,12 +283,14 @@ pub async fn use_public_certificate(
 pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
     crate::voice::stop(&state, Some(&server_id)).await?;
-    let saved = state
-        .storage
-        .servers()
-        .into_iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| ApiError::new("invalid_server", "Unknown server."))?;
+    let saved = crate::profile::catalog::server_list(
+        state.storage.servers(),
+        crate::profile::catalog::memberships(&state.profile_path)?,
+    )?
+    .into_iter()
+    .map(|(s, _)| s)
+    .find(|s| s.id == server_id)
+    .ok_or_else(|| ApiError::new("invalid_server", "Unknown server."))?;
     let id = ServerId::new(&saved.host, saved.port)
         .map_err(|e| ApiError::new("invalid_server", e.to_string()))?;
     let removed = state.clients().remove(&id);
@@ -213,6 +304,7 @@ pub async fn remove_server(state: State<'_, AppState>, server_id: String) -> Res
             .map_err(super::commands::api_error)?
     };
     sign_out(removed, address, token, state.pins.clone()).await;
+    crate::profile::catalog::forget(&state.profile_path, &id)?;
     // Keep the certificate pin: removing a server must not erase protection
     // against an unexpected certificate when it is added again.
     state
@@ -265,9 +357,16 @@ pub async fn reorder_servers(
     server_ids: Vec<String>,
 ) -> Result<(), ApiError> {
     let _operation = state.operations.lock().await;
+    let known = crate::profile::catalog::server_list(
+        state.storage.servers(),
+        crate::profile::catalog::memberships(&state.profile_path)?,
+    )?
+    .into_iter()
+    .map(|(s, _)| s)
+    .collect();
     state
         .storage
-        .write(move |storage| storage.reorder(&server_ids))
+        .write(move |storage| storage.reorder(&server_ids, known))
         .await
         .map_err(super::commands::api_error)
 }
@@ -278,6 +377,23 @@ mod tests {
     use crate::persistence::DesktopStorage;
     use ss_client_core::{Client, Credentials, ServerAddr, v1};
     use ss_net::pins::JsonPinStore;
+
+    #[test]
+    fn legacy_metadata_and_unknown_capabilities_are_compatible() {
+        let mut value = serde_json::json!({
+            "name":"Friends", "fingerprint":"ab".repeat(32), "registrationMode":"invite", "version":"old"
+        });
+        let legacy: Metadata = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(legacy.capabilities, Vec::<String>::new());
+        assert!(legacy.icon_url.is_none());
+        assert_eq!(legacy.registration_mode, "invite");
+        value["capabilities"] = serde_json::json!(["future", "profileSignIn", "profileSync"]);
+        let current: Metadata = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            recognized_capabilities(current.capabilities),
+            ["profileSignIn", "profileSync"]
+        );
+    }
 
     #[allow(
         clippy::too_many_lines,
@@ -308,7 +424,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let quic = tokio::spawn(server.run(endpoint.clone()));
+        let quic = tokio::spawn(server.clone().run(endpoint.clone()));
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let input = ProbeInput {
             host: "127.0.0.1".into(),
@@ -317,7 +433,8 @@ mod tests {
         };
         let https = tokio::spawn(ss_server::http::hardening::serve_tls(
             tcp,
-            ss_server::http::info::router(pool, identity.fingerprint_slot()),
+            ss_server::http::info::router(pool, identity.fingerprint_slot())
+                .merge(server.public_routes()),
             identity.https_config(),
             std::future::pending(),
         ));
@@ -325,7 +442,20 @@ mod tests {
         let id = ServerId::new(&input.host, input.port).unwrap();
         let found = probe(input.clone(), pins.clone()).await.unwrap();
         assert!(!found.trusted);
+        assert!(!found.has_public_icon);
+        assert_eq!(
+            public_server_icon(&input, &*pins).await.unwrap_err().code,
+            "untrusted"
+        );
         assert_eq!(found.registration_mode, "invite");
+        assert_eq!(
+            found.capabilities,
+            [
+                "profileSignIn",
+                "profileAccountLinking",
+                "linkedDeviceSignIn"
+            ]
+        );
         assert!(
             pins.get(&id).unwrap().is_none(),
             "discovery must not persist trust"
@@ -379,6 +509,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_native_logo(&client, &input, &*pins).await;
         client.close().await;
         let reopened = Arc::new(DesktopStorage::open(dir.path().join("sessions.json")).unwrap());
         let client = Client::connect_with_storage(
@@ -417,6 +548,7 @@ mod tests {
         assert_rejected(&address, &token, pins.clone()).await;
         let old = Fingerprint::try_from("ab".repeat(32)).unwrap();
         pins.set(&id, old).unwrap();
+        assert!(public_server_icon(&input, &*pins).await.is_err());
         let changed = probe(input, pins.clone()).await.unwrap();
         assert!(!changed.trusted);
         assert_eq!(changed.previous_fingerprint, Some(old.to_string()));
@@ -428,6 +560,28 @@ mod tests {
         quic.abort();
         https.abort();
         endpoint.close(0, b"test complete");
+    }
+
+    async fn assert_native_logo(client: &Client, input: &ProbeInput, pins: &dyn PinStore) {
+        let mut source = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(2, 2)
+            .write_to(&mut source, image::ImageFormat::Png)
+            .unwrap();
+        let png = source.into_inner();
+        let icon = client.upload_server_icon(png.clone()).await.unwrap();
+        let mut settings = client.server_settings().await.unwrap().settings;
+        settings.icon_id = Some(icon);
+        settings.public_icon = Some(true);
+        client.save_server_settings(&settings).await.unwrap();
+        let logo = public_server_icon(input, pins).await.unwrap();
+        assert_eq!(
+            logo.strip_prefix("data:image/png;base64,"),
+            Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(png)
+                    .as_str()
+            )
+        );
     }
 
     async fn assert_rejected(address: &ServerAddr, token: &str, pins: Arc<JsonPinStore>) {

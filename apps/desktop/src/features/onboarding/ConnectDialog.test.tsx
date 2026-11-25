@@ -7,10 +7,18 @@ import {
   approveFingerprint,
   connect,
   getSnapshot,
+  getPublicServerIcon,
   probeServer,
   enablePublicCertificate,
 } from '../../lib/api'
 import { accountErrors, parseAddress } from './validation'
+import { createLocalProfile, getLocalProfile } from './localProfile'
+
+vi.mock('./localProfile', async (original) => ({
+  ...(await original<typeof import('./localProfile')>()),
+  getLocalProfile: vi.fn(),
+  createLocalProfile: vi.fn(),
+}))
 
 vi.mock('../../lib/api', () => ({
   probeServer: vi.fn(),
@@ -18,10 +26,13 @@ vi.mock('../../lib/api', () => ({
   enablePublicCertificate: vi.fn(),
   connect: vi.fn(),
   getSnapshot: vi.fn(),
+  getPublicServerIcon: vi.fn(),
 }))
 const metadata = {
   name: 'Friends',
+  hasPublicIcon: false,
   registrationMode: 'invite',
+  capabilities: [] as string[],
   fingerprint: 'ab'.repeat(32),
   previousFingerprint: null,
   trusted: false,
@@ -30,6 +41,7 @@ const metadata = {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(getLocalProfile).mockResolvedValue(null)
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '')
   }
@@ -91,6 +103,30 @@ describe('onboarding', () => {
       expect.objectContaining({ mode: 'register', inviteCode: 'invite', username: 'friend' }),
     )
   })
+  it('shows the invitation identity and fetches its logo only after certificate approval', async () => {
+    vi.mocked(probeServer).mockResolvedValue({ ...metadata, hasPublicIcon: true })
+    vi.mocked(getPublicServerIcon).mockResolvedValue('data:image/png;base64,AA==')
+    await discover()
+    expect(getPublicServerIcon).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
+    expect(await screen.findByText('friends.example:5781')).toBeVisible()
+    expect(screen.getByText('Friends')).toBeVisible()
+    expect(screen.getByLabelText('Invite code')).toBeVisible()
+    await waitFor(() =>
+      expect(document.querySelector('.server-preview img')).toHaveAttribute(
+        'src',
+        'data:image/png;base64,AA==',
+      ),
+    )
+    fireEvent.error(document.querySelector('.server-preview img')!)
+    expect(screen.getByText('F')).toBeVisible()
+  })
+  it('shows initials when the server has no public icon', async () => {
+    await trust()
+    expect(screen.getByText('F')).toBeVisible()
+    expect(getPublicServerIcon).not.toHaveBeenCalled()
+  })
   it('shows both fingerprints and requires explicit replacement on certificate change', async () => {
     vi.mocked(probeServer).mockResolvedValue({ ...metadata, previousFingerprint: 'cd'.repeat(32) })
     await discover()
@@ -116,6 +152,41 @@ describe('onboarding', () => {
     expect(screen.getByLabelText('Password')).toHaveValue('')
     expect(useAppStore.getState().servers).toHaveLength(0)
   })
+  it.each(['password', 'profile'])(
+    'rediscovers identity and capabilities when the certificate changes during %s sign-in',
+    async (method) => {
+      const profile = method === 'profile'
+      if (profile) {
+        vi.mocked(getLocalProfile).mockResolvedValue('Tommy')
+        vi.mocked(probeServer).mockResolvedValue({ ...metadata, capabilities: ['profileSignIn'] })
+      }
+      await trust()
+      if (!profile) {
+        fireEvent.click(screen.getByRole('button', { name: 'Log in instead' }))
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'friend' } })
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a password' } })
+      }
+      const fingerprint = 'cd'.repeat(32)
+      vi.mocked(connect).mockRejectedValue({ fingerprint })
+      vi.mocked(probeServer).mockResolvedValue({
+        ...metadata,
+        name: 'New community',
+        previousFingerprint: metadata.fingerprint,
+        fingerprint,
+      })
+      fireEvent.click(
+        screen.getByRole('button', { name: profile ? 'Join with profile' : 'Log in and join' }),
+      )
+      await screen.findByRole('heading', { name: 'Server certificate changed' })
+      expect(screen.queryByText('Friends')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Replace trusted certificate' }))
+      expect(await screen.findByText('New community')).toBeVisible()
+      expect(screen.getByLabelText('Password')).toHaveValue('')
+      expect(screen.queryByRole('button', { name: 'Join with profile' })).toBeNull()
+      expect(connect).toHaveBeenCalledTimes(1)
+    },
+  )
   it('rejects invalid registration without invoking the bridge', async () => {
     await trust()
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'UPPER' } })
@@ -152,7 +223,7 @@ describe('onboarding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create account and join' }))
     await screen.findByRole('alert')
     expect(screen.getByLabelText('Invite code')).toHaveAccessibleDescription(/new code/)
-    expect(screen.getByLabelText('Invite code')).toHaveFocus()
+    await waitFor(() => expect(screen.getByLabelText('Invite code')).toHaveFocus())
     expect(screen.getByLabelText('Password')).toHaveValue('')
     expect(screen.getByLabelText('Username')).toHaveValue('friend')
   })
@@ -275,4 +346,85 @@ it('keeps a failed domain switch out of the login step', async () => {
   expect(probeServer).not.toHaveBeenCalled()
   expect(approveFingerprint).not.toHaveBeenCalled()
   expect(connect).not.toHaveBeenCalled()
+})
+
+it('creates a named profile before choosing a server', async () => {
+  vi.mocked(createLocalProfile).mockResolvedValue('Tommy')
+  render(<ConnectDialog />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Create a local profile' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Create profile' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Choose a profile name')
+  fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: ' Tommy ' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create profile' }))
+  await screen.findByLabelText('Server address')
+  expect(createLocalProfile).toHaveBeenCalledWith('Tommy')
+  expect(screen.queryByRole('button', { name: 'Create a local profile' })).toBeNull()
+  expect(connect).not.toHaveBeenCalled()
+})
+
+it('joins with a profile after trust and keeps the profile available when an invite is refused', async () => {
+  vi.mocked(getLocalProfile).mockResolvedValue('Tommy')
+  vi.mocked(probeServer).mockResolvedValue({ ...metadata, capabilities: ['profileSignIn'] })
+  await discover()
+  expect(connect).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('checkbox', { name: /I compared/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Trust this server' }))
+  expect(await screen.findByLabelText('Username')).toHaveValue('tommy')
+  expect(screen.queryByLabelText('Password')).toBeNull()
+  vi.mocked(connect).mockRejectedValueOnce({ code: 'server_4', message: 'Invalid invite' })
+  fireEvent.change(screen.getByLabelText('Invite code'), { target: { value: 'old' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Join with profile' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('new code')
+  await waitFor(() => expect(screen.getByLabelText('Invite code')).toHaveFocus())
+  vi.mocked(connect).mockResolvedValue({
+    serverId: 'friends.example:5781',
+    label: 'Friends',
+    status: { kind: 'connected' },
+  })
+  fireEvent.change(screen.getByLabelText('Invite code'), { target: { value: 'new' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Join with profile' }))
+  await waitFor(() => expect(useAppStore.getState().connectOpen).toBe(false))
+  expect(connect).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      mode: 'profile',
+      username: 'tommy',
+      password: '',
+      inviteCode: 'new',
+    }),
+  )
+})
+
+it('keeps an existing server account reachable on a profile-capable server', async () => {
+  vi.mocked(probeServer).mockResolvedValue({
+    ...metadata,
+    trusted: true,
+    capabilities: ['profileSignIn'],
+  })
+  await discover()
+  await screen.findByRole('heading', { name: 'Join with a local profile' })
+  fireEvent.click(screen.getByRole('button', { name: 'Use a server account' }))
+  expect(screen.getByLabelText('Password')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Log in and join' })).toBeInTheDocument()
+  expect(createLocalProfile).not.toHaveBeenCalled()
+})
+
+it('lets a returning profile sign in to an invite-only server without another code', async () => {
+  vi.mocked(getLocalProfile).mockResolvedValue('Tommy')
+  vi.mocked(probeServer).mockResolvedValue({
+    ...metadata,
+    trusted: true,
+    capabilities: ['profileSignIn'],
+  })
+  vi.mocked(connect).mockResolvedValue({
+    serverId: 'friends.example:5781',
+    label: 'Friends',
+    status: { kind: 'connected' },
+  })
+  await discover()
+  expect(screen.getByLabelText('Invite code')).not.toBeRequired()
+  fireEvent.click(screen.getByRole('button', { name: 'Join with profile' }))
+  await waitFor(() => expect(useAppStore.getState().connectOpen).toBe(false))
+  expect(connect).toHaveBeenCalledWith(
+    expect.objectContaining({ mode: 'profile', inviteCode: '', password: '' }),
+  )
 })
