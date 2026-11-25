@@ -356,7 +356,10 @@ impl Server {
         if let Some(refusal) = hello_refusal(request_id, &hello) {
             return reject(&connection, &mut stream, &refusal).await;
         }
-        let authed = match self.authenticate(&mut hello, peer, request_id).await {
+        let authed = match self
+            .authenticate(&mut hello, connection.quic(), peer, request_id)
+            .await
+        {
             Ok(authed) => authed,
             Err(envelope) => return reject(&connection, &mut stream, &envelope).await,
         };
@@ -451,6 +454,7 @@ impl Server {
     async fn authenticate(
         &self,
         hello: &mut v1::Hello,
+        quic: &quinn::Connection,
         peer: IpAddr,
         request_id: u32,
     ) -> Result<auth::Authenticated, Box<v1::ServerEnvelope>> {
@@ -462,13 +466,30 @@ impl Server {
                 wait,
             )));
         }
-        let registering = matches!(hello.auth, Some(v1::hello::Auth::Register(_)));
-        let outcome = self.auth.hello(hello, peer).await;
+        let outcome = if let Some(v1::hello::Auth::Profile(profile)) = &hello.auth {
+            let mut binding = [0; 32];
+            if quic
+                .export_keying_material(&mut binding, ss_proto::profile::EXPORTER_LABEL, &[])
+                .is_ok()
+            {
+                self.auth
+                    .profile_hello(hello, profile, peer, &binding)
+                    .await
+            } else {
+                Err(auth::Error::InvalidProfile)
+            }
+        } else {
+            let registering = matches!(hello.auth, Some(v1::hello::Auth::Register(_)));
+            self.auth
+                .hello(hello, peer)
+                .await
+                .map(|user| (user, registering))
+        };
         scrub(hello);
-        if registering && let Ok(authed) = &outcome {
+        if let Ok((authed, true)) = &outcome {
             self.announce_member(&authed.user).await;
         }
-        outcome.map_err(|error| {
+        outcome.map(|(user, _)| user).map_err(|error| {
             tracing::debug!(%error, "hello rejected");
             Box::new(error_envelope(
                 request_id,
@@ -1625,6 +1646,11 @@ fn scrub(hello: &mut v1::Hello) {
     use zeroize::Zeroize;
     match hello.auth.as_mut() {
         Some(v1::hello::Auth::Login(login)) => login.password.zeroize(),
+        Some(v1::hello::Auth::Profile(profile)) => {
+            if let Some(register) = &mut profile.register {
+                register.invite_code.zeroize();
+            }
+        }
         Some(v1::hello::Auth::Register(register)) => {
             register.password.zeroize();
             register.invite_code.zeroize();

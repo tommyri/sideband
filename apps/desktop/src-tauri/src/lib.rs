@@ -15,6 +15,7 @@ mod moderation_admin;
 mod notifications;
 mod onboarding;
 mod persistence;
+mod profile;
 mod role_admin;
 mod search;
 mod server_settings;
@@ -73,6 +74,8 @@ pub fn run() {
             diagnostics::diagnostics_snapshot,
             testing::test_build_identity,
             testing::export_test_report,
+            profile::create_local_profile,
+            profile::get_local_profile,
             commands::connect,
             commands::approve_fingerprint,
             commands::disconnect,

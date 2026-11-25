@@ -103,10 +103,18 @@ pub enum Credentials {
     Login(v1::Login),
     /// Invite registration.
     Register(v1::Register),
+    /// Server-scoped membership and device credentials.
+    Profile(Box<crate::profile::ProfileCredentials>),
     /// A bot token (`docs/bots.md`). Reconnects use it again; it is never
     /// saved to `Storage`, and HTTPS history needs a session, so a bot's
     /// cached history is not re-read after a reconnect.
     Bot(String),
+}
+
+/// Profile signatures need the verified connection's TLS exporter.
+enum Handshake {
+    Ready(v1::hello::Auth),
+    Profile(Box<crate::profile::ProfileCredentials>),
 }
 
 pub(crate) struct Command {
@@ -269,12 +277,15 @@ impl Client {
                     .await
                     .map_err(|e| Error::Storage(e.to_string()))??
                     .ok_or(Error::Disconnected)?;
-                v1::hello::Auth::SessionToken(token)
+                Handshake::Ready(v1::hello::Auth::SessionToken(token))
             }
-            Credentials::Session(token) => v1::hello::Auth::SessionToken(token),
-            Credentials::Login(login) => v1::hello::Auth::Login(login),
-            Credentials::Register(register) => v1::hello::Auth::Register(register),
-            Credentials::Bot(token) => v1::hello::Auth::BotToken(token),
+            Credentials::Session(token) => Handshake::Ready(v1::hello::Auth::SessionToken(token)),
+            Credentials::Login(login) => Handshake::Ready(v1::hello::Auth::Login(login)),
+            Credentials::Register(register) => {
+                Handshake::Ready(v1::hello::Auth::Register(register))
+            }
+            Credentials::Bot(token) => Handshake::Ready(v1::hello::Auth::BotToken(token)),
+            Credentials::Profile(keys) => Handshake::Profile(keys),
         };
         let (live, welcome) = establish(&address, pins.clone(), credential).await?;
         let store = StateStore::default();
@@ -456,10 +467,21 @@ impl Live {
 async fn establish(
     address: &ServerAddr,
     pins: Arc<dyn PinStore>,
-    auth: v1::hello::Auth,
+    handshake: Handshake,
 ) -> Result<(Live, v1::Welcome), Error> {
     timeout(DEADLINE, async {
         let connection = ss_net::client::connect(&address.host, address.port, pins).await?;
+        let auth = match handshake {
+            Handshake::Ready(auth) => auth,
+            Handshake::Profile(keys) => {
+                let mut binding = [0; 32];
+                connection
+                    .quic()
+                    .export_keying_material(&mut binding, ss_proto::profile::EXPORTER_LABEL, &[])
+                    .map_err(|_| Error::Protocol("profile TLS channel binding unavailable"))?;
+                v1::hello::Auth::Profile(keys.sign(&address.id()?, &binding)?)
+            }
+        };
         let mut live = Live {
             connection,
             control: None,
@@ -666,11 +688,11 @@ impl Runner {
                 establish(
                     &self.address,
                     self.pins.clone(),
-                    if session.bot {
+                    Handshake::Ready(if session.bot {
                         v1::hello::Auth::BotToken(token.clone())
                     } else {
                         v1::hello::Auth::ResumeToken(token.clone())
-                    },
+                    }),
                 ),
                 commands,
                 &mut self.pending,

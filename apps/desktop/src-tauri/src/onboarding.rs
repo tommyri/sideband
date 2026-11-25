@@ -22,6 +22,8 @@ async fn probe(input: ProbeInput, pins: Arc<dyn PinStore>) -> Result<ServerProbe
 struct Metadata {
     name: String,
     registration_mode: String,
+    #[serde(default)]
+    capabilities: Vec<String>,
     fingerprint: String,
 }
 
@@ -146,6 +148,7 @@ async fn probe_with_policy(
     Ok(ServerProbe {
         name: metadata.name,
         registration_mode: metadata.registration_mode,
+        capabilities: metadata.capabilities,
         fingerprint: fingerprint.to_string(),
         previous_fingerprint: previous.map(|p| p.to_string()),
         trusted: policy == TrustPolicy::PublicCertificate || previous == Some(fingerprint),

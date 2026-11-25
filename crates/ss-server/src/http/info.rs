@@ -50,5 +50,6 @@ async fn server_info(State(state): State<Arc<InfoState>>) -> Result<Json<Value>,
         "version": env!("CARGO_PKG_VERSION"),
         "fingerprint": fingerprint,
         "registrationMode": registration,
+        "capabilities": ["profileSignIn"],
     })))
 }

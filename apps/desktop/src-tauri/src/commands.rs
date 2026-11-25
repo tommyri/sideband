@@ -242,6 +242,15 @@ pub async fn connect(
     }
     let credentials = match input.mode.as_str() {
         "saved" => Credentials::Saved,
+        "profile" => {
+            crate::profile::credentials(
+                state.profile_path.clone(),
+                key,
+                input.username,
+                input.invite_code,
+            )
+            .await?
+        }
         "register" => Credentials::Register(ss_client_core::v1::Register {
             invite_code: input.invite_code,
             username: input.username,

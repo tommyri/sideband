@@ -1,13 +1,14 @@
 # Protocol reference
 
 For people writing a bot, a second client or a tool that speaks to a Sideband
-server. Two documents hold the facts; this page only says where to look.
+server.
 
 | Document | What it is the source for |
 |---|---|
 | [Wire protocol v1](../plan/02-protocol.md) | Connection lifecycle and session tokens (§1), control-stream framing (§2), which message goes which way and what it does (§3), audio datagrams (§4), video streams and their renditions (§5), the HTTPS API (§6), versioning and feature flags (§7) |
 | [Message reference](messages.md) | Every `.proto` message, field, field number and enum value, with the comments from the schema. Generated; do not edit it by hand |
 | [Security](../security.md) | Certificate trust (§3), authentication and tokens (§4), permissions (§5), rate limits (§6), input limits (§7) |
+| [Profile sign-in](profile-identity.md) | Server-specific membership, device enrollment, sign-in and revocation |
 | [Message search](../message-search.md) | `GET /api/v1/search` parameters and response |
 
 The schema itself is in
@@ -24,7 +25,7 @@ server parses.
 2. Open one bidirectional stream. Every control message travels on it as a
    length-prefixed protobuf `ClientEnvelope` or `ServerEnvelope` (§2).
 3. Send `Hello` with a login, an invite registration, a saved session token,
-   or a bot token.
+   a profile proof, or a bot token.
    The server answers `Welcome` with a full `Snapshot`, or an `Error` and a
    close.
 4. Send commands with increasing `request_id`s. Each gets exactly one `Ack` or

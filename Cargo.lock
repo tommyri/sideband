@@ -6950,9 +6950,11 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "font8x8",
+ "getrandom 0.4.3",
  "moq-net",
  "moq-video",
  "reqwest",
+ "security-framework",
  "serde",
  "serde_json",
  "ss-audio",
@@ -6974,7 +6976,9 @@ dependencies = [
  "tokio",
  "ts-rs",
  "wgpu",
+ "windows",
  "xattr",
+ "zeroize",
 ]
 
 [[package]]
@@ -7362,6 +7366,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "quinn",
  "reqwest",
+ "ring",
  "rtrb",
  "serde",
  "serde_json",
@@ -7485,6 +7490,7 @@ dependencies = [
  "quinn",
  "rcgen 0.14.10",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-acme",
  "serde",

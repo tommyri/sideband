@@ -18,8 +18,10 @@ import {
   type AccountField,
 } from './validation'
 import './onboarding.css'
+import { createLocalProfile, getLocalProfile, suggestedUsername } from './localProfile'
 
-type Field = AccountField | 'address' | 'httpsPort' | 'compared'
+type Field = AccountField | 'address' | 'httpsPort' | 'compared' | 'profileName'
+type JoinMode = 'profile' | 'login' | 'register'
 type FieldErrors = Partial<Record<Field, string>>
 
 function matchesServer(server: ServerSummary, input: ProbeInput) {
@@ -35,6 +37,7 @@ function JoinField({
   placeholder,
   issue,
   disabled,
+  required = name !== 'httpsPort',
   autoComplete = 'off',
 }: {
   name: Exclude<Field, 'compared'>
@@ -45,6 +48,7 @@ function JoinField({
   placeholder?: string
   issue?: string
   disabled: boolean
+  required?: boolean
   autoComplete?: string
 }) {
   return (
@@ -56,7 +60,7 @@ function JoinField({
         type={name === 'password' ? 'password' : 'text'}
         value={value}
         disabled={disabled}
-        required={name !== 'httpsPort'}
+        required={required}
         inputMode={name === 'httpsPort' ? 'numeric' : undefined}
         spellCheck={false}
         autoCapitalize="none"
@@ -99,8 +103,10 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   )
   const [target, setTarget] = useState<ProbeInput | null>(null)
   const [probe, setProbe] = useState<ServerProbe | null>(null)
-  const [step, setStep] = useState<'address' | 'trust' | 'auth'>('address')
-  const [mode, setMode] = useState<'login' | 'register'>('register')
+  const [step, setStep] = useState<'address' | 'trust' | 'auth' | 'profile'>('address')
+  const [chosenMode, setMode] = useState<JoinMode | null>(null)
+  const [localProfile, setLocalProfile] = useState<string | null>()
+  const [profileName, setProfileName] = useState('')
   const [checking, setChecking] = useState(false)
   const [retryDomain, setRetryDomain] = useState(false)
   const [pending, setPending] = useState(false)
@@ -108,24 +114,41 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [advanced, setAdvanced] = useState(false)
   const [compared, setCompared] = useState(false)
-  const [username, setUsername] = useState('')
+  const [enteredUsername, setUsername] = useState<string | null>(null)
   const [password, setPassword] = useState('')
   const [invite, setInvite] = useState('')
   const mounted = useRef(true)
   const revision = useRef(0)
   const canRegister = probe?.registrationMode === 'invite' || probe?.registrationMode === 'open'
-  const needsInvite = mode === 'register' && probe?.registrationMode === 'invite'
   const changedPin = !!probe?.previousFingerprint && probe.previousFingerprint !== probe.fingerprint
   const savedServer = target && servers.some((s) => matchesServer(s, target))
+  const profileSupported =
+    localProfile !== undefined && probe?.capabilities?.includes('profileSignIn') === true
+  const legacyMode = savedServer || !canRegister ? 'login' : 'register'
+  const mode =
+    chosenMode ??
+    (profileSupported && !savedServer && (canRegister || localProfile) ? 'profile' : legacyMode)
+  const wantsProfile = mode === 'profile'
+  const needsInvite = mode !== 'login' && probe?.registrationMode === 'invite'
+  const username = enteredUsername ?? (wantsProfile ? suggestedUsername(localProfile) : '')
   const invalidFocus = useRef<Field | undefined>(undefined)
   const form = useRef<HTMLFormElement>(null)
 
   useEffect(() => {
     mounted.current = true
+    let active = true
+    void getLocalProfile()
+      .then((name) => {
+        if (active) setLocalProfile(name)
+      })
+      .catch(() => {
+        // Platforms without a profile store still have server-account sign-in.
+      })
     const previous = document.activeElement as HTMLElement | null
     const modal = dialog.current
     modal?.showModal()
     return () => {
+      active = false
       mounted.current = false
       modal?.close()
       if (previous?.isConnected && previous !== document.body) previous.focus()
@@ -140,8 +163,11 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   }
   useEffect(() => {
     if (step === 'trust') dialog.current?.querySelector<HTMLElement>('h2')?.focus()
-    else focusField(step === 'address' ? 'address' : 'username')
-  }, [step, mode])
+    else if (step === 'auth' && wantsProfile && !localProfile)
+      dialog.current?.querySelector<HTMLElement>('h2')?.focus()
+    else
+      focusField(step === 'address' ? 'address' : step === 'profile' ? 'profileName' : 'username')
+  }, [step, mode, wantsProfile, localProfile])
   // After a native request, wait until the inputs are enabled again before focusing the error.
   useEffect(() => {
     if (invalidFocus.current && !pending) {
@@ -189,10 +215,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       setProbe(found)
       setTarget(input)
       setCompared(false)
-      const returning = servers.some((s) => matchesServer(s, input))
-      setMode(
-        returning || !['open', 'invite'].includes(found.registrationMode) ? 'login' : 'register',
-      )
+      setMode(null)
       setStep(found.trusted ? 'auth' : 'trust')
     } catch (e) {
       if (mounted.current && request === revision.current) {
@@ -227,11 +250,53 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       if (mounted.current) setPending(false)
     }
   }
+  function openProfileSetup() {
+    setError('')
+    setErrors({})
+    setStep('profile')
+  }
+  async function saveProfile() {
+    const name = profileName.trim()
+    if (!name || [...name].length > 64) {
+      reportErrors({ profileName: 'Choose a profile name between 1 and 64 characters.' })
+      return
+    }
+    setPending(true)
+    setError('')
+    try {
+      const created = await createLocalProfile(name)
+      if (mounted.current) {
+        setLocalProfile(created)
+        setStep(target ? 'auth' : 'address')
+      }
+    } catch (e) {
+      if (mounted.current) setError(friendlyError(e))
+    } finally {
+      if (mounted.current) setPending(false)
+    }
+  }
+  function switchMode(next: JoinMode) {
+    setMode(next)
+    setPassword('')
+    setErrors({})
+    setError('')
+  }
   async function authenticate(saved = false) {
     if (!target || !probe || pending) return
+    if (!saved && wantsProfile && !localProfile) {
+      openProfileSetup()
+      return
+    }
+    // A returning member can prove ownership without another invitation.
     const invalid = saved
       ? {}
-      : accountErrors(username, password, mode === 'register', needsInvite, invite)
+      : accountErrors(
+          username,
+          wantsProfile ? null : password,
+          mode !== 'login',
+          needsInvite && !wantsProfile,
+          invite,
+        )
     reportErrors(invalid)
     if (Object.keys(invalid).length) return
     setPending(true)
@@ -240,7 +305,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
       const result = await connect({
         ...target,
         username: saved ? '' : username.trim(),
-        password: saved ? '' : password,
+        password: saved || wantsProfile ? '' : password,
         mode: saved ? 'saved' : mode,
         inviteCode: !saved && needsInvite ? invite.trim() : '',
       })
@@ -272,8 +337,12 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         /invite/i.test(failure.message ?? '')
       ) {
         reportErrors({ invite: 'This invite was rejected. Ask your host for a new code.' })
-      } else if (!saved && mode === 'register' && failure.code === 'server_6') {
+      } else if (!saved && mode !== 'login' && failure.code === 'server_6') {
         reportErrors({ username: friendlyError(e) })
+      } else if (!saved && wantsProfile && failure.code === 'server_1') {
+        setError(
+          'This server did not accept your profile. If you have a server account, use its login instead.',
+        )
       } else if (!saved && failure.code === 'server_1') {
         reportErrors({ password: friendlyError(e) })
       } else setError(friendlyError(e))
@@ -283,6 +352,7 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   }
   function changeServer() {
     setStep('address')
+    setMode(null)
     setProbe(null)
     setTarget(null)
     setCompared(false)
@@ -294,12 +364,19 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
   function submit(event: FormEvent) {
     event.preventDefault()
     if (pending || checking) return
-    if (step === 'address') void findServer(retryDomain)
+    if (step === 'profile') void saveProfile()
+    else if (step === 'address') void findServer(retryDomain)
     else if (step === 'trust') void trust()
     else void authenticate()
   }
 
   const { title, description, action } = {
+    profile: {
+      title: 'Choose your profile name',
+      description:
+        'Sideband keeps your profile on this computer. Use it to join servers that support profile sign-in.',
+      action: 'Create profile',
+    },
     address: {
       title: server
         ? 'Reconnect to your server'
@@ -316,13 +393,23 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
         : `Ask the host of ${address.trim()} for this fingerprint through a conversation you already trust. No login details have been sent.`,
       action: changedPin ? 'Replace trusted certificate' : 'Trust this server',
     },
-    auth: {
-      title: mode === 'register' ? 'Create your account' : `Log in to ${probe?.name}`,
-      description: canRegister
-        ? `Your account belongs to ${probe?.name} · ${address.trim()}`
-        : `Registration is closed. Use your existing account on ${probe?.name} (${address.trim()}).`,
-      action: mode === 'register' ? 'Create account and join' : 'Log in and join',
-    },
+    auth: wantsProfile
+      ? {
+          title: localProfile
+            ? `Join ${probe?.name} with your profile`
+            : 'Join with a local profile',
+          description: localProfile
+            ? `Use ${localProfile} on ${address.trim()}. Your membership belongs to this server.`
+            : 'Choose a name once and use your profile to sign in to compatible servers.',
+          action: localProfile ? 'Join with profile' : 'Create a local profile',
+        }
+      : {
+          title: mode === 'register' ? 'Create your account' : `Log in to ${probe?.name}`,
+          description: canRegister
+            ? `Your account belongs to ${probe?.name} · ${address.trim()}`
+            : `Registration is closed. Use your existing account on ${probe?.name} (${address.trim()}).`,
+          action: mode === 'register' ? 'Create account and join' : 'Log in and join',
+        },
   }[step]
   return (
     <dialog
@@ -362,7 +449,10 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
           Sideband
         </span>
         <ol aria-label="Joining a server">
-          {['Server', 'Account', 'Chat'].map((label, i) => (
+          {(step === 'profile'
+            ? ['Profile', 'Server', 'Chat']
+            : ['Server', wantsProfile ? 'Profile' : 'Account', 'Chat']
+          ).map((label, i) => (
             <li key={label} aria-current={(step === 'auth' ? 1 : 0) === i ? 'step' : undefined}>
               {label}
             </li>
@@ -402,6 +492,17 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
               {title}
             </h2>
             <p className="join-intro">{description}</p>
+            {step === 'profile' && (
+              <JoinField
+                name="profileName"
+                label="Profile name"
+                value={profileName}
+                onChange={setProfileName}
+                autoComplete="nickname"
+                issue={errors.profileName}
+                disabled={pending}
+              />
+            )}
             {step === 'address' && (
               <>
                 <JoinField
@@ -489,38 +590,48 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                     Reconnect with saved session
                   </button>
                 )}
-                <JoinField
-                  name="username"
-                  label="Username"
-                  autoComplete="username"
-                  value={username}
-                  onChange={setUsername}
-                  disabled={pending}
-                  issue={errors.username}
-                  hint={
-                    mode === 'register'
-                      ? '3–32 lowercase letters, digits, underscores or dots.'
-                      : undefined
-                  }
-                />
-                <JoinField
-                  name="password"
-                  label="Password"
-                  autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-                  value={password}
-                  onChange={setPassword}
-                  disabled={pending}
-                  issue={errors.password}
-                  hint={
-                    mode === 'register'
-                      ? 'Use a unique password. Aim for 16 or more characters.'
-                      : undefined
-                  }
-                />
-                {needsInvite && (
+                {(!wantsProfile || localProfile) && (
+                  <JoinField
+                    name="username"
+                    label="Username"
+                    autoComplete="username"
+                    value={username}
+                    onChange={setUsername}
+                    disabled={pending}
+                    issue={errors.username}
+                    hint={
+                      mode !== 'login'
+                        ? '3–32 lowercase letters, digits, underscores or dots.'
+                        : undefined
+                    }
+                  />
+                )}
+                {!wantsProfile && (
+                  <JoinField
+                    name="password"
+                    label="Password"
+                    autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                    value={password}
+                    onChange={setPassword}
+                    disabled={pending}
+                    issue={errors.password}
+                    hint={
+                      mode === 'register'
+                        ? 'Use a unique password. Aim for 16 or more characters.'
+                        : undefined
+                    }
+                  />
+                )}
+                {needsInvite && (!wantsProfile || localProfile) && (
                   <JoinField
                     name="invite"
                     label="Invite code"
+                    required={!wantsProfile}
+                    hint={
+                      wantsProfile
+                        ? 'Use the code from your host when joining for the first time.'
+                        : undefined
+                    }
                     value={invite}
                     onChange={setInvite}
                     disabled={pending}
@@ -542,17 +653,32 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
               >
                 {checking ? 'Checking server…' : pending ? 'Please wait…' : action}
               </button>
-              {step === 'auth' && canRegister && (
+              {step === 'address' && localProfile === null && (
+                <button
+                  type="button"
+                  className="join-link"
+                  disabled={pending || checking}
+                  onClick={openProfileSetup}
+                >
+                  Create a local profile
+                </button>
+              )}
+              {step === 'auth' && profileSupported && (canRegister || localProfile) && (
                 <button
                   type="button"
                   className="join-link"
                   disabled={pending}
-                  onClick={() => {
-                    setMode(mode === 'login' ? 'register' : 'login')
-                    setPassword('')
-                    setErrors({})
-                    setError('')
-                  }}
+                  onClick={() => switchMode(wantsProfile ? 'login' : 'profile')}
+                >
+                  {wantsProfile ? 'Use a server account' : 'Use a local profile'}
+                </button>
+              )}
+              {step === 'auth' && !wantsProfile && canRegister && (
+                <button
+                  type="button"
+                  className="join-link"
+                  disabled={pending}
+                  onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}
                 >
                   {mode === 'register' ? 'Log in instead' : 'Create an account'}
                 </button>
@@ -577,9 +703,15 @@ function Onboarding({ server }: { server: ServerSummary | null }) {
                 className="join-link join-back"
                 type="button"
                 disabled={pending}
-                onClick={changeServer}
+                onClick={() => {
+                  if (step === 'profile' && target) {
+                    setStep('auth')
+                    setError('')
+                    setErrors({})
+                  } else changeServer()
+                }}
               >
-                {step === 'trust' ? 'Go back' : 'Change server'}
+                {step === 'trust' || step === 'profile' ? 'Go back' : 'Change server'}
               </button>
             )}
           </div>

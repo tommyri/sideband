@@ -36,6 +36,7 @@ pub mod v1 {
 
 mod envelope;
 pub mod frame;
+pub mod profile;
 pub mod validate;
 pub mod version;
 

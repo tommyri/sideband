@@ -37,6 +37,7 @@ parking_lot.workspace = true
 prost.workspace = true
 quinn.workspace = true
 reqwest.workspace = true
+ring.workspace = true
 rustls.workspace = true
 rustls-acme.workspace = true
 serde.workspace = true

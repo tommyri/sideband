@@ -89,6 +89,10 @@ It does not protect against:
 
 ## 4. Authentication and secrets
 
+Desktop profiles use OS-protected keys to sign in to each participating
+server. The [profile sign-in model](protocol/profile-identity.md) describes
+what the server learns, how it authorizes a device and how to revoke one.
+
 - **Passwords**: argon2id, version 0x13, memory 19 456 KiB (19 MiB), 2
   iterations, 1 lane, 16-byte random salt, PHC string output
   (`auth::password`). This is the OWASP minimum recommendation. Hashing runs

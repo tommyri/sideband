@@ -50,15 +50,15 @@ Lifetimes: a token unused for **90 days** expires (idle lifetime), and every
 token expires **180 days** after the login or registration that issued it,
 however often it is used (absolute lifetime). Each successful `Hello` or
 HTTPS request moves expiry to the earlier of now + 90 days and login + 180
-days. An expired token is `UNAUTHENTICATED`; the user logs in with their
-password again.
+days. An expired token returns `UNAUTHENTICATED`. The user signs in again
+with their password or enrolled profile device.
 
 A token stops working on both transports as soon as its session is ended:
 `Logout`, `RevokeSession`, a password reset, or the operator's
 `ss-server user sessions revoke`. Connections that used it receive
 `SessionRevoked` and are closed with code 6, at once for commands and within
 30 s for changes the CLI makes. A client must then stop reconnecting with that
-token and ask for the password. Expired sessions are deleted at startup and
+token and offer sign-in. Expired sessions are deleted at startup and
 every hour. A kick (`Kicked`) only disconnects; the token keeps working.
 
 QUIC application close codes (`ss_server::registry` and
@@ -159,7 +159,7 @@ message ServerEnvelope { uint32 request_id = 1; oneof msg { /* below */ } }
 
 | Message | Fields | Purpose |
 |---|---|---|
-| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login{username,password}, Register{invite_code,username,password}, bot_token }` | Must be first. `bot_token` (tag 9) signs a bot account in (section 7, Bot accounts) |
+| `Hello` | `protocol_version`, `client_name`, `client_version`, `os`, `oneof auth { session_token, resume_token, Login, Register, bot_token, ProfileAuth }` | Must be first. `bot_token` (tag 9) signs in a bot. `profile` (tag 10) carries a [profile device proof](../protocol/profile-identity.md). |
 | `Ping` | `sent_at` | Keepalive / RTT |
 | `JoinVoice` | `channel_id`, `self_mute`, `self_deaf` | Join or switch voice channel |
 | `LeaveVoice` | — | |

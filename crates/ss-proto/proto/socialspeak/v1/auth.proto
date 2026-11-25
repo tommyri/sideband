@@ -29,6 +29,28 @@ message Register {
   string password = 3;
 }
 
+// Sign in to a server-scoped membership with an enrolled Ed25519 device key.
+message ProfileAuth {
+  // Server-scoped 32-byte Ed25519 membership public key.
+  bytes membership_key = 1;
+  // Server-scoped 32-byte Ed25519 device public key.
+  bytes device_key = 2;
+  // Device signature over the TLS exporter and both public keys.
+  bytes device_signature = 3;
+  // First enrollment only. A retry with the same enrolled device is a login.
+  ProfileRegister register = 4;
+}
+
+// Register a new membership and authorize its first device.
+message ProfileRegister {
+  // Desired unique name on this server.
+  string username = 1;
+  // Bootstrap or regular invite. Validated by the normal registration policy.
+  string invite_code = 2;
+  // Membership signature authorizing this device public key.
+  bytes membership_signature = 3;
+}
+
 // First message on the control stream.
 message Hello {
   // Must be `PROTOCOL_VERSION` (1) for this schema.
@@ -52,6 +74,8 @@ message Hello {
     // Bot token from `CreateBot` or `ResetBotToken`. Authenticates the bot
     // account; never a user session. `Welcome.resume_token` echoes it.
     string bot_token = 9;
+    // Connection-bound, server-scoped profile credential.
+    ProfileAuth profile = 10;
   }
 }
 

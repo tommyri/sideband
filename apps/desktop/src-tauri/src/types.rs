@@ -78,6 +78,8 @@ pub struct ProbeInput {
 pub struct ServerProbe {
     pub name: String,
     pub registration_mode: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub fingerprint: String,
     pub previous_fingerprint: Option<String>,
     pub trusted: bool,

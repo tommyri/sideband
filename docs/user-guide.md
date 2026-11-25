@@ -26,7 +26,10 @@ To report a problem with evidence, see
    form. For a new self-signed certificate, compare the full SHA-256 fingerprint
    with your host through a conversation you already trust. Confirm that it
    matches and choose **Trust this server** to continue.
-4. Create your account on this server, or choose **Log in instead**. Usernames
+4. On a server that offers profile sign-in, choose **Create a local profile**
+   or **Join with profile**. If you already have a username and password on
+   this server, choose **Use a server account** and log in to keep your
+   messages and roles. On older servers, create an account or log in. Usernames
    are 3–32 lowercase letters, digits, underscores or dots. Passwords are
    8–128 UTF-8 bytes. Invite-only servers also ask for the code from your host.
    Servers with closed registration offer login. A rejected attempt keeps your
@@ -37,6 +40,26 @@ The app remembers your session on this computer, never your password.
 Next time, select the server and choose **Reconnect / log in**, then
 **Reconnect with saved session**. While the app is open it reconnects by
 itself after a network drop.
+
+### Use a local profile on Mac or Windows
+
+Choose **Create a local profile** in **Add server** to name your profile before
+you pick a server. You can also do this while accepting an invitation. Sideband
+keeps the sign-in keys in your Mac or Windows credential store. You can use the
+same profile on this computer to join several communities without creating a
+password for each one.
+
+When you choose **Join with profile**, check the username others will see on
+this server. You can pick a different username for each community. Enter your
+host’s invite code if the server asks for one. On your next visit, use your
+saved session or choose **Use a local profile** to sign in again. Your roles
+and messages belong to your membership on that server.
+
+Keep this installation and its credential store if you need to return with the
+same profile. Pairing another computer, linking an existing password account
+and restoring a backup are planned separately.
+
+### After joining
 
 Sideband reopens the last text channel or direct message you viewed with this
 account on this server. On your first visit, or if that conversation is gone,

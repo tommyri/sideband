@@ -173,6 +173,113 @@ fn post(channel: Id, content: &str) -> v1::SendMessage {
     }
 }
 
+async fn sign_in_profile(world: &World, device: u8, invite: &str) -> Result<Client, Error> {
+    let profile = ss_client_core::profile::ProfileCredentials::new(
+        &[1; 32],
+        &[device; 32],
+        &world.address.id()?,
+        "profile_owner".into(),
+        invite.into(),
+    )?;
+    Client::connect_with_storage(
+        world.address.clone(),
+        Credentials::Profile(Box::new(profile)),
+        world.pins.clone(),
+        world.storage.clone(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn profile_membership_survives_restart_and_device_revocation_ends_its_sessions() {
+    let mut world = World::new().await;
+    assert!(matches!(sign_in_profile(&world, 2, "invalid").await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Invalid)));
+    let first = sign_in_profile(&world, 2, &world.invite).await.unwrap();
+    let member = own_id(&first);
+    let general = named(&first.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        first.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    first.close().await;
+
+    world.restart().await;
+    // New client, same two local roots, no invite or saved session needed.
+    let returned = sign_in_profile(&world, 2, "").await.unwrap();
+    assert_eq!(own_id(&returned), member);
+    assert_eq!(
+        returned.state().read().permissions(general),
+        Some(Permissions::all())
+    );
+    assert!(matches!(sign_in_profile(&world, 3, &world.invite).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Unauthenticated)));
+    let token = world
+        .storage
+        .session(&world.address.id().unwrap())
+        .unwrap()
+        .unwrap();
+    let devices = auth::list_profile_devices(&world.pool, "profile_owner")
+        .await
+        .unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(
+        auth::revoke_profile_device(&world.pool, "profile_owner", devices[0].id)
+            .await
+            .unwrap(),
+        2
+    );
+    let auth = auth::Auth::new(world.pool.clone());
+    assert!(matches!(
+        auth.authenticate_bearer(&token).await,
+        Err(auth::Error::Unauthenticated)
+    ));
+    assert!(matches!(sign_in_profile(&world, 2, &world.invite).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Unauthenticated)));
+    returned.close().await;
+}
+
+#[tokio::test]
+async fn profile_registration_obeys_closed_registration_and_existing_member_bans() {
+    let world = World::new().await;
+    let owner = world.owner().await;
+    let invite = owner
+        .create_invite(v1::CreateInvite {
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    let set_mode = async |value: &str| {
+        let mut conn = world.pool.write().await;
+        db::settings::set(&mut conn, db::REGISTRATION_MODE, value)
+            .await
+            .unwrap();
+    };
+    set_mode("closed").await;
+    assert!(matches!(sign_in_profile(&world, 2, &invite.code).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Invalid)));
+    set_mode(db::REGISTRATION_INVITE).await;
+    let member = sign_in_profile(&world, 2, &invite.code).await.unwrap();
+    let general = named(&member.state().read(), "general", v1::ChannelKind::Text);
+    assert_eq!(
+        member.state().read().permissions(general),
+        Some(Permissions::EVERYONE)
+    );
+    let id = own_id(&member);
+    member.close().await;
+    set_mode("closed").await;
+    let returned = sign_in_profile(&world, 2, &invite.code).await.unwrap();
+    assert_eq!(own_id(&returned), id);
+    returned.close().await;
+    ss_server::handlers::ban_account(&world.pool, "profile_owner", Some("test ban"))
+        .await
+        .unwrap();
+    assert!(matches!(sign_in_profile(&world, 2, &invite.code).await,
+        Err(Error::Server { code, .. }) if code == i32::from(v1::ErrorCode::Banned)));
+    owner.close().await;
+}
+
 #[tokio::test]
 async fn snapshot_commands_events_persisted_session_and_drop() {
     let world = World::new().await;
